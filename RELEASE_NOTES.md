@@ -1,5 +1,13 @@
 # Release Notes
 
+## v2.8.0
+
+### New Features
+- **Splash screen** — Particle constellation splash screen on startup while credentials are validated in the background. Frameless 600×400 window with animated neural-network particle field.
+- **Startup auth gate** — App now validates AWS credentials on every launch. Missing or invalid credentials redirect to the credentials page before the main app loads; valid credentials proceed directly to the app.
+- **Simplified credentials page** — Stripped down to form fields + paste button only. On successful connection the app navigates automatically — no "Continue" button required. Error toast on failure.
+- **Model drag-and-drop reordering** — Models in Settings → Models can now be reordered via drag and drop. Order is persisted and reflected in all model dropdowns.
+
 ## v2.7.12
 
 ### Bug Fixes

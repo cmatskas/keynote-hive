@@ -21,7 +21,7 @@ Download: [Box folder](https://amazoncorporate.box.com/s/rwc0pbifx50uf7g2xi8mxan
 
 | Platform | File |
 |---|---|
-| macOS (Intel & Apple Silicon) | `Transcribely-2.7.3-universal.dmg` |
+| macOS (Intel & Apple Silicon) | `Transcribely-2.8.0-universal.dmg` |
 | Windows x64 | `Transcribely-Setup-x64.exe` |
 | Windows ARM64 | `Transcribely-Setup-arm64.exe` |
 

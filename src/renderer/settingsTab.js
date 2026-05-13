@@ -560,7 +560,8 @@
   function renderModelsTable(models) {
     const tbody = document.getElementById('modelsTableBody');
     tbody.innerHTML = models.map((m, i) => `
-      <tr>
+      <tr draggable="true" data-index="${i}" style="cursor:default">
+        <td style="width:24px;cursor:grab;color:var(--text-muted)" class="drag-handle">⠿</td>
         <td>${esc(m.id)}</td>
         <td><code class="small">${esc(m.inferenceProfileId)}</code></td>
         <td>
@@ -578,7 +579,6 @@
       sel.addEventListener('change', async () => {
         const idx = parseInt(sel.dataset.index);
         const newRole = sel.value;
-        // Clear role from others if assigning
         if (newRole) models.forEach((m, j) => { if (j !== idx && m.role === newRole) m.role = ''; });
         models[idx].role = newRole;
         await saveModels(models);
@@ -588,6 +588,28 @@
     tbody.querySelectorAll('.model-delete-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         models.splice(parseInt(btn.dataset.index), 1);
+        await saveModels(models);
+      });
+    });
+
+    // ── Drag-and-drop reordering ──────────────────────────
+    let dragSrcIndex = null;
+
+    tbody.querySelectorAll('tr').forEach(row => {
+      row.addEventListener('dragstart', e => {
+        dragSrcIndex = parseInt(row.dataset.index);
+        e.dataTransfer.effectAllowed = 'move';
+        row.style.opacity = '0.4';
+      });
+      row.addEventListener('dragend', () => { row.style.opacity = ''; });
+      row.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+      row.addEventListener('drop', async e => {
+        e.preventDefault();
+        const dropIndex = parseInt(row.dataset.index);
+        if (dragSrcIndex === null || dragSrcIndex === dropIndex) return;
+        const [moved] = models.splice(dragSrcIndex, 1);
+        models.splice(dropIndex, 0, moved);
+        dragSrcIndex = null;
         await saveModels(models);
       });
     });

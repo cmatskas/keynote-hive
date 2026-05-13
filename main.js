@@ -110,6 +110,25 @@ function getIconPath() {
   return iconPath;
 }
 
+function createSplashWindow() {
+  const splash = new BrowserWindow({
+    width: 600,
+    height: 400,
+    frame: false,
+    resizable: false,
+    center: true,
+    icon: getIconPath(),
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      preload: path.join(__dirname, 'preload.js')
+    }
+  });
+  splash.loadFile('src/pages/splash.html');
+  return splash;
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -130,7 +149,7 @@ app.whenReady().then(async () => {
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.transcribely.app');
   }
-  
+
   initializeCredentialsManager();
   initializeSettingsManager();
   initializeConversationManager();
@@ -138,10 +157,21 @@ app.whenReady().then(async () => {
   initializeSkillsManager();
   workHistoryManager = new WorkHistoryManager();
 
-  // Load skills and settings in parallel
-  const [, loadedSettings] = await Promise.all([
-    skillsManager.init().then(() => console.info(`Loaded ${skillsManager.getSkills().length} skills`)).catch(err => console.error('Error loading skills:', err)),
-    settingsManager.loadSettings().catch(err => { console.error('Error loading settings:', err); return settingsManager.getDefaultSettings(); }),
+  // Show splash immediately — auth check runs in parallel
+  const splashWindow = createSplashWindow();
+
+  // Track when splash signals it's rendered
+  let splashReady = false;
+  ipcMain.handleOnce('splash-ready', () => { splashReady = true; });
+
+  // Run all startup work in parallel while splash is visible
+  const [, loadedSettings, hasCredentials] = await Promise.all([
+    skillsManager.init()
+      .then(() => console.info(`Loaded ${skillsManager.getSkills().length} skills`))
+      .catch(err => console.error('Error loading skills:', err)),
+    settingsManager.loadSettings()
+      .catch(err => { console.error('Error loading settings:', err); return settingsManager.getDefaultSettings(); }),
+    credentialsManager.hasCredentials(),
   ]);
   currentSettings = loadedSettings;
 
@@ -151,15 +181,17 @@ app.whenReady().then(async () => {
     await settingsManager.saveSettings(currentSettings);
   }
 
-  // Check if credentials exist
-  const hasCredentials = await credentialsManager.hasCredentials();
-
+  // Validate credentials if they exist
+  let credentialsValid = false;
   if (hasCredentials) {
     try {
       currentCredentials = await credentialsManager.loadCredentials();
       initializeAWSClients(currentCredentials);
+      const validator = new AWSValidator(currentCredentials);
+      const result = await validator.quickValidate();
+      credentialsValid = result.valid;
     } catch (error) {
-      console.error('Error loading credentials:', error);
+      console.error('Error validating credentials:', error);
     }
   }
 
@@ -168,9 +200,34 @@ app.whenReady().then(async () => {
     currentJinaApiKey = await credentialsManager.loadJinaApiKey();
   } catch { /* no key yet */ }
 
-  // Always show main window — settings are in-page now
-  createWindow();
-  mainWindow.loadFile('src/pages/index.html');
+  // Ensure splash has been visible for at least 1.5s (animation needs time to render)
+  const MIN_SPLASH_MS = 1500;
+  const splashStart = splashWindow.webContents.getURL ? Date.now() : Date.now();
+  const elapsed = Date.now() - splashStart;
+  if (elapsed < MIN_SPLASH_MS) {
+    await new Promise(r => setTimeout(r, MIN_SPLASH_MS - elapsed));
+  }
+
+  // Route to correct page then close splash
+  if (!hasCredentials || !credentialsValid) {
+    mainWindow = new BrowserWindow({
+      width: 800,
+      height: 600,
+      center: true,
+      icon: getIconPath(),
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: false,
+        preload: path.join(__dirname, 'preload.js')
+      }
+    });
+    mainWindow.loadFile('src/pages/credentials.html');
+  } else {
+    createWindow();
+  }
+
+  splashWindow.close();
 
   // Application menu with Check for Updates
   const menuTemplate = [
@@ -194,13 +251,6 @@ app.whenReady().then(async () => {
     { role: 'windowMenu' },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
-
-  // If no credentials, tell renderer to show settings page
-  if (!hasCredentials) {
-    mainWindow.webContents.once('did-finish-load', () => {
-      mainWindow.webContents.send('show-settings');
-    });
-  }
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -423,13 +473,12 @@ ipcMain.handle('work-history-star', async (event, { id }) => {
 });
 
 ipcMain.handle('navigate-to-main', async () => {
-  // Close child windows without reloading the main window (preserves chat state)
-  const allWindows = BrowserWindow.getAllWindows();
-  allWindows.forEach(window => {
-    if (window !== mainWindow) {
-      window.close();
-    }
-  });
+  if (mainWindow) {
+    mainWindow.setSize(1200, 800);
+    mainWindow.center();
+    mainWindow.setResizable(true);
+    mainWindow.loadFile('src/pages/index.html');
+  }
 });
 
 // Settings management IPC handlers
@@ -1214,13 +1263,15 @@ print("\\n\\n".join(slides))
       { role: 'user', content: messageContent }
     ];
 
+    const inferenceConfig = { maxTokens: 4096 };
+    if (!model.includes('opus-4-7')) {
+      inferenceConfig.temperature = 0.7;
+    }
+
     const command = new ConverseStreamCommand({
       modelId: model,
       messages,
-      inferenceConfig: {
-        maxTokens: 4096,
-        temperature: 0.7
-      }
+      inferenceConfig
     });
 
     const response = await awsClients.bedrock.send(command, signal ? { abortSignal: signal } : {});
