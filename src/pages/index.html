@@ -2,7 +2,7 @@
 <html>
 
 <head>
-    <title>Transcribely</title>
+    <title>Hive</title>
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
@@ -38,6 +38,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Custom CSS -->
     <link rel="stylesheet" href="../styles/main.css">
+    <link rel="stylesheet" href="../styles/showflow.css">
     <!-- Bootstrap Icons -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" rel="stylesheet">
@@ -75,6 +76,9 @@
                     </li>
                     <li class="nav-item">
                         <a id="nav-analyze" class="nav-link" href="#">Chat</a>
+                    </li>
+                    <li class="nav-item">
+                        <a id="nav-showflow" class="nav-link" href="#">Showflow</a>
                     </li>
                 </ul>
                 <ul class="navbar-nav ms-auto">
@@ -690,7 +694,7 @@ Instructions for the agent go here.
                 <div id="settings-about" class="settings-tab-content" style="display:none;">
                     <div class="card mb-3">
                         <div class="card-body">
-                            <h6 class="mb-2">Transcribely</h6>
+                            <h6 class="mb-2">Hive</h6>
                             <p class="text-muted small mb-0" id="appVersionText">Version loading...</p>
                         </div>
                     </div>
@@ -747,6 +751,85 @@ Instructions for the agent go here.
     </div>
 
     <!-- Work Page (Agent) -->
+    <!-- ── Showflow Tab ─────────────────────────────────────────────────── -->
+    <div id="showflow-page" style="display:none; height:calc(100vh - 56px); overflow:hidden; flex-direction:column;">
+
+      <!-- Header bar -->
+      <div id="sf-header" class="sf-header">
+        <div class="sf-header-left">
+          <span class="sf-logo">🎬</span>
+          <span class="sf-logo-text">ShowFlow</span>
+          <div class="sf-divider"></div>
+          <span id="sf-show-name" class="sf-show-name" title="Click to rename">No show open</span>
+          <input id="sf-show-name-input" class="sf-show-name-input" style="display:none;" />
+        </div>
+        <div class="sf-header-right">
+          <div id="sf-duration-pill" class="sf-duration-pill" style="display:none;">
+            <span>⏱</span>
+            <span id="sf-duration-actual" class="sf-duration-actual">0m</span>
+            <span class="sf-duration-sep">/</span>
+            <span id="sf-duration-target" class="sf-duration-target" title="Click to set target">+ target</span>
+          </div>
+          <div id="sf-export-wrap" style="display:none; position:relative;">
+            <button class="btn btn-sm btn-outline-secondary" id="sf-export-btn">↑ Export ▾</button>
+            <div id="sf-export-menu" class="sf-export-menu" style="display:none;">
+              <button class="sf-export-item" id="sf-export-word">📄 Word (.docx)</button>
+              <button class="sf-export-item" id="sf-export-excel">📊 Excel (.xlsx)</button>
+            </div>
+          </div>
+          <button class="btn btn-sm btn-outline-secondary" id="sf-import-btn" style="display:none;">↓ Import</button>
+          <input type="file" id="sf-import-input" accept=".showflow,.json" style="display:none;" />
+          <button class="btn btn-sm btn-outline-secondary" id="sf-shows-btn" style="display:none;">← My Shows</button>
+          <button class="btn btn-sm btn-outline-primary" id="sf-save-btn" style="display:none;">Save</button>
+          <button class="btn btn-sm btn-primary" id="sf-new-btn">+ New Show</button>
+        </div>
+      </div>
+
+      <!-- Three-column body -->
+      <div id="sf-body" style="display:none; flex:1; overflow:hidden;">
+
+        <!-- Elements panel -->
+        <aside id="sf-elements-panel" class="sf-elements-panel">
+          <div class="sf-panel-label">Elements</div>
+          <div id="sf-elements-list" class="sf-elements-list"></div>
+          <button class="sf-add-type-btn" id="sf-add-type-btn">+ Add Type</button>
+        </aside>
+
+        <!-- Run of show -->
+        <main id="sf-run" class="sf-run">
+          <div id="sf-run-list" class="sf-run-list">
+            <div id="sf-run-empty" class="sf-run-empty">
+              <div style="font-size:40px;margin-bottom:12px;">🎬</div>
+              <div class="sf-run-empty-title">Your run of show is empty</div>
+              <div class="sf-run-empty-sub">Drag elements from the left panel to get started</div>
+            </div>
+          </div>
+        </main>
+
+        <!-- Parking lot -->
+        <aside id="sf-parking" class="sf-parking">
+          <div class="sf-panel-label"><i class="bi bi-archive me-1"></i>Parking Lot</div>
+          <div id="sf-parking-list" class="sf-parking-list"></div>
+          <div id="sf-parking-empty" class="sf-parking-empty">
+            <div style="font-size:28px;margin-bottom:4px;"><i class="bi bi-archive"></i></div>
+            Drop items here
+          </div>
+          <div class="sf-parking-hint">Drag into the run or use ↩ Return</div>
+        </aside>
+      </div>
+
+      <!-- Empty state (no show open) -->
+      <div id="sf-welcome" class="sf-welcome">
+        <div style="font-size:64px;">🎬</div>
+        <h1 class="sf-welcome-title">Welcome to ShowFlow</h1>
+        <p class="sf-welcome-sub">The run-of-show editor for keynotes, dance recitals, concerts, theater — anything with a schedule.</p>
+        <div class="sf-welcome-actions">
+          <button class="btn btn-outline-secondary btn-lg" id="sf-open-btn">Open Show</button>
+          <button class="btn btn-primary btn-lg" id="sf-create-btn">+ Create New Show</button>
+        </div>
+      </div>
+    </div>
+
     <div id="work-page" class="container-fluid py-0">
         <div class="work-layout">
             <!-- History Sidebar -->
@@ -958,6 +1041,7 @@ Instructions for the agent go here.
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="../../node_modules/sortablejs/Sortable.min.js"></script>
     <script src="../renderer/modalManager.js"></script>
     <script src="../renderer/themeManager.js"></script>
     <script src="../renderer/chatRenderer.js"></script>
@@ -966,6 +1050,9 @@ Instructions for the agent go here.
     <script src="../renderer/workTab.js"></script>
     <script src="../renderer/swarmTab.js"></script>
     <script src="../renderer/settingsTab.js"></script>
+    <script src="../renderer/showflowStore.js"></script>
+    <script src="../renderer/showflowExport.js"></script>
+    <script src="../renderer/showflowTab.js"></script>
 </body>
 
 </html>

@@ -100,9 +100,9 @@ jobs:
           TAG=${GITHUB_REF#refs/tags/}
           gh release create "$TAG" --title "$TAG" --notes "" 2>/dev/null || true
           gh release upload "$TAG" \
-            dist/temp/Transcribely-*-Setup-x64.exe \
-            dist/temp/Transcribely-*-Setup-x64.exe.blockmap \
-            dist/temp/Transcribely-*-Setup-arm64.exe \
-            dist/temp/Transcribely-*-Setup-arm64.exe.blockmap \
+            dist/temp/Hive-*-Setup-x64.exe \
+            dist/temp/Hive-*-Setup-x64.exe.blockmap \
+            dist/temp/Hive-*-Setup-arm64.exe \
+            dist/temp/Hive-*-Setup-arm64.exe.blockmap \
             dist/temp/latest.yml \
             --clobber

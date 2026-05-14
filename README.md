@@ -1,4 +1,4 @@
-# Transcribely
+# Hive
 
 An Electron desktop app that combines AWS Bedrock AI models with AWS Transcribe for intelligent media transcription, AI-powered content creation, and multi-agent collaborative pipelines.
 
@@ -21,15 +21,15 @@ Download: [Box folder](https://amazoncorporate.box.com/s/rwc0pbifx50uf7g2xi8mxan
 
 | Platform | File |
 |---|---|
-| macOS (Intel & Apple Silicon) | `Transcribely-2.8.0-universal.dmg` |
-| Windows x64 | `Transcribely-Setup-x64.exe` |
-| Windows ARM64 | `Transcribely-Setup-arm64.exe` |
+| macOS (Intel & Apple Silicon) | `Hive-2.9.0-universal.dmg` |
+| Windows x64 | `Hive-Setup-x64.exe` |
+| Windows ARM64 | `Hive-Setup-arm64.exe` |
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/cmatskas/transcribly-xplat.git
-cd transcribly-xplat
+git clone https://github.com/cmatskas/hive-xplat.git
+cd hive-xplat
 npm install
 npm start          # development
 npm run build      # production (all platforms)
@@ -82,7 +82,7 @@ Your personal AI agent with a persistent sandbox. Attach files, ask for document
 **How it works:**
 1. Type a prompt or attach files (Word, PDF, Excel, PowerPoint, images)
 2. The agent activates relevant skills, writes and executes Python code in a secure sandbox, browses the web, and generates images
-3. Output files (`.docx`, `.pptx`, `.xlsx`) are saved to `~/Documents/Transcribely/`
+3. Output files (`.docx`, `.pptx`, `.xlsx`) are saved to `~/Documents/Hive/`
 
 **Key capabilities:**
 - Files persist across messages — attach a document in message 1, ask for edits in message 5
@@ -214,7 +214,7 @@ MIT — see [LICENSE](LICENSE)
 ## Support
 
 - 📧 aws-tech-keynotes@amazon.com
-- 🐛 [GitHub Issues](https://github.com/cmatskas/transcribly-xplat/issues)
+- 🐛 [GitHub Issues](https://github.com/cmatskas/hive-xplat/issues)
 
 ---
 

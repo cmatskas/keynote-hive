@@ -1,5 +1,14 @@
 # Release Notes
 
+## v2.9.0
+
+### Rebranding
+- **Renamed to Hive** — app name, icons, window titles, and all branding updated from Transcribely to Hive
+- **New app icon** — honeycomb icon across all platforms (macOS icns, Windows ico, all PNG sizes)
+
+### New Features
+- **Showflow tab** — run-of-show editor for keynotes, concerts, plays, and any live event. Drag elements from the palette, reorder with drag handles, park items for later, export to Word/Excel. Supports multiple show types with chapter marks and duration tracking.
+
 ## v2.8.0
 
 ### New Features

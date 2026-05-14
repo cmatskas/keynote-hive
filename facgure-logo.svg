@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <!-- FACGURE text - white, wide letter-spacing, geometric sans-serif -->
+  <text x="10" y="40" font-family="Montserrat, 'Segoe UI', Arial, sans-serif" font-size="34" font-weight="400" letter-spacing="5" fill="white">FACGURE</text>
+
+  <!-- Tagline -->
+  <text x="12" y="62" font-family="Montserrat, 'Segoe UI', Arial, sans-serif" font-size="10.5" font-style="italic" font-weight="300" fill="white" opacity="0.8">Authentic Digital Solution Companion</text>
+</svg>
