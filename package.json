@@ -1,10 +1,10 @@
 {
-  "name": "Transcribely",
-  "version": "2.8.0",
+  "name": "Hive",
+  "version": "2.9.0",
   "description": "Electron app for Bedrock models and media transcription",
   "main": "main.js",
-  "author": "Transcribely Team",
-  "homepage": "https://transcribely.app",
+  "author": "Hive Team",
+  "homepage": "https://hive.app",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
@@ -48,6 +48,7 @@
     "electron-updater": "^6.8.3",
     "marked": "^17.0.4",
     "playwright-core": "^1.58.2",
+    "sortablejs": "^1.15.7",
     "toastify-js": "^1.12.0",
     "zod": "^4.3.6"
   },
@@ -88,8 +89,8 @@
     "testTimeout": 30000
   },
   "build": {
-    "appId": "com.transcribely.app",
-    "productName": "Transcribely",
+    "appId": "com.hive.app",
+    "productName": "Hive",
     "directories": {
       "output": "dist/temp"
     },

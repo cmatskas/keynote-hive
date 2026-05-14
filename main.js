@@ -147,7 +147,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   if (process.platform === 'win32') {
-    app.setAppUserModelId('com.transcribely.app');
+    app.setAppUserModelId('com.hive.app');
   }
 
   initializeCredentialsManager();
@@ -479,6 +479,88 @@ ipcMain.handle('navigate-to-main', async () => {
     mainWindow.setResizable(true);
     mainWindow.loadFile('src/pages/index.html');
   }
+});
+
+// ── Showflow IPC handlers ─────────────────────────────────────────────────────
+
+const SHOWFLOW_RECENT_PATH = path.join(app.getPath('userData'), 'showflow-recent.json');
+const SHOWFLOW_MAX_RECENT = 10;
+
+function loadShowflowRecent() {
+  try {
+    const fs = require('fs');
+    if (fs.existsSync(SHOWFLOW_RECENT_PATH)) return JSON.parse(fs.readFileSync(SHOWFLOW_RECENT_PATH, 'utf8'));
+  } catch {}
+  return [];
+}
+
+function saveShowflowRecent(list) {
+  try { require('fs').writeFileSync(SHOWFLOW_RECENT_PATH, JSON.stringify(list), 'utf8'); } catch {}
+}
+
+function addToShowflowRecent(filePath, showName) {
+  let list = loadShowflowRecent().filter(r => r.filePath !== filePath);
+  list.unshift({ filePath, name: showName, openedAt: new Date().toISOString() });
+  if (list.length > SHOWFLOW_MAX_RECENT) list = list.slice(0, SHOWFLOW_MAX_RECENT);
+  saveShowflowRecent(list);
+}
+
+ipcMain.handle('show:save', async (event, { filePath, show }) => {
+  try {
+    require('fs').writeFileSync(filePath, JSON.stringify(show, null, 2), 'utf8');
+    addToShowflowRecent(filePath, show.name);
+    return { ok: true, filePath };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('show:saveAs', async (event, { show }) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Show',
+    defaultPath: `${show.name || 'Untitled Show'}.showflow`,
+    filters: [{ name: 'ShowFlow Files', extensions: ['showflow'] }, { name: 'All Files', extensions: ['*'] }],
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+  try {
+    require('fs').writeFileSync(result.filePath, JSON.stringify(show, null, 2), 'utf8');
+    addToShowflowRecent(result.filePath, show.name);
+    return { ok: true, filePath: result.filePath };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('show:open', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Open Show',
+    filters: [{ name: 'ShowFlow Files', extensions: ['showflow'] }, { name: 'All Files', extensions: ['*'] }],
+    properties: ['openFile'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return { ok: false, canceled: true };
+  const filePath = result.filePaths[0];
+  try {
+    const show = JSON.parse(require('fs').readFileSync(filePath, 'utf8'));
+    addToShowflowRecent(filePath, show.name);
+    return { ok: true, filePath, show };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('show:openPath', async (event, filePath) => {
+  try {
+    const show = JSON.parse(require('fs').readFileSync(filePath, 'utf8'));
+    addToShowflowRecent(filePath, show.name);
+    return { ok: true, filePath, show };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('show:listRecent', async () => {
+  const fs = require('fs');
+  const list = loadShowflowRecent();
+  const valid = list.filter(r => fs.existsSync(r.filePath));
+  if (valid.length !== list.length) saveShowflowRecent(valid);
+  return valid;
+});
+
+ipcMain.handle('show:clearRecent', async () => {
+  saveShowflowRecent([]);
+  return { ok: true };
 });
 
 // Settings management IPC handlers

@@ -1,0 +1,313 @@
+/* showflow.css — layout + card variants only. Everything else uses Bootstrap. */
+
+/* ── Page layout ─────────────────────────────────────────────────────────── */
+
+#showflow-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 56px);
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+/* ── Header bar ──────────────────────────────────────────────────────────── */
+
+.sf-header {
+  height: 52px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 10px;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.sf-header-left  { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.sf-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+.sf-logo      { font-size: 20px; }
+.sf-logo-text { font-weight: 800; font-size: 16px; color: var(--text-primary); letter-spacing: -0.3px; white-space: nowrap; }
+.sf-divider   { width: 1px; height: 18px; background: var(--border-primary); flex-shrink: 0; }
+
+.sf-show-name {
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+  cursor: pointer; padding: 3px 6px; border-radius: 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px;
+  transition: background 0.1s;
+}
+.sf-show-name:hover { background: var(--bg-secondary); }
+
+.sf-show-name-input {
+  font-size: 14px; font-weight: 600;
+  border: 1.5px solid var(--accent-primary); border-radius: 6px;
+  padding: 3px 8px; outline: none; background: var(--bg-primary);
+  color: var(--text-primary); min-width: 200px;
+}
+
+.sf-duration-pill {
+  display: flex; align-items: center; gap: 5px;
+  background: var(--bg-secondary); border-radius: 20px;
+  padding: 4px 10px; font-size: 13px; border: 1px solid var(--border-primary);
+  transition: all 0.2s;
+}
+.sf-duration-pill.over  { background: #fef2f2; border-color: #fecaca; }
+.sf-duration-pill.under { background: #f0fdf4; border-color: #bbf7d0; }
+.sf-duration-actual { font-weight: 700; color: var(--text-primary); }
+.sf-duration-actual.over  { color: var(--error); }
+.sf-duration-actual.under { color: var(--success); }
+.sf-duration-sep    { color: var(--text-muted); font-size: 11px; }
+.sf-duration-target { font-size: 12px; color: var(--text-secondary); cursor: pointer; border-radius: 4px; padding: 1px 4px; }
+.sf-duration-target:hover { background: var(--bg-tertiary); }
+.sf-duration-target.unset { border: 1px dashed var(--border-secondary); color: var(--text-muted); }
+
+.sf-export-menu {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  background: var(--bg-primary); border: 1px solid var(--border-primary);
+  border-radius: 10px; box-shadow: var(--shadow-lg);
+  z-index: 200; overflow: hidden; min-width: 160px;
+}
+.sf-export-item {
+  display: block; width: 100%; padding: 10px 16px;
+  border: none; background: transparent; text-align: left;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  color: var(--text-primary); border-bottom: 1px solid var(--bg-secondary);
+  transition: background 0.1s;
+}
+.sf-export-item:last-child { border-bottom: none; }
+.sf-export-item:hover { background: var(--bg-secondary); }
+
+/* ── Three-column body ───────────────────────────────────────────────────── */
+
+#sf-body {
+  flex: 1; display: flex; overflow: hidden;
+}
+
+.sf-elements-panel {
+  width: 200px; min-width: 200px; flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-primary);
+  padding: 14px 10px;
+  display: flex; flex-direction: column; gap: 12px;
+  overflow-y: auto;
+}
+
+.sf-run {
+  flex: 1; padding: 14px 16px;
+  overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+  background: var(--bg-tertiary);
+  transition: background 0.15s;
+}
+.sf-run.drag-over { background: var(--bg-tertiary); outline: 2px dashed var(--accent-primary); outline-offset: -4px; }
+.sf-parking.drag-over { background: var(--bg-tertiary); outline: 2px dashed var(--warning); outline-offset: -4px; }
+
+.sf-parking {
+  width: 260px; min-width: 260px; flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-primary);
+  padding: 14px 10px;
+  display: flex; flex-direction: column; gap: 8px;
+  overflow-y: auto;
+}
+
+.sf-panel-label {
+  font-size: 11px; font-weight: 700; color: var(--text-muted);
+  letter-spacing: 0.5px; text-transform: uppercase; padding: 0 2px;
+}
+
+.sf-elements-list, .sf-run-list, .sf-parking-list {
+  display: flex; flex-direction: column; gap: 6px;
+  min-height: 80px;
+}
+
+.sf-run-list {
+  flex: 1; /* fill full height of sf-run */
+}
+
+/* ── Element type palette card ───────────────────────────────────────────── */
+
+.sf-element-card {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 10px; border-radius: 10px;
+  background: var(--bg-primary); border: 1.5px solid var(--border-primary);
+  cursor: grab; user-select: none;
+  transition: all 0.15s; box-shadow: var(--shadow-sm);
+}
+.sf-element-card:hover { border-color: var(--accent-primary); box-shadow: var(--shadow-md); }
+.sf-element-card.sortable-drag { opacity: 0.4; }
+
+.sf-element-icon {
+  width: 30px; height: 30px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; flex-shrink: 0;
+}
+.sf-element-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+
+.sf-add-type-btn {
+  display: flex; align-items: center; justify-content: center;
+  padding: 9px; border-radius: 10px;
+  border: 1.5px dashed var(--border-secondary); background: transparent;
+  font-size: 13px; font-weight: 600; color: var(--text-muted);
+  cursor: pointer; transition: all 0.15s; margin-top: auto;
+}
+.sf-add-type-btn:hover { border-color: var(--accent-primary); color: var(--accent-primary); background: var(--bg-accent); }
+
+/* ── Run item card ───────────────────────────────────────────────────────── */
+
+.sf-item-card {
+  display: flex; align-items: stretch;
+  background: var(--bg-primary); border-radius: 10px;
+  border: 1px solid var(--border-primary);
+  overflow: hidden; box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s;
+}
+.sf-item-card:hover { box-shadow: var(--shadow-lg); }
+.sf-item-card.sortable-ghost { opacity: 0.3; }
+.sf-item-card.in-chapter { margin-left: 16px; border-left-width: 3px; border-left-color: #f97316; }
+
+/* ── Chapter mark card ───────────────────────────────────────────────────── */
+
+.sf-chapter-card {
+  display: flex; align-items: stretch;
+  background: #fff7ed; border-radius: 10px;
+  border: 1px solid #fed7aa;
+  overflow: hidden; box-shadow: var(--shadow-sm);
+  margin-top: 6px;
+  transition: box-shadow 0.15s;
+}
+.sf-chapter-card:hover { box-shadow: var(--shadow-lg); }
+.sf-chapter-card.sortable-ghost { opacity: 0.3; }
+
+[data-theme="dark"] .sf-chapter-card {
+  background: #431407; border-color: #7c2d12;
+}
+
+/* ── Drag handle (shared) ────────────────────────────────────────────────── */
+
+.sf-drag-handle {
+  width: 26px; cursor: grab; display: flex; align-items: center;
+  justify-content: center; flex-shrink: 0; font-size: 13px;
+  color: var(--text-muted); user-select: none;
+}
+.sf-drag-handle:active { cursor: grabbing; }
+
+/* ── Card content area ───────────────────────────────────────────────────── */
+
+.sf-card-body { flex: 1; padding: 9px 10px; min-width: 0; }
+.sf-card-title-row { display: flex; align-items: center; gap: 6px; }
+
+.sf-title-input {
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+  border: none; outline: none; background: transparent;
+  flex: 1; min-width: 0; border-radius: 5px; padding: 2px 5px;
+  transition: background 0.12s; font-family: inherit;
+}
+.sf-title-input:hover  { background: var(--bg-secondary); }
+.sf-title-input:focus  { background: var(--bg-accent); outline: 2px solid var(--accent-primary); }
+
+.sf-duration-input {
+  width: 42px; text-align: center; font-size: 13px; font-weight: 600;
+  color: var(--text-primary); background: var(--bg-secondary);
+  border: 1.5px solid transparent; border-radius: 6px;
+  padding: 2px 3px; outline: none; font-family: inherit;
+  appearance: textfield; -moz-appearance: textfield;
+}
+.sf-duration-input:focus { background: var(--bg-accent); border-color: var(--accent-primary); }
+.sf-duration-input::-webkit-inner-spin-button,
+.sf-duration-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+
+.sf-duration-label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+
+/* ── Card action buttons (always visible, inline in title row) ───────────────── */
+
+.sf-action-btn {
+  width: 24px; height: 24px; border-radius: 5px;
+  border: none; background: transparent; cursor: pointer;
+  font-size: 11px; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-muted); transition: background 0.1s; flex-shrink: 0;
+}
+.sf-action-btn:hover { background: var(--border-primary); }
+.sf-action-btn.danger:hover { background: #fee2e2; color: var(--error); }
+
+/* ── Expanded card fields ────────────────────────────────────────────────── */
+
+.sf-expanded-fields {
+  margin-top: 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.sf-field-label {
+  font-size: 10px; font-weight: 700; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px;
+}
+
+/* ── Parking lot card ────────────────────────────────────────────────────── */
+
+.sf-parked-card {
+  background: var(--bg-primary); border-radius: 10px;
+  border: 1px solid var(--border-primary); overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.sf-parked-card.sortable-ghost { opacity: 0.3; }
+
+.sf-parked-actions {
+  display: none; border-top: 1px solid var(--bg-secondary);
+}
+.sf-parked-card:hover .sf-parked-actions { display: flex; }
+
+.sf-return-btn {
+  flex: 1; padding: 5px; border: none; background: var(--bg-accent);
+  font-size: 12px; cursor: pointer; color: var(--accent-primary); font-weight: 600;
+}
+.sf-delete-btn {
+  padding: 5px 8px; border: none; border-left: 1px solid var(--bg-secondary);
+  background: #fff5f5; font-size: 12px; cursor: pointer; color: var(--error);
+}
+[data-theme="dark"] .sf-delete-btn { background: #2d1515; }
+
+/* ── Empty states ────────────────────────────────────────────────────────── */
+
+.sf-run-empty {
+  display: none; flex-direction: column;
+  align-items: center; justify-content: center;
+  color: var(--text-muted); text-align: center; padding: 40px;
+  border: 2px dashed var(--border-secondary); border-radius: 14px;
+  margin-top: 10px; flex: 1; min-height: 200px;
+  pointer-events: none; /* don't block drops */
+}
+.sf-run-empty.visible { display: flex; }
+.sf-run-empty-title { font-size: 15px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
+.sf-run-empty-sub   { font-size: 13px; color: var(--text-muted); }
+
+.sf-parking-empty {
+  display: none; padding: 20px 8px; text-align: center;
+  border: 2px dashed var(--border-secondary); border-radius: 10px;
+  color: var(--text-muted); font-size: 12px;
+}
+.sf-parking-empty.visible { display: block; }
+.sf-parking-empty.drag-over { border-color: #f97316; color: #f97316; }
+
+.sf-parking-hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; padding: 0 2px; margin-top: auto; }
+
+/* ── Welcome screen ──────────────────────────────────────────────────────── */
+
+.sf-welcome {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 14px; padding: 40px; text-align: center;
+}
+.sf-welcome-title { font-size: 26px; font-weight: 700; color: var(--text-primary); margin: 0; }
+.sf-welcome-sub   { font-size: 15px; color: var(--text-secondary); max-width: 400px; margin: 0; }
+.sf-welcome-actions { display: flex; gap: 12px; margin-top: 6px; }
+
+/* ── SortableJS drop indicator ───────────────────────────────────────────── */
+
+.sf-run-list .sortable-ghost,
+.sf-parking-list .sortable-ghost { opacity: 0.25; }
+
+/* Blue line drop indicator via a pseudo-element on the ghost placeholder */
+.sf-drop-indicator {
+  height: 3px; border-radius: 2px;
+  background: var(--accent-primary);
+  margin: -4px 0; position: relative; z-index: 10;
+  box-shadow: 0 0 6px rgba(59,130,246,0.5);
+}

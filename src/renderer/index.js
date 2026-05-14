@@ -123,13 +123,17 @@ if (typeof window !== 'undefined') {
     });
 }
 
-const ALL_PAGES = ['work', 'swarm', 'transcribe', 'analyze', 'settings'];
+const ALL_PAGES = ['work', 'swarm', 'transcribe', 'analyze', 'settings', 'showflow'];
 
 function showPage(name) {
     ALL_PAGES.forEach(p => {
         const page = document.getElementById(`${p}-page`);
         const nav = document.getElementById(`nav-${p}`);
-        if (page) page.style.display = p === name ? (p === 'work' ? '' : 'block') : 'none';
+        if (page) {
+            const flexPages = ['showflow'];
+            const display = p === name ? (p === 'work' ? '' : flexPages.includes(p) ? 'flex' : 'block') : 'none';
+            page.style.display = display;
+        }
         if (nav) nav.classList.toggle('active', p === name);
     });
 }
@@ -193,6 +197,17 @@ document.getElementById('nav-transcribe')?.addEventListener('click', showTranscr
 document.getElementById('nav-work')?.addEventListener('click', showWorkPage);
 document.getElementById('nav-swarm')?.addEventListener('click', showSwarmPage);
 document.getElementById('nav-settings')?.addEventListener('click', showSettingsPage);
+document.getElementById('nav-showflow')?.addEventListener('click', () => {
+    showPage('showflow');
+    if (!window._showflowInited) {
+        window._showflowInited = true;
+        if (window.ShowflowTab && typeof window.ShowflowTab.init === 'function') {
+            window.ShowflowTab.init();
+        } else {
+            alert('ShowflowTab not found! window.ShowflowTab = ' + JSON.stringify(window.ShowflowTab));
+        }
+    }
+});
 
 templateSelect.addEventListener('change', () => {
     const selectedOption = templateSelect.options[templateSelect.selectedIndex];

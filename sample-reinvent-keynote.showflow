@@ -1,0 +1,36 @@
+{
+  "id": "sample-reinvent-2026",
+  "name": "AWS re:Invent 2026 Keynote",
+  "showType": "keynote",
+  "performerLabel": "Speaker",
+  "chapterLabel": "Section",
+  "estimatedDurationSeconds": 7200,
+  "createdAt": "2026-05-13T00:00:00.000Z",
+  "updatedAt": "2026-05-13T00:00:00.000Z",
+  "elementTypes": [
+    { "id": "et-sys-chapter",  "name": "Chapter Mark",  "icon": "📍", "color": "#8E8E93", "isChapterMark": true,  "isSystem": true, "customFieldDefs": [] },
+    { "id": "et-presentation", "name": "Presentation",  "icon": "📊", "color": "#5B8DEF", "isChapterMark": false, "customFieldDefs": [] },
+    { "id": "et-demo",         "name": "Demo",          "icon": "💻", "color": "#7C6AFA", "isChapterMark": false, "customFieldDefs": [] },
+    { "id": "et-video",        "name": "Video",         "icon": "🎬", "color": "#F06292", "isChapterMark": false, "customFieldDefs": [] },
+    { "id": "et-fireside",     "name": "Fireside",      "icon": "🎤", "color": "#4DB6AC", "isChapterMark": false, "customFieldDefs": [] }
+  ],
+  "items": [
+    { "id": "i-01", "elementTypeId": "et-sys-chapter",  "title": "Opening",             "durationSeconds": 0,    "estimatedDurationSeconds": 1800, "performer": "", "notes": "House lights down, intro video rolls", "customFields": [], "position": 0, "inParkingLot": false, "isChapterMark": true },
+    { "id": "i-02", "elementTypeId": "et-video",        "title": "Intro Sizzle Reel",   "durationSeconds": 180,  "performer": "",          "notes": "3-min hype video", "customFields": [], "position": 1, "inParkingLot": false, "isChapterMark": false },
+    { "id": "i-03", "elementTypeId": "et-presentation", "title": "CEO Welcome",         "durationSeconds": 900,  "performer": "Andy Jassy","notes": "State of AWS, key themes for 2026", "customFields": [], "position": 2, "inParkingLot": false, "isChapterMark": false },
+    { "id": "i-04", "elementTypeId": "et-presentation", "title": "AI/ML Vision",        "durationSeconds": 600,  "performer": "Swami S",   "notes": "Bedrock roadmap, new foundation models", "customFields": [], "position": 3, "inParkingLot": false, "isChapterMark": false },
+
+    { "id": "i-05", "elementTypeId": "et-sys-chapter",  "title": "Product Launches",    "durationSeconds": 0,    "estimatedDurationSeconds": 2400, "performer": "", "notes": "", "customFields": [], "position": 4, "inParkingLot": false, "isChapterMark": true },
+    { "id": "i-06", "elementTypeId": "et-presentation", "title": "AgentCore Deep Dive", "durationSeconds": 720,  "performer": "Vasi P",    "notes": "New AgentCore features", "customFields": [], "position": 5, "inParkingLot": false, "isChapterMark": false },
+    { "id": "i-07", "elementTypeId": "et-demo",         "title": "AgentCore Live Demo", "durationSeconds": 480,  "performer": "Vasi P",    "notes": "Live coding demo — have backup ready", "customFields": [], "position": 6, "inParkingLot": false, "isChapterMark": false },
+    { "id": "i-08", "elementTypeId": "et-presentation", "title": "S3 Express Zones",    "durationSeconds": 600,  "performer": "Mai-Lan T", "notes": "", "customFields": [], "position": 7, "inParkingLot": false, "isChapterMark": false },
+    { "id": "i-09", "elementTypeId": "et-fireside",     "title": "Customer Fireside",   "durationSeconds": 900,  "performer": "TBD",       "notes": "Goldman Sachs CTO — confirm 2 weeks out", "customFields": [], "position": 8, "inParkingLot": false, "isChapterMark": false },
+
+    { "id": "i-10", "elementTypeId": "et-sys-chapter",  "title": "Closing",             "durationSeconds": 0,    "estimatedDurationSeconds": 900, "performer": "", "notes": "", "customFields": [], "position": 9, "inParkingLot": false, "isChapterMark": true },
+    { "id": "i-11", "elementTypeId": "et-video",        "title": "Customer Montage",    "durationSeconds": 240,  "performer": "",          "notes": "4-min customer story reel", "customFields": [], "position": 10, "inParkingLot": false, "isChapterMark": false },
+    { "id": "i-12", "elementTypeId": "et-presentation", "title": "Closing Remarks",     "durationSeconds": 480,  "performer": "Andy Jassy","notes": "Call to action, re:Invent wrap-up", "customFields": [], "position": 11, "inParkingLot": false, "isChapterMark": false },
+
+    { "id": "i-p1", "elementTypeId": "et-presentation", "title": "Partner Spotlight",   "durationSeconds": 600,  "performer": "TBD",       "notes": "Slot not confirmed — parked for now", "customFields": [], "position": 0, "inParkingLot": true, "isChapterMark": false },
+    { "id": "i-p2", "elementTypeId": "et-demo",         "title": "Graviton4 Benchmark", "durationSeconds": 300,  "performer": "David B",   "notes": "Cut if running long", "customFields": [], "position": 1, "inParkingLot": true, "isChapterMark": false }
+  ]
+}
