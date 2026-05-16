@@ -1,6 +1,6 @@
 {
   "name": "Hive",
-  "version": "2.9.0",
+  "version": "2.10.0",
   "description": "Electron app for Bedrock models and media transcription",
   "main": "main.js",
   "author": "Hive Team",
@@ -44,12 +44,15 @@
     "@strands-agents/sdk": "^1.0.0-rc.1",
     "bootstrap": "^5.3.0",
     "bootstrap-icons": "^1.11.1",
+    "docx": "^9.6.1",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.8.3",
+    "jszip": "^3.10.1",
     "marked": "^17.0.4",
     "playwright-core": "^1.58.2",
     "sortablejs": "^1.15.7",
     "toastify-js": "^1.12.0",
+    "xlsx": "^0.18.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {

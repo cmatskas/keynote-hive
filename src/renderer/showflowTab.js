@@ -19,10 +19,34 @@ let _lastEtypes = '';
 
 function init() {
   bindHeaderButtons();
-  bindImportExport();
+  // Wire import file input
+  $('sf-import-input')?.addEventListener('change', async e => {
+    const file = e.target.files?.[0]; if (!file) return;
+    try {
+      const show = JSON.parse(await file.text());
+      ShowflowStore.setShow(show);
+    } catch (err) { alert('Import failed: ' + err.message); }
+    finally { e.target.value = ''; }
+  });
+
+  // Wire PPTX import
+  $('sf-import-pptx-btn')?.addEventListener('click', () => {
+    $('sf-overflow-menu').style.display = 'none';
+    $('sf-import-pptx-input').click();
+  });
+  $('sf-import-pptx-input')?.addEventListener('change', async e => {
+    const file = e.target.files?.[0]; if (!file) return;
+    try {
+      window.electronAPI.showToast('Parsing PowerPoint…', 'info');
+      const show = await window.ShowflowExport.importFromPptx(file);
+      ShowflowStore.setShow(show);
+      window.electronAPI.showToast(`Imported ${show.items.length} slides from ${file.name}`, 'success');
+    } catch (err) { alert('PowerPoint import failed: ' + err.message); }
+    finally { e.target.value = ''; }
+  });
 
   // Subscribe: only re-render what changed
-  ShowflowStore.subscribe((state, structural) => {
+  ShowflowStore.subscribe((state, structural, changeType) => {
     const show = state.show;
     const switched = show?.id !== _lastShowId;
     const needsSortable = !sortRun || switched;
@@ -33,24 +57,49 @@ function init() {
 
     renderHeader(show);
 
-    // Skip DOM re-render for field-only updates (title, notes, duration, performer)
-    // to avoid stealing focus from active inputs
-    if (!structural) return;
+    if (!structural) {
+      if (changeType === 'expand') {
+        // Expand/collapse: re-render run list, preserve scroll
+        const runEl = $('sf-run');
+        const scrollTop = runEl ? runEl.scrollTop : 0;
+        renderRunOfShow(show);
+        if (runEl) requestAnimationFrame(() => { runEl.scrollTop = scrollTop; });
+      } else if (changeType === 'duration') {
+        // Duration changed: update chapter mark badges in-place
+        updateChapterBadges(show);
+      }
+      // Field edits (title/notes/performer): skip re-render to preserve focus
+      return;
+    }
 
     const etKey = JSON.stringify(show.elementTypes.map(t => t.id));
     const etChanged = etKey !== _lastEtypes;
     _lastEtypes = etKey;
+
+    // Preserve scroll position for in-place changes (delete, park, reorder)
+    // but not when switching shows or first load
+    const runEl = $('sf-run');
+    const scrollTop = (!switched && !needsSortable && runEl) ? runEl.scrollTop : 0;
 
     if (needsSortable) {
       renderElementsPanel(show);
       renderRunOfShow(show);
       renderParkingLot(show);
       initSortable();
+      const orphans = ShowflowStore.getOrphanCount();
+      if (orphans > 0) {
+        window.electronAPI.showToast(
+          `${orphans} item${orphans > 1 ? 's have' : ' has'} an unknown element type and will appear with a fallback style.`,
+          'warning'
+        );
+      }
     } else {
       if (etChanged) renderElementsPanel(show);
       renderRunOfShow(show);
       renderParkingLot(show);
     }
+
+    if (scrollTop > 0 && runEl) requestAnimationFrame(() => { runEl.scrollTop = scrollTop; });
   });
 
   // Initial render
@@ -72,30 +121,35 @@ function updateVisibility(show) {
   const has = !!show;
   $('sf-welcome').style.display = has ? 'none' : 'flex';
   $('sf-body').style.display    = has ? 'flex' : 'none';
-  ['sf-duration-pill','sf-export-wrap','sf-import-btn','sf-shows-btn','sf-save-btn'].forEach(id => {
+  ['sf-duration-pill','sf-overflow-wrap','sf-save-btn'].forEach(id => {
     const el = $(id); if (el) el.style.display = has ? '' : 'none';
   });
-  if (!has) $('sf-show-name').textContent = 'No show open';
+  if (!has) $('sf-show-name').style.display = 'none';
 }
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
 function renderHeader(show) {
-  $('sf-show-name').textContent = show.name;
+  const nameEl = $('sf-show-name');
+  nameEl.textContent = show.name;
+  nameEl.style.display = '';
+
   const total = ShowflowStore.getTotalDuration();
   const est   = ShowflowStore.getTotalEstimatedDuration();
   const over  = est > 0 && total > est;
   const under = est > 0 && total < est;
-  const pill  = $('sf-duration-pill');
+  const pill     = $('sf-duration-pill');
   const actualEl = $('sf-duration-actual');
   const targetEl = $('sf-duration-target');
+
   actualEl.textContent = ShowflowStore.formatDuration(total);
   pill.classList.toggle('over', over);
   pill.classList.toggle('under', under);
   actualEl.classList.toggle('over', over);
   actualEl.classList.toggle('under', under);
+
   if (est > 0) {
-    targetEl.textContent = 'target ' + ShowflowStore.formatDuration(est);
+    targetEl.textContent = ShowflowStore.formatDuration(est);
     targetEl.classList.remove('unset');
   } else {
     targetEl.textContent = '+ target';
@@ -104,31 +158,68 @@ function renderHeader(show) {
 }
 
 function bindHeaderButtons() {
-  $('sf-show-name').addEventListener('click', () => {
-    const show = ShowflowStore.getShow(); if (!show) return;
-    const inp = $('sf-show-name-input');
-    inp.value = show.name;
-    $('sf-show-name').style.display = 'none';
-    inp.style.display = ''; inp.focus(); inp.select();
+  // Overflow menu toggle
+  $('sf-overflow-btn')?.addEventListener('click', e => {
+    e.stopPropagation();
+    const m = $('sf-overflow-menu');
+    m.style.display = m.style.display === 'none' ? '' : 'none';
   });
-  const commitName = () => {
-    const inp = $('sf-show-name-input');
-    const v = inp.value.trim(); if (v) ShowflowStore.updateShowName(v);
-    inp.style.display = 'none'; $('sf-show-name').style.display = '';
-  };
-  $('sf-show-name-input').addEventListener('blur', commitName);
-  $('sf-show-name-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') e.target.blur();
-    if (e.key === 'Escape') { e.target.style.display = 'none'; $('sf-show-name').style.display = ''; }
+  document.addEventListener('click', () => {
+    const m = $('sf-overflow-menu');
+    if (m) m.style.display = 'none';
   });
+
+  // Overflow menu items
+  $('sf-shows-btn')?.addEventListener('click', () => { $('sf-overflow-menu').style.display = 'none'; openShowManager(); });
+  $('sf-import-btn')?.addEventListener('click', () => { $('sf-overflow-menu').style.display = 'none'; $('sf-import-input').click(); });
+  $('sf-export-word')?.addEventListener('click', async () => {
+    $('sf-overflow-menu').style.display = 'none';
+    const show = ShowflowStore.getShow(); if (show) await window.ShowflowExport.exportToWord(show);
+  });
+  $('sf-export-excel')?.addEventListener('click', async () => {
+    $('sf-overflow-menu').style.display = 'none';
+    const show = ShowflowStore.getShow(); if (show) await window.ShowflowExport.exportToExcel(show);
+  });
+  $('sf-close-btn')?.addEventListener('click', () => {
+    $('sf-overflow-menu').style.display = 'none';
+    ShowflowStore.setShow(null);
+    ShowflowStore.setCurrentFilePath(null);
+  });
+
+  // Duration target inline edit
   $('sf-duration-target').addEventListener('click', () => {
     const show = ShowflowStore.getShow(); if (!show) return;
+    const targetEl = $('sf-duration-target');
+    const input    = $('sf-duration-target-input');
+    const label    = $('sf-duration-target-label');
     const cur = Math.round((show.estimatedDurationSeconds || 0) / 60);
-    const val = prompt('Target show duration (minutes):', cur || '');
-    if (val !== null) ShowflowStore.updateShowEstimate((parseInt(val) || 0) * 60);
+    input.value = cur || '';
+    targetEl.style.display = 'none';
+    input.style.display = '';
+    label.style.display = '';
+    input.focus(); input.select();
   });
+  const commitTarget = () => {
+    const input  = $('sf-duration-target-input');
+    const label  = $('sf-duration-target-label');
+    const target = $('sf-duration-target');
+    ShowflowStore.updateShowEstimate((parseInt(input.value) || 0) * 60);
+    input.style.display = 'none';
+    label.style.display = 'none';
+    target.style.display = '';
+  };
+  $('sf-duration-target-input').addEventListener('blur', commitTarget);
+  $('sf-duration-target-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') e.target.blur();
+    if (e.key === 'Escape') {
+      $('sf-duration-target-input').style.display = 'none';
+      $('sf-duration-target-label').style.display = 'none';
+      $('sf-duration-target').style.display = '';
+    }
+  });
+
+  // Primary buttons
   $('sf-new-btn').addEventListener('click', openNewShowModal);
-  $('sf-shows-btn')?.addEventListener('click', openShowManager);
   $('sf-save-btn')?.addEventListener('click', saveShowAs);
   $('sf-create-btn')?.addEventListener('click', openNewShowModal);
   $('sf-open-btn')?.addEventListener('click', openShowFile);
@@ -147,16 +238,7 @@ function initSortable() {
   if (sortRun)     { sortRun.destroy();     sortRun = null; }
   if (sortParking) { sortParking.destroy(); sortParking = null; }
 
-  // ── Palette: native drag + click ─────────────────────────────────────────
-  elList.querySelectorAll('.sf-element-card').forEach(card => {
-    card.setAttribute('draggable', 'true');
-    card.addEventListener('dragstart', e => {
-      e.dataTransfer.setData('sf-type', 'palette');
-      e.dataTransfer.setData('sf-et-id', card.dataset.elementTypeId);
-      e.dataTransfer.effectAllowed = 'copy';
-    });
-    card.addEventListener('click', () => ShowflowStore.addItem(card.dataset.elementTypeId));
-  });
+  // ── Palette: native drag + click — wired in wirePaletteEvents() after renderElementsPanel ──
 
   // ── Run list: drop target ─────────────────────────────────────────────────
   runEl.addEventListener('dragover', e => { e.preventDefault(); runEl.classList.add('drag-over'); });
@@ -164,8 +246,14 @@ function initSortable() {
   runEl.addEventListener('drop', e => {
     e.preventDefault(); runEl.classList.remove('drag-over');
     const type = e.dataTransfer.getData('sf-type');
-    if (type === 'palette') ShowflowStore.addItem(e.dataTransfer.getData('sf-et-id'));
-    else if (type === 'parked-item') ShowflowStore.moveFromParking(e.dataTransfer.getData('sf-item-id'));
+    if (type === 'palette') {
+      const etId = e.dataTransfer.getData('sf-et-id');
+      // Find which card the pointer is over to insert at that position
+      const afterPosition = getDropPosition(e.clientY);
+      ShowflowStore.addItem(etId, afterPosition);
+    } else if (type === 'parked-item') {
+      ShowflowStore.moveFromParking(e.dataTransfer.getData('sf-item-id'));
+    }
   });
 
   // ── Parking lot: drop target ──────────────────────────────────────────────
@@ -209,14 +297,100 @@ function renderElementsPanel(show) {
     <div class="sf-element-card" data-id="${et.id}" data-element-type-id="${et.id}">
       <div class="sf-element-icon" style="background:${et.color}22;border-left:3px solid ${et.color}">${et.icon}</div>
       <span class="sf-element-name">${esc(et.name)}</span>
+      <div class="sf-et-actions">
+        <button class="sf-et-btn sf-et-edit" data-id="${et.id}" title="Edit">✏️</button>
+        ${et.isSystem || et.isDefault || ShowflowStore.isDefaultElementType(et.id) ? '' : `<button class="sf-et-btn sf-et-delete" data-id="${et.id}" title="Delete">✕</button>`}
+      </div>
     </div>`).join('');
 
-  $('sf-add-type-btn').onclick = () => {
-    const name = prompt('Element type name:'); if (!name?.trim()) return;
-    const icon  = prompt('Icon (emoji):', '📋') || '📋';
-    const color = prompt('Colour (hex):', '#90CAF9') || '#90CAF9';
-    ShowflowStore.addElementType(name.trim(), icon, color);
-  };
+  $('sf-add-type-btn').onclick = () => openAddTypeModal();
+
+  // Wire edit/delete buttons
+  $('sf-elements-list').querySelectorAll('.sf-et-edit').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const et = show.elementTypes.find(t => t.id === btn.dataset.id);
+      if (et) openAddTypeModal(et);
+    });
+  });
+  $('sf-elements-list').querySelectorAll('.sf-et-delete').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      openDeleteTypeModal(btn.dataset.id, show);
+    });
+  });
+
+  wirePaletteEvents();
+}
+
+function wirePaletteEvents() {
+  $('sf-elements-list').querySelectorAll('.sf-element-card').forEach(card => {
+    let dragging = false;
+    card.setAttribute('draggable', 'true');
+    card.addEventListener('dragstart', e => {
+      dragging = true;
+      e.dataTransfer.setData('sf-type', 'palette');
+      e.dataTransfer.setData('sf-et-id', card.dataset.elementTypeId);
+      e.dataTransfer.effectAllowed = 'copy';
+    });
+    card.addEventListener('dragend', () => { setTimeout(() => { dragging = false; }, 0); });
+    card.addEventListener('click', () => { if (dragging) return; ShowflowStore.addItem(card.dataset.elementTypeId); });
+  });
+}
+
+// ── Drop position helper ──────────────────────────────────────────────────────
+
+function getDropPosition(clientY) {
+  // Find the card the pointer is over and return the position to insert after
+  const runList = $('sf-run-list');
+  if (!runList) return undefined;
+  const cards = Array.from(runList.querySelectorAll('[data-id]')).filter(el =>
+    el.classList.contains('sf-item-card') || el.classList.contains('sf-chapter-card')
+  );
+  if (cards.length === 0) return undefined;
+
+  // Find the card whose midpoint is just above the drop Y
+  let afterCard = null;
+  for (const card of cards) {
+    const rect = card.getBoundingClientRect();
+    if (clientY > rect.top + rect.height / 2) afterCard = card;
+    else break;
+  }
+
+  if (!afterCard) return undefined; // drop above all cards — insert at start (position 0 - 0.5)
+
+  const run = ShowflowStore.getRunItems();
+  const afterItem = run.find(i => i.id === afterCard.dataset.id);
+  return afterItem?.position;
+}
+
+// ── Targeted chapter badge update (on duration change, no full re-render) ─────
+
+function updateChapterBadges(show) {
+  const runList = $('sf-run-list');
+  if (!runList) return;
+  runList.querySelectorAll('.sf-chapter-card').forEach(card => {
+    const id = card.dataset.id;
+    const chapterDuration = ShowflowStore.getChapterDuration(id);
+    const item = show.items.find(i => i.id === id);
+    if (!item) return;
+    const est  = item.estimatedDurationSeconds || 0;
+    const over = est > 0 && chapterDuration > est;
+    let badge = card.querySelector('.sf-chapter-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'badge sf-chapter-badge';
+      const targetInput = card.querySelector('.sf-est-input');
+      if (targetInput) targetInput.parentNode.insertBefore(badge, targetInput);
+    }
+    if (chapterDuration > 0) {
+      badge.textContent = ShowflowStore.formatDuration(chapterDuration);
+      badge.className = `badge sf-chapter-badge ${over ? 'bg-danger' : 'bg-success'}`;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  });
 }
 
 // ── Run of show ───────────────────────────────────────────────────────────────
@@ -250,9 +424,25 @@ function renderRunOfShow(show) {
   wireListEvents(list);
 }
 
+// ── Card HTML helpers ─────────────────────────────────────────────────────────
+
+function secsSelect(id, totalSeconds, cls) {
+  const secs = totalSeconds % 60;
+  // Round to nearest 15
+  const snapped = [0, 15, 30, 45].reduce((prev, cur) => Math.abs(cur - secs) < Math.abs(prev - secs) ? cur : prev, 0);
+  return `<select class="${cls}" data-id="${id}" style="font-size:12px;border:1px solid var(--border-secondary);border-radius:5px;padding:1px 2px;background:var(--bg-primary);color:var(--text-primary)">
+    <option value="0"${snapped===0?' selected':''}>:00</option>
+    <option value="15"${snapped===15?' selected':''}>:15</option>
+    <option value="30"${snapped===30?' selected':''}>:30</option>
+    <option value="45"${snapped===45?' selected':''}>:45</option>
+  </select>`;
+}
+
 function itemCardHTML(item, et, expanded, inChapter, perfLabel) {
   const color = et?.color || '#8e8e93';
-  const mins  = Math.round(item.durationSeconds / 60);
+  const icon  = et?.icon  || '📋';
+  const typeName = et?.name || '⚠ Unknown Type';
+  const mins  = Math.floor(item.durationSeconds / 60);
   const listId = `perf-${item.id}`;
   const suggestions = ShowflowStore.getPerformerSuggestions().map(s => `<option value="${esc(s)}">`).join('');
   return `
@@ -260,9 +450,10 @@ function itemCardHTML(item, et, expanded, inChapter, perfLabel) {
     <div class="sf-drag-handle" style="background:${color}18">⠿</div>
     <div class="sf-card-body">
       <div class="sf-card-title-row">
-        <span style="font-size:15px;flex-shrink:0">${et?.icon || '📋'}</span>
+        <span style="font-size:15px;flex-shrink:0">${icon}</span>
         <input class="sf-title-input" data-id="${item.id}" value="${esc(item.title)}" placeholder="Untitled" />
         <input class="sf-duration-input" type="number" min="0" data-id="${item.id}" value="${mins}" />
+        ${secsSelect(item.id, item.durationSeconds, 'sf-secs-select')}
         <span class="sf-duration-label">min</span>
         <button class="sf-action-btn" data-action="expand" data-id="${item.id}" title="${expanded ? 'Collapse' : 'Expand'}">${expanded ? '▲' : '▼'}</button>
         <button class="sf-action-btn" data-action="park"   data-id="${item.id}" title="Move to parking lot"><i class="bi bi-archive"></i></button>
@@ -286,6 +477,7 @@ function itemCardHTML(item, et, expanded, inChapter, perfLabel) {
 function chapterCardHTML(item, expanded, chapterDuration) {
   const est  = item.estimatedDurationSeconds || 0;
   const over = est > 0 && chapterDuration > est;
+  const estMins = Math.floor(est / 60);
   return `
   <div class="sf-chapter-card" data-id="${item.id}">
     <div class="sf-drag-handle" style="background:#fff3e0;color:#f97316">⠿</div>
@@ -295,10 +487,11 @@ function chapterCardHTML(item, expanded, chapterDuration) {
         <input class="sf-title-input" data-id="${item.id}" value="${esc(item.title)}" placeholder="Chapter name"
                style="font-weight:700;color:#c2410c" />
         <div class="d-flex align-items-center gap-1 flex-shrink-0">
-          ${chapterDuration > 0 ? `<span class="badge ${over ? 'bg-danger' : 'bg-success'}">${ShowflowStore.formatDuration(chapterDuration)}</span>` : ''}
-          <input class="sf-est-input" type="number" min="0" data-id="${item.id}" value="${Math.round(est/60)}" placeholder="0"
+          ${chapterDuration > 0 ? `<span class="badge sf-chapter-badge ${over ? 'bg-danger' : 'bg-success'}">${ShowflowStore.formatDuration(chapterDuration)}</span>` : ''}
+          <input class="sf-est-input" type="number" min="0" data-id="${item.id}" value="${estMins}" placeholder="0"
                  style="width:44px;text-align:center;font-size:12px;border:1px solid #fed7aa;border-radius:5px;padding:1px 3px;background:#fff3e0;color:#c2410c" />
-          <span style="font-size:11px;color:#9a3412">min</span>
+          ${secsSelect(item.id, est, 'sf-est-secs-select').replace('var(--bg-primary)', '#fff3e0').replace('var(--text-primary)', '#c2410c').replace('var(--border-secondary)', '#fed7aa')}
+          <span style="font-size:11px;color:#9a3412">target</span>
           <button class="sf-action-btn" data-action="expand" data-id="${item.id}">${expanded ? '▲' : '▼'}</button>
           <button class="sf-action-btn danger" data-action="delete" data-id="${item.id}">✕</button>
         </div>
@@ -367,12 +560,38 @@ function wireListEvents(list) {
   });
   list.querySelectorAll('.sf-title-input').forEach(el =>
     el.addEventListener('input', e => ShowflowStore.updateItem(e.target.dataset.id, { title: e.target.value })));
-  list.querySelectorAll('.sf-duration-input').forEach(el =>
-    el.addEventListener('change', e =>
-      ShowflowStore.updateItem(e.target.dataset.id, { durationSeconds: (parseInt(e.target.value) || 0) * 60 })));
-  list.querySelectorAll('.sf-est-input').forEach(el =>
-    el.addEventListener('change', e =>
-      ShowflowStore.updateItem(e.target.dataset.id, { estimatedDurationSeconds: (parseInt(e.target.value) || 0) * 60 })));
+  list.querySelectorAll('.sf-duration-input').forEach(el => {
+    el.addEventListener('change', e => {
+      const id   = e.target.dataset.id;
+      const mins = parseInt(e.target.value) || 0;
+      const secs = parseInt(e.target.closest('.sf-card-body, .sf-card-title-row')?.querySelector('.sf-secs-select')?.value || 0);
+      ShowflowStore.updateItem(id, { durationSeconds: mins * 60 + secs });
+    });
+  });
+  list.querySelectorAll('.sf-secs-select').forEach(el => {
+    el.addEventListener('change', e => {
+      const id   = e.target.dataset.id;
+      const secs = parseInt(e.target.value) || 0;
+      const mins = parseInt(e.target.closest('.sf-card-body, .sf-card-title-row')?.querySelector('.sf-duration-input')?.value || 0);
+      ShowflowStore.updateItem(id, { durationSeconds: mins * 60 + secs });
+    });
+  });
+  list.querySelectorAll('.sf-est-input').forEach(el => {
+    el.addEventListener('change', e => {
+      const id   = e.target.dataset.id;
+      const mins = parseInt(e.target.value) || 0;
+      const secs = parseInt(e.target.closest('.sf-card-body, .sf-card-title-row')?.querySelector('.sf-est-secs-select')?.value || 0);
+      ShowflowStore.updateItem(id, { estimatedDurationSeconds: mins * 60 + secs });
+    });
+  });
+  list.querySelectorAll('.sf-est-secs-select').forEach(el => {
+    el.addEventListener('change', e => {
+      const id   = e.target.dataset.id;
+      const secs = parseInt(e.target.value) || 0;
+      const mins = parseInt(e.target.closest('.sf-card-body, .sf-card-title-row')?.querySelector('.sf-est-input')?.value || 0);
+      ShowflowStore.updateItem(id, { estimatedDurationSeconds: mins * 60 + secs });
+    });
+  });
   list.querySelectorAll('textarea[data-id]').forEach(el =>
     el.addEventListener('input', e => ShowflowStore.updateItem(e.target.dataset.id, { notes: e.target.value })));
   list.querySelectorAll('input[data-performer]').forEach(el =>
@@ -446,7 +665,9 @@ function openNewShowModal() {
         </div>
         <div class="modal-body">
           <label class="form-label fw-semibold small text-uppercase text-muted">Show Name</label>
-          <input id="sf-new-name" class="form-control mb-3" placeholder="e.g. AWS re:Invent 2026 Keynote" />
+          <input id="sf-new-name" class="form-control mb-2" placeholder="e.g. AWS re:Invent 2026 Keynote" />
+          <label class="form-label fw-semibold small text-uppercase text-muted">Target Duration (minutes)</label>
+          <input id="sf-new-duration" type="number" min="0" class="form-control mb-3" placeholder="e.g. 90 for 1h 30m" />
           <label class="form-label fw-semibold small text-uppercase text-muted">Show Type</label>
           <div class="d-flex flex-column gap-2">
             ${SHOW_TYPES.map((t, i) => `
@@ -481,7 +702,11 @@ function openNewShowModal() {
     bsModal.hide();
     wrap.querySelector('#sfNewModalInner').addEventListener('hidden.bs.modal', () => {
       wrap.remove();
+      const name = wrap.querySelector('#sf-new-name').value.trim(); if (!name) return;
+      const showType = wrap.querySelector('input[name="sf-show-type"]:checked').value;
+      const durationMins = parseInt(wrap.querySelector('#sf-new-duration').value) || 0;
       ShowflowStore.createShow(name, showType);
+      if (durationMins > 0) ShowflowStore.updateShowEstimate(durationMins * 60);
     }, { once: true });
   });
   // Cancel just removes the modal
@@ -551,6 +776,98 @@ async function openShowManager() {
     await window.electronAPI.invoke('show:clearRecent'); bsModal.hide();
   });
   wrap.querySelector('#sfManagerInner').addEventListener('hidden.bs.modal', () => wrap.remove());
+}
+
+// ── Add / Edit Element Type modal ─────────────────────────────────────────────
+
+function openAddTypeModal(existing = null) {
+  document.getElementById('sf-add-type-modal')?.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'sf-add-type-modal';
+  wrap.innerHTML = `
+  <div class="modal fade" id="sfAddTypeInner" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-sm">
+      <div class="modal-content">
+        <div class="modal-header border-0 pb-0">
+          <h6 class="modal-title fw-bold">${existing ? 'Edit Element Type' : 'New Element Type'}</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Name</label>
+            <input id="sf-at-name" class="form-control form-control-sm" value="${esc(existing?.name || '')}" placeholder="e.g. Q&A" />
+          </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Icon (emoji)</label>
+            <input id="sf-at-icon" class="form-control form-control-sm" value="${esc(existing?.icon || '📋')}" maxlength="4" />
+          </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Colour</label>
+            <input id="sf-at-color" type="color" class="form-control form-control-sm form-control-color" value="${existing?.color || '#90CAF9'}" />
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-sm btn-primary" id="sf-at-confirm">${existing ? 'Save' : 'Add'}</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(wrap);
+
+  const bsModal = new bootstrap.Modal(wrap.querySelector('#sfAddTypeInner'));
+  bsModal.show();
+  setTimeout(() => wrap.querySelector('#sf-at-name')?.focus(), 300);
+
+  wrap.querySelector('#sf-at-confirm').addEventListener('click', () => {
+    const name  = wrap.querySelector('#sf-at-name').value.trim(); if (!name) return;
+    const icon  = wrap.querySelector('#sf-at-icon').value.trim() || '📋';
+    const color = wrap.querySelector('#sf-at-color').value || '#90CAF9';
+    bsModal.hide();
+    if (existing) {
+      // Update in place
+      ShowflowStore.updateElementType(existing.id, { name, icon, color });
+    } else {
+      ShowflowStore.addElementType(name, icon, color);
+    }
+  });
+  wrap.querySelector('#sfAddTypeInner').addEventListener('hidden.bs.modal', () => wrap.remove());
+}
+
+function openDeleteTypeModal(etId, show) {
+  const et = show.elementTypes.find(t => t.id === etId);
+  if (!et) return;
+  document.getElementById('sf-del-type-modal')?.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'sf-del-type-modal';
+  wrap.innerHTML = `
+  <div class="modal fade" id="sfDelTypeInner" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-sm">
+      <div class="modal-content">
+        <div class="modal-header border-0 pb-0">
+          <h6 class="modal-title fw-bold">Delete Element Type</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <p class="mb-0">Delete <strong>${esc(et.icon)} ${esc(et.name)}</strong>? Items using this type will lose their type association.</p>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-sm btn-danger" id="sf-del-confirm">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(wrap);
+
+  const bsModal = new bootstrap.Modal(wrap.querySelector('#sfDelTypeInner'));
+  bsModal.show();
+
+  wrap.querySelector('#sf-del-confirm').addEventListener('click', () => {
+    bsModal.hide();
+    ShowflowStore.deleteElementType(etId);
+  });
+  wrap.querySelector('#sfDelTypeInner').addEventListener('hidden.bs.modal', () => wrap.remove());
 }
 
 window.ShowflowTab = { init };

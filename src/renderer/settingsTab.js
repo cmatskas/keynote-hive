@@ -69,9 +69,16 @@
     // Config save
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
 
-    // Memory toggle
-    document.getElementById('memoryToggle').addEventListener('change', toggleMemory);
+    // Memory
+    document.getElementById('memoryRefreshBtn').addEventListener('click', loadMemoryList);
+    document.getElementById('memorySelect').addEventListener('change', () => {
+      const val = document.getElementById('memorySelect').value;
+      document.getElementById('memoryConnectBtn').disabled = !val;
+    });
+    document.getElementById('memoryConnectBtn').addEventListener('click', connectMemory);
     document.getElementById('memoryDeleteBtn').addEventListener('click', deleteMemory);
+
+    loadMemoryList();
 
     // Load credentials on first show
     loadCredentials();
@@ -199,16 +206,81 @@
     } catch { /* defaults */ }
 
     // Memory status — read toggle state directly from settings (no AWS call needed)
+    // (handled by loadMemoryList called from init)
+  }
+
+  async function loadMemoryList() {
+    const select = document.getElementById('memorySelect');
+    const statusText = document.getElementById('memoryStatusText');
+    const deleteBtn = document.getElementById('memoryDeleteBtn');
+    const connectBtn = document.getElementById('memoryConnectBtn');
+
+    select.innerHTML = '<option value="">Loading…</option>';
+    connectBtn.disabled = true;
+
     try {
-      const settings = await window.electronAPI.invoke('load-settings');
-      const hasMemory = !!(settings && settings.memoryId);
-      const isEnabled = hasMemory && !!settings.memoryEnabled;
-      document.getElementById('memoryToggle').checked = isEnabled;
-      document.getElementById('memoryStatusText').textContent = hasMemory ? (isEnabled ? 'Enabled' : 'Disabled') : '';
-      document.getElementById('memoryDeleteBtn').style.display = hasMemory ? 'inline-block' : 'none';
-    } catch {
-      document.getElementById('memoryToggle').checked = false;
+      const [memories, settings] = await Promise.all([
+        window.electronAPI.invoke('memory-list'),
+        window.electronAPI.invoke('load-settings'),
+      ]);
+
+      select.innerHTML = '<option value="">— select a memory —</option>' +
+        memories.map(m => `<option value="${m.id}"${m.id === settings.memoryId ? ' selected' : ''}>${m.name} (${m.status})</option>`).join('') +
+        '<option value="__new__">+ Create new memory</option>';
+
+      const connected = settings.memoryId && settings.memoryEnabled;
+      statusText.textContent = connected
+        ? `Connected: ${memories.find(m => m.id === settings.memoryId)?.name || settings.memoryId}`
+        : '';
+      deleteBtn.style.display = settings.memoryId ? 'inline-block' : 'none';
+      connectBtn.disabled = !select.value;
+    } catch (err) {
+      select.innerHTML = '<option value="">— select a memory —</option><option value="__new__">+ Create new memory</option>';
+      statusText.textContent = `Error: ${err.message}`;
+    }
+  }
+
+  async function connectMemory() {
+    const select = document.getElementById('memorySelect');
+    const statusText = document.getElementById('memoryStatusText');
+    const connectBtn = document.getElementById('memoryConnectBtn');
+    const deleteBtn = document.getElementById('memoryDeleteBtn');
+    const val = select.value;
+    if (!val) return;
+
+    connectBtn.disabled = true;
+    statusText.textContent = val === '__new__' ? 'Creating memory…' : 'Connecting…';
+
+    try {
+      if (val === '__new__') {
+        const result = await window.electronAPI.invoke('memory-enable');
+        statusText.textContent = `Connected: ${result.id}`;
+      } else {
+        const result = await window.electronAPI.invoke('memory-connect', val);
+        statusText.textContent = `Connected: ${val} (${result.status})`;
+      }
+      deleteBtn.style.display = 'inline-block';
+      window.electronAPI.showToast('Agent Memory connected!', 'success');
+      await loadMemoryList();
+    } catch (err) {
+      statusText.textContent = '';
+      window.electronAPI.showToast(`Failed: ${err.message}`, 'error');
+    } finally {
+      connectBtn.disabled = false;
+    }
+  }
+
+  async function deleteMemory() {
+    if (!confirm('This will permanently delete the memory resource and all stored memories. Continue?')) return;
+    const statusText = document.getElementById('memoryStatusText');
+    try {
+      await window.electronAPI.invoke('memory-delete');
+      statusText.textContent = '';
       document.getElementById('memoryDeleteBtn').style.display = 'none';
+      window.electronAPI.showToast('Memory deleted', 'info');
+      await loadMemoryList();
+    } catch (err) {
+      window.electronAPI.showToast(`Failed: ${err.message}`, 'error');
     }
   }
 
@@ -238,53 +310,6 @@
       window.electronAPI.showToast(`Error: ${err.message}`, 'error');
     } finally {
       btn.disabled = false;
-    }
-  }
-
-  async function toggleMemory() {
-    const toggle = document.getElementById('memoryToggle');
-    const statusText = document.getElementById('memoryStatusText');
-    const deleteBtn = document.getElementById('memoryDeleteBtn');
-
-    if (toggle.checked) {
-      statusText.textContent = 'Enabling...';
-      try {
-        await window.electronAPI.invoke('memory-enable');
-        statusText.textContent = 'Enabled';
-        deleteBtn.style.display = 'inline-block';
-        window.electronAPI.showToast('Agent Memory enabled!', 'success');
-      } catch (err) {
-        toggle.checked = false;
-        statusText.textContent = '';
-        window.electronAPI.showToast(`Failed: ${err.message}`, 'error');
-      }
-    } else {
-      statusText.textContent = 'Disabling...';
-      try {
-        await window.electronAPI.invoke('memory-disable');
-        statusText.textContent = 'Disabled';
-        window.electronAPI.showToast('Agent Memory disabled', 'info');
-      } catch (err) {
-        toggle.checked = true;
-        statusText.textContent = 'Enabled';
-        window.electronAPI.showToast(`Failed: ${err.message}`, 'error');
-      }
-    }
-  }
-
-  async function deleteMemory() {
-    if (!confirm('This will permanently delete all stored memories. The toggle will need to be re-enabled to create a new memory. Continue?')) return;
-    const statusText = document.getElementById('memoryStatusText');
-    const deleteBtn = document.getElementById('memoryDeleteBtn');
-    const toggle = document.getElementById('memoryToggle');
-    try {
-      await window.electronAPI.invoke('memory-delete');
-      toggle.checked = false;
-      statusText.textContent = '';
-      deleteBtn.style.display = 'none';
-      window.electronAPI.showToast('Memory deleted', 'info');
-    } catch (err) {
-      window.electronAPI.showToast(`Failed: ${err.message}`, 'error');
     }
   }
 

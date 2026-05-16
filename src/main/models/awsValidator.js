@@ -131,6 +131,24 @@ class AWSValidator {
     return results;
   }
 
+  /**
+   * Parse expiry timestamp from an AWS session token.
+   * AWS STS tokens are opaque — expiry is not reliably extractable client-side.
+   * This is a best-effort attempt; returns null if not parseable.
+   */
+  static parseTokenExpiry(sessionToken) {
+    if (!sessionToken) return null;
+    try {
+      // Try decoding as raw base64 JSON
+      const padded = sessionToken.replace(/-/g, '+').replace(/_/g, '/')
+        .padEnd(sessionToken.length + (4 - sessionToken.length % 4) % 4, '=');
+      const decoded = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+      if (decoded.exp && typeof decoded.exp === 'number') return new Date(decoded.exp * 1000);
+      if (decoded.Expiration) return new Date(decoded.Expiration);
+    } catch {}
+    return null;
+  }
+
   static getRequiredPermissions() {
     return {
       bedrock: [

@@ -4,6 +4,10 @@ const config = require('./config.js');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
 const logger = require('electron-log/main');
+
+// Suppress EPIPE errors from electron-log when renderer navigates away
+process.stdout.on('error', err => { if (err.code !== 'EPIPE') throw err; });
+process.stderr.on('error', err => { if (err.code !== 'EPIPE') throw err; });
 const { autoUpdater } = require('electron-updater');
 
 const { BedrockRuntimeClient, ConverseCommand, ConverseStreamCommand } = require('@aws-sdk/client-bedrock-runtime');
@@ -15,6 +19,7 @@ const { TranscribeClient, StartTranscriptionJobCommand, GetTranscriptionJobComma
 // Import credential management
 const CredentialsManager = require('./src/main/models/credentialsManager');
 const AWSValidator = require('./src/main/models/awsValidator');
+const CredentialMonitor = require('./src/main/models/credentialMonitor');
 const TranscriptMapper = require('./src/main/models/transcriptMapper.js');
 const SettingsManager = require('./src/main/models/settingsManager');
 const ConversationManager = require('./src/main/models/conversationManager');
@@ -40,6 +45,7 @@ let settingsManager;
 let currentCredentials = null;
 let currentSettings = null;
 let awsClients = {};
+let credentialMonitor = null;
 
 // Initialize credential and settings managers
 function initializeCredentialsManager() {
@@ -145,6 +151,54 @@ function createWindow() {
   mainWindow.loadFile('src/pages/index.html');
 }
 
+// Validate credentials and open the appropriate window (credentials or main app).
+// Used by both initial startup and window re-activation.
+async function launchMainWindow() {
+  const hasCredentials = await credentialsManager.hasCredentials();
+  let credentialsValid = false;
+
+  if (hasCredentials) {
+    try {
+      currentCredentials = await credentialsManager.loadCredentials();
+      initializeAWSClients(currentCredentials);
+      const validator = new AWSValidator(currentCredentials);
+      const result = await validator.quickValidate();
+      credentialsValid = result.valid;
+    } catch (err) {
+      console.error('Error validating credentials on activate:', err);
+    }
+  }
+
+  if (!hasCredentials || !credentialsValid) {
+    mainWindow = new BrowserWindow({
+      width: 800, height: 600, center: true, icon: getIconPath(),
+      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: false, preload: path.join(__dirname, 'preload.js') }
+    });
+    mainWindow.loadFile('src/pages/credentials.html');
+  } else {
+    createWindow();
+    if (credentialMonitor) credentialMonitor.start();
+  }
+}
+
+function startCredentialMonitor() {
+  if (credentialMonitor) credentialMonitor.stop();
+  credentialMonitor = new CredentialMonitor({
+    getCredentials: () => currentCredentials,
+    getMainWindow:  () => mainWindow,
+    onExpired: () => {
+      // Stop monitor first to prevent log writes after page navigation (EPIPE)
+      if (credentialMonitor) { credentialMonitor.stop(); credentialMonitor = null; }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setSize(800, 600);
+        mainWindow.center();
+        mainWindow.loadFile('src/pages/credentials.html');
+      }
+    },
+  });
+  credentialMonitor.start();
+}
+
 app.whenReady().then(async () => {
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.hive.app');
@@ -225,6 +279,7 @@ app.whenReady().then(async () => {
     mainWindow.loadFile('src/pages/credentials.html');
   } else {
     createWindow();
+    startCredentialMonitor();
   }
 
   splashWindow.close();
@@ -252,9 +307,9 @@ app.whenReady().then(async () => {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
 
-  app.on('activate', function () {
+  app.on('activate', async function () {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      await launchMainWindow();
     }
   });
 
@@ -304,6 +359,9 @@ ipcMain.handle('save-credentials', async (event, credentials) => {
     await credentialsManager.saveCredentials(credentials);
     currentCredentials = credentials;
     initializeAWSClients(credentials);
+    // Reset monitor with fresh credentials
+    if (credentialMonitor) credentialMonitor.reset();
+    else startCredentialMonitor();
     return true;
   } catch (error) {
     throw new Error(`Failed to save credentials: ${error.message}`);
@@ -379,6 +437,27 @@ ipcMain.handle('quick-validate-credentials', async () => {
 });
 
 // ── AgentCore Memory handlers ──────────────────────────────────
+
+ipcMain.handle('memory-connect', async (event, memoryId) => {
+  if (!awsClients.agentCoreConfig) throw new Error('AWS credentials not configured');
+  const mm = new MemoryManager(awsClients.agentCoreConfig);
+  mm.setMemoryId(memoryId);
+  const status = await mm.getStatus();
+  const settings = await settingsManager.loadSettings();
+  settings.memoryId = memoryId;
+  settings.memoryEnabled = true;
+  await settingsManager.saveSettings(settings);
+  return { id: memoryId, status };
+});
+
+ipcMain.handle('memory-list', async () => {
+  if (!awsClients.agentCoreConfig) throw new Error('AWS credentials not configured');
+  const mm = new MemoryManager(awsClients.agentCoreConfig);
+  const res = await mm.controlClient.send(
+    new (require('@aws-sdk/client-bedrock-agentcore-control').ListMemoriesCommand)({ maxResults: 50 })
+  );
+  return (res.memories || []).map(m => ({ id: m.id, name: m.name, status: m.status }));
+});
 
 ipcMain.handle('memory-enable', async () => {
   if (!awsClients.agentCoreConfig) throw new Error('AWS credentials not configured');

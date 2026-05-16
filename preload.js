@@ -24,8 +24,8 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
     'delete-credentials', 'delete-custom-prompt', 'delete-settings', 'get-app-version',
     'get-bedrock-models', 'get-custom-prompts', 'get-default-settings', 'get-knowledge-bases',
     'get-prompt-templates', 'get-skills', 'get-skill-content', 'has-credentials', 'invoke-agent', 'list-conversations',
-    'load-conversation', 'load-credentials', 'load-settings', 'memory-delete', 'memory-disable',
-    'memory-enable', 'memory-extract', 'memory-status', 'navigate-to-main', 'open-skills-folder',
+    'load-conversation', 'load-credentials', 'load-settings', 'memory-connect', 'memory-delete', 'memory-disable',
+    'memory-enable', 'memory-extract', 'memory-list', 'memory-status', 'navigate-to-main', 'open-skills-folder',
     'quick-validate-credentials', 'refresh-skills', 'save-conversation', 'save-credentials',
     'save-jina-key', 'load-jina-key', 'delete-jina-key',
     'save-settings', 'save-skill-content', 'select-directory', 'send-to-bedrock', 'splash-ready', 'toggle-skill',
@@ -38,6 +38,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
 
 const ALLOWED_RECEIVE_CHANNELS = new Set([
     'agent-status', 'agent-stream-chunk', 'bedrock-stream-chunk', 'bedrock-stream-complete',
+    'credential-expiry-warning',
     'transcription-progress', 'app-before-quit', 'show-settings', 'update-available', 'update-downloaded',
     'swarm-agent-started', 'swarm-agent-chunk', 'swarm-agent-done',
     'swarm-review-pause', 'swarm-input-request', 'swarm-pipeline-done', 'swarm-error',

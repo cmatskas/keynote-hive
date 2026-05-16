@@ -209,6 +209,47 @@ document.getElementById('nav-showflow')?.addEventListener('click', () => {
     }
 });
 
+// ── Credential expiry warning banner ─────────────────────────────────────────
+
+(function initCredentialWarning() {
+  const banner  = document.getElementById('credentialWarningBanner');
+  const text    = document.getElementById('credentialWarningText');
+  const updateBtn = document.getElementById('credentialWarningUpdateBtn');
+  const dismissBtn = document.getElementById('credentialWarningDismiss');
+  if (!banner) return;
+
+  window.electronAPI.receive('credential-expiry-warning', ({ level, minsLeft }) => {
+    banner.className = 'alert mb-0 rounded-0 align-items-center py-2 px-3';
+    if (level === 'expired') {
+      banner.classList.add('alert-danger');
+      text.textContent = 'Your AWS credentials have expired. Please update them to continue.';
+      dismissBtn.style.display = 'none';
+    } else if (level === 'critical') {
+      banner.classList.add('alert-danger');
+      text.textContent = `Your AWS credentials expire in ~${minsLeft} minute${minsLeft !== 1 ? 's' : ''}. Update now to avoid interruption.`;
+      dismissBtn.style.display = '';
+    } else {
+      banner.classList.add('alert-warning');
+      text.textContent = `Your AWS credentials expire in ~${minsLeft} minutes.`;
+      dismissBtn.style.display = '';
+    }
+    banner.style.display = 'flex';
+  });
+
+  updateBtn.addEventListener('click', () => {
+    showPage('settings');
+    // Scroll to credentials section
+    setTimeout(() => {
+      document.querySelector('[data-bs-target="#credentials"]')?.click();
+    }, 100);
+    banner.style.display = 'none';
+  });
+
+  dismissBtn.addEventListener('click', () => {
+    banner.style.display = 'none';
+  });
+})();
+
 templateSelect.addEventListener('change', () => {
     const selectedOption = templateSelect.options[templateSelect.selectedIndex];
     const selectedPrompt = selectedOption.getAttribute('value');

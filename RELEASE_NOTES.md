@@ -1,5 +1,27 @@
 # Release Notes
 
+## v2.10.0
+
+### New Features
+- **Credential expiry monitoring** — background monitor detects expired/expiring AWS credentials. System notifications at T-15min and T-2min, in-app warning banner, automatic redirect to credentials page on expiry. Window re-activation now re-validates credentials.
+- **Showflow — PowerPoint import** — import a `.pptx` file and generate a run-of-show from its sections and slide word counts (140 wpm). Sections map to chapter marks with calculated durations.
+- **Showflow — Word export** — flat table export with Section, Content, Speaker, Duration columns. No colour styling.
+- **Showflow — Excel export** — matches reference run-of-show format: Section, Content, Speaker, Start, End, Duration with cumulative timings, total runtime, and target/buffer row.
+- **Showflow — Seconds precision** — duration inputs now include a :00/:15/:30/:45 seconds dropdown on both item cards and chapter mark targets.
+- **Showflow — Header redesign** — buttons moved left (New Show, Save, ⋯ overflow menu). Show name and duration pill moved right. Overflow menu contains My Shows, Import, Export, Close Show.
+- **Showflow — Duration pill** — improved contrast and accessibility on both light and dark themes.
+- **Showflow — New Show dialog** — now asks for target duration upfront.
+
+### Bug Fixes
+- **Showflow — Scroll preservation** — deleting or expanding items no longer jumps the run list back to the top.
+- **Showflow — Drag-to-position** — dragging from the elements palette now inserts at the pointer position instead of always appending to the end.
+- **Showflow — Chapter duration badges** — update live when item durations change without requiring a full re-render.
+- **Showflow — Run list scrolling** — fixed overflow issue where items were squashed instead of scrollable.
+- **Showflow — Default element types** — system and default element types no longer show a delete button.
+- **Showflow — Orphaned items** — items with missing element types render with a fallback style and a one-time warning toast.
+- **Credentials page** — Bootstrap `d-flex !important` was overriding `display:none` on the warning banner, causing it to always show.
+- **EPIPE crash** — suppressed broken-pipe errors when electron-log writes after renderer navigation.
+
 ## v2.9.0
 
 ### Rebranding

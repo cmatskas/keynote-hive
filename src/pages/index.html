@@ -58,7 +58,7 @@
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top">
         <div class="container-fluid">
             <a class="navbar-brand" href="#">
-                <img src="../assets/favicon.svg" alt="Transcribely" width="24" height="24" class="me-2"> Transcribely
+                <img src="../assets/favicon.svg" alt="Hive" width="24" height="24" class="me-2"> Hive
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
@@ -94,6 +94,15 @@
             </div>
         </div>
     </nav>
+
+    <!-- Credential expiry warning banner -->
+    <div id="credentialWarningBanner" style="display:none;"
+         class="alert mb-0 rounded-0 align-items-center py-2 px-3" role="alert">
+      <i class="bi bi-exclamation-triangle-fill me-2"></i>
+      <span id="credentialWarningText" class="flex-grow-1 small"></span>
+      <button class="btn btn-sm btn-outline-dark ms-3" id="credentialWarningUpdateBtn">Update Credentials</button>
+      <button type="button" class="btn-close ms-2" id="credentialWarningDismiss" aria-label="Dismiss"></button>
+    </div>
 
     <div id="transcribe-page" class="container-fluid py-4" style="display:none;">
         <div class="row g-12">
@@ -461,19 +470,20 @@
                     <!-- Agent Memory -->
                     <div class="card mb-3">
                         <div class="card-body">
-                            <div class="d-flex align-items-center justify-content-between">
-                                <div>
-                                    <h6 class="mb-0"><i class="bi bi-memory me-2"></i>Agent Memory</h6>
-                                    <small class="text-muted">Remember preferences and conversations across sessions</small>
-                                </div>
-                                <div class="d-flex align-items-center gap-2">
-                                    <span id="memoryStatusText" class="small text-muted"></span>
-                                    <div class="form-check form-switch mb-0">
-                                        <input class="form-check-input" type="checkbox" id="memoryToggle">
-                                    </div>
-                                    <button id="memoryDeleteBtn" class="btn btn-sm btn-outline-danger" style="display:none;">Delete</button>
-                                </div>
+                            <h6 class="mb-1"><i class="bi bi-memory me-2"></i>Agent Memory</h6>
+                            <small class="text-muted d-block mb-3">Remember preferences and conversations across sessions</small>
+                            <div class="d-flex align-items-center gap-2 flex-wrap">
+                                <select id="memorySelect" class="form-select form-select-sm" style="max-width:280px;">
+                                    <option value="">— select a memory —</option>
+                                    <option value="__new__">+ Create new memory</option>
+                                </select>
+                                <button id="memoryRefreshBtn" class="btn btn-sm btn-outline-secondary" title="Refresh list">
+                                    <i class="bi bi-arrow-clockwise"></i>
+                                </button>
+                                <button id="memoryConnectBtn" class="btn btn-sm btn-primary" disabled>Connect</button>
+                                <button id="memoryDeleteBtn" class="btn btn-sm btn-outline-danger" style="display:none;">Delete</button>
                             </div>
+                            <div id="memoryStatusText" class="small text-muted mt-2"></div>
                         </div>
                     </div>
 
@@ -756,32 +766,37 @@ Instructions for the agent go here.
 
       <!-- Header bar -->
       <div id="sf-header" class="sf-header">
+        <!-- Left: actions -->
         <div class="sf-header-left">
-          <span class="sf-logo">🎬</span>
-          <span class="sf-logo-text">ShowFlow</span>
-          <div class="sf-divider"></div>
-          <span id="sf-show-name" class="sf-show-name" title="Click to rename">No show open</span>
-          <input id="sf-show-name-input" class="sf-show-name-input" style="display:none;" />
+          <button class="btn btn-sm btn-primary" id="sf-new-btn">+ New Show</button>
+          <button class="btn btn-sm btn-outline-secondary" id="sf-save-btn" style="display:none;">Save</button>
+          <div id="sf-overflow-wrap" style="display:none; position:relative;">
+            <button class="btn btn-sm btn-outline-secondary" id="sf-overflow-btn">⋯</button>
+            <div id="sf-overflow-menu" class="sf-export-menu" style="display:none;">
+              <button class="sf-export-item" id="sf-shows-btn">← My Shows</button>
+              <button class="sf-export-item" id="sf-import-btn">↓ Import JSON</button>
+              <button class="sf-export-item" id="sf-import-pptx-btn">📊 Import PowerPoint</button>
+              <button class="sf-export-item" id="sf-export-word">📄 Export Word</button>
+              <button class="sf-export-item" id="sf-export-excel">📊 Export Excel</button>
+              <button class="sf-export-item" id="sf-close-btn" style="color:var(--error)">✕ Close Show</button>
+            </div>
+          </div>
+          <input type="file" id="sf-import-input" accept=".showflow,.json" style="display:none;" />
+          <input type="file" id="sf-import-pptx-input" accept=".pptx" style="display:none;" />
         </div>
+
+        <!-- Right: show name + duration -->
         <div class="sf-header-right">
+          <span id="sf-show-name" class="sf-show-name" style="display:none;"></span>
           <div id="sf-duration-pill" class="sf-duration-pill" style="display:none;">
             <span>⏱</span>
             <span id="sf-duration-actual" class="sf-duration-actual">0m</span>
             <span class="sf-duration-sep">/</span>
-            <span id="sf-duration-target" class="sf-duration-target" title="Click to set target">+ target</span>
+            <span id="sf-duration-target" class="sf-duration-target" title="Click to edit target">+ target</span>
+            <input id="sf-duration-target-input" class="sf-duration-target-input" type="number" min="0"
+                   style="display:none;" placeholder="0" />
+            <span id="sf-duration-target-label" style="display:none; font-size:11px; color:var(--text-muted)">min</span>
           </div>
-          <div id="sf-export-wrap" style="display:none; position:relative;">
-            <button class="btn btn-sm btn-outline-secondary" id="sf-export-btn">↑ Export ▾</button>
-            <div id="sf-export-menu" class="sf-export-menu" style="display:none;">
-              <button class="sf-export-item" id="sf-export-word">📄 Word (.docx)</button>
-              <button class="sf-export-item" id="sf-export-excel">📊 Excel (.xlsx)</button>
-            </div>
-          </div>
-          <button class="btn btn-sm btn-outline-secondary" id="sf-import-btn" style="display:none;">↓ Import</button>
-          <input type="file" id="sf-import-input" accept=".showflow,.json" style="display:none;" />
-          <button class="btn btn-sm btn-outline-secondary" id="sf-shows-btn" style="display:none;">← My Shows</button>
-          <button class="btn btn-sm btn-outline-primary" id="sf-save-btn" style="display:none;">Save</button>
-          <button class="btn btn-sm btn-primary" id="sf-new-btn">+ New Show</button>
         </div>
       </div>
 
@@ -1042,6 +1057,9 @@ Instructions for the agent go here.
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="../../node_modules/sortablejs/Sortable.min.js"></script>
+    <script src="../../node_modules/xlsx/xlsx.js"></script>
+    <script src="../../node_modules/jszip/dist/jszip.js"></script>
+    <script src="../../node_modules/docx/dist/index.umd.cjs"></script>
     <script src="../renderer/modalManager.js"></script>
     <script src="../renderer/themeManager.js"></script>
     <script src="../renderer/chatRenderer.js"></script>

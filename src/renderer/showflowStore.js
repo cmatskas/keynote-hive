@@ -7,35 +7,47 @@
 
 const DEFAULT_ELEMENT_TYPES = {
   keynote: [
-    { id: 'et-presentation', name: 'Presentation', icon: '📊', color: '#5B8DEF', isChapterMark: false },
-    { id: 'et-demo',         name: 'Demo',         icon: '💻', color: '#7C6AFA', isChapterMark: false },
-    { id: 'et-video',        name: 'Video',        icon: '🎬', color: '#F06292', isChapterMark: false },
-    { id: 'et-fireside',     name: 'Fireside',     icon: '🎤', color: '#4DB6AC', isChapterMark: false },
+    { id: 'et-presentation', name: 'Presentation', icon: '📊', color: '#5B8DEF', isChapterMark: false, isDefault: true },
+    { id: 'et-demo',         name: 'Demo',         icon: '💻', color: '#7C6AFA', isChapterMark: false, isDefault: true },
+    { id: 'et-video',        name: 'Video',        icon: '🎬', color: '#F06292', isChapterMark: false, isDefault: true },
+    { id: 'et-fireside',     name: 'Fireside',     icon: '🎤', color: '#4DB6AC', isChapterMark: false, isDefault: true },
   ],
   dance_recital: [
-    { id: 'et-number',       name: 'Dance Number',  icon: '💃', color: '#F48FB1', isChapterMark: false },
-    { id: 'et-costume',      name: 'Costume Change',icon: '👗', color: '#CE93D8', isChapterMark: false },
-    { id: 'et-announcement', name: 'Announcement',  icon: '📢', color: '#80CBC4', isChapterMark: false },
-    { id: 'et-intermission', name: 'Intermission',  icon: '⏸️', color: '#FFCC80', isChapterMark: false },
+    { id: 'et-number',       name: 'Dance Number',  icon: '💃', color: '#F48FB1', isChapterMark: false, isDefault: true },
+    { id: 'et-costume',      name: 'Costume Change',icon: '👗', color: '#CE93D8', isChapterMark: false, isDefault: true },
+    { id: 'et-announcement', name: 'Announcement',  icon: '📢', color: '#80CBC4', isChapterMark: false, isDefault: true },
+    { id: 'et-intermission', name: 'Intermission',  icon: '⏸️', color: '#FFCC80', isChapterMark: false, isDefault: true },
   ],
   play: [
-    { id: 'et-scene',        name: 'Scene',        icon: '🎭', color: '#EF9A9A', isChapterMark: false },
-    { id: 'et-song',         name: 'Song',         icon: '🎵', color: '#F48FB1', isChapterMark: false },
-    { id: 'et-blackout',     name: 'Blackout',     icon: '⚫', color: '#616161', isChapterMark: false },
-    { id: 'et-scene-change', name: 'Scene Change', icon: '🔄', color: '#80CBC4', isChapterMark: false },
-    { id: 'et-intermission-play', name: 'Intermission', icon: '⏸️', color: '#FFCC80', isChapterMark: false },
+    { id: 'et-scene',        name: 'Scene',        icon: '🎭', color: '#EF9A9A', isChapterMark: false, isDefault: true },
+    { id: 'et-song',         name: 'Song',         icon: '🎵', color: '#F48FB1', isChapterMark: false, isDefault: true },
+    { id: 'et-blackout',     name: 'Blackout',     icon: '⚫', color: '#616161', isChapterMark: false, isDefault: true },
+    { id: 'et-scene-change', name: 'Scene Change', icon: '🔄', color: '#80CBC4', isChapterMark: false, isDefault: true },
+    { id: 'et-intermission-play', name: 'Intermission', icon: '⏸️', color: '#FFCC80', isChapterMark: false, isDefault: true },
   ],
   concert: [
-    { id: 'et-song-c',   name: 'Song',      icon: '🎸', color: '#EF9A9A', isChapterMark: false },
-    { id: 'et-set-break',name: 'Set Break', icon: '⏸️', color: '#FFCC80', isChapterMark: false },
-    { id: 'et-intro',    name: 'Intro',     icon: '🎙️', color: '#80DEEA', isChapterMark: false },
-    { id: 'et-outro',    name: 'Outro',     icon: '🎤', color: '#A5D6A7', isChapterMark: false },
-    { id: 'et-encore',   name: 'Encore',    icon: '⭐', color: '#FFD54F', isChapterMark: false },
+    { id: 'et-song-c',   name: 'Song',      icon: '🎸', color: '#EF9A9A', isChapterMark: false, isDefault: true },
+    { id: 'et-set-break',name: 'Set Break', icon: '⏸️', color: '#FFCC80', isChapterMark: false, isDefault: true },
+    { id: 'et-intro',    name: 'Intro',     icon: '🎙️', color: '#80DEEA', isChapterMark: false, isDefault: true },
+    { id: 'et-outro',    name: 'Outro',     icon: '🎤', color: '#A5D6A7', isChapterMark: false, isDefault: true },
+    { id: 'et-encore',   name: 'Encore',    icon: '⭐', color: '#FFD54F', isChapterMark: false, isDefault: true },
   ],
   custom: [
-    { id: 'et-item', name: 'Item', icon: '📋', color: '#90CAF9', isChapterMark: false },
+    { id: 'et-item', name: 'Item', icon: '📋', color: '#90CAF9', isChapterMark: false, isDefault: true },
   ],
 };
+
+// Set of all built-in element type IDs that should not be deletable
+const DEFAULT_ET_IDS = new Set([
+  'et-sys-chapter',
+  'et-presentation', 'et-demo', 'et-video', 'et-fireside',
+  'et-number', 'et-costume', 'et-announcement', 'et-intermission',
+  'et-scene', 'et-song', 'et-blackout', 'et-scene-change', 'et-intermission-play',
+  'et-song-c', 'et-set-break', 'et-intro', 'et-outro', 'et-encore',
+  'et-item',
+]);
+
+function isDefaultElementType(id) { return DEFAULT_ET_IDS.has(id); }
 
 const CHAPTER_MARK_TYPE = {
   id: 'et-sys-chapter', name: 'Chapter Mark', icon: '📍',
@@ -92,9 +104,10 @@ function loadFromStorage() {
 // ── State ─────────────────────────────────────────────────────────────────────
 
 let _state = {
-  show: loadFromStorage(),
+  show: null, // always start with no show — user must explicitly open one
   selectedItemId: null,
   expandedItemId: null,
+  orphanCount: 0,
 };
 
 // Subscribers notified on every state change
@@ -105,19 +118,20 @@ function subscribe(fn) {
   return () => _listeners.delete(fn);
 }
 
-function _notify(structural = true) {
-  _listeners.forEach(fn => fn(_state, structural));
+function _notify(structural = true, changeType = false) {
+  _listeners.forEach(fn => fn(_state, structural, changeType));
 }
 
-function _set(updater, structural = true) {
+function _set(updater, structural = true, changeType = false) {
   _state = { ..._state, ...updater(_state) };
-  _notify(structural);
+  _notify(structural, changeType);
 }
 
 // ── Getters ───────────────────────────────────────────────────────────────────
 
 function getShow()          { return _state.show; }
 function getExpandedItemId(){ return _state.expandedItemId; }
+function getOrphanCount()   { return _state.orphanCount || 0; }
 
 function getRunItems() {
   if (!_state.show) return [];
@@ -168,7 +182,14 @@ function getPerformerSuggestions() {
 
 function setShow(show) {
   if (show) saveToStorage(show);
-  _set(() => ({ show, selectedItemId: null, expandedItemId: null }));
+  else { try { localStorage.removeItem(STORAGE_KEY); } catch {} }
+  const orphanCount = show ? _countOrphans(show) : 0;
+  _set(() => ({ show, selectedItemId: null, expandedItemId: null, orphanCount }));
+}
+
+function _countOrphans(show) {
+  const etIds = new Set(show.elementTypes.map(t => t.id));
+  return show.items.filter(i => i.elementTypeId && !etIds.has(i.elementTypeId)).length;
 }
 
 function createShow(name, showType) {
@@ -241,6 +262,7 @@ function addItem(elementTypeId, afterPosition) {
 }
 
 function updateItem(id, updates) {
+  const isDurationChange = 'durationSeconds' in updates || 'estimatedDurationSeconds' in updates;
   _set(s => {
     if (!s.show) return s;
     const show = {
@@ -250,7 +272,7 @@ function updateItem(id, updates) {
     };
     saveToStorage(show);
     return { show };
-  }, false); // non-structural — don't re-render the list
+  }, false, isDurationChange ? 'duration' : false);
 }
 
 function deleteItem(id) {
@@ -332,8 +354,34 @@ function addElementType(name, icon, color) {
   });
 }
 
+function updateElementType(id, updates) {
+  _set(s => {
+    if (!s.show) return s;
+    const show = {
+      ...s.show,
+      elementTypes: s.show.elementTypes.map(t => t.id === id ? { ...t, ...updates } : t),
+      updatedAt: new Date().toISOString(),
+    };
+    saveToStorage(show);
+    return { show };
+  });
+}
+
+function deleteElementType(id) {
+  _set(s => {
+    if (!s.show) return s;
+    const show = {
+      ...s.show,
+      elementTypes: s.show.elementTypes.filter(t => t.id !== id),
+      updatedAt: new Date().toISOString(),
+    };
+    saveToStorage(show);
+    return { show };
+  });
+}
+
 function setExpandedItem(id) {
-  _set(s => ({ expandedItemId: s.expandedItemId === id ? null : id }));
+  _set(s => ({ expandedItemId: s.expandedItemId === id ? null : id }), false, 'expand');
 }
 
 // ── File sync (auto-save debounced) ───────────────────────────────────────────
@@ -364,17 +412,17 @@ subscribe(() => {
 
 window.ShowflowStore = {
   // Getters
-  getShow, getExpandedItemId, getRunItems, getParkingLotItems,
+  getShow, getExpandedItemId, getOrphanCount, getRunItems, getParkingLotItems,
   getTotalDuration, getTotalEstimatedDuration, getChapterDuration, getPerformerSuggestions,
   // Actions
   setShow, createShow, updateShowName, updateShowEstimate,
   addItem, updateItem, deleteItem, moveToParking, moveFromParking,
-  reorderItems, addElementType, setExpandedItem,
+  reorderItems, addElementType, updateElementType, deleteElementType, setExpandedItem,
   // File
   setCurrentFilePath, getCurrentFilePath,
   // Subscribe
   subscribe,
   // Helpers
-  formatDuration, parseDuration,
+  formatDuration, parseDuration, isDefaultElementType,
   DEFAULT_ELEMENT_TYPES, CHAPTER_MARK_TYPE, PERFORMER_LABELS, CHAPTER_LABELS,
 };

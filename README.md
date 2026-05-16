@@ -21,7 +21,7 @@ Download: [Box folder](https://amazoncorporate.box.com/s/rwc0pbifx50uf7g2xi8mxan
 
 | Platform | File |
 |---|---|
-| macOS (Intel & Apple Silicon) | `Hive-2.9.0-universal.dmg` |
+| macOS (Intel & Apple Silicon) | `Hive-2.10.0-universal.dmg` |
 | Windows x64 | `Hive-Setup-x64.exe` |
 | Windows ARM64 | `Hive-Setup-arm64.exe` |
 
