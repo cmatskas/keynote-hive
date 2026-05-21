@@ -1,5 +1,16 @@
 # Release Notes
 
+## v2.11.0
+
+### New Features
+- **Auto-update pill** — replaced the full-width blue banner with a compact, animated pill in the navbar. Shows download progress with a pulsing indicator, then a green "Update" button when ready. Theme-aware for both light and dark modes. No dismiss — stays visible until installed.
+
+### Improvements
+- **Showflow export consistency** — Word and Excel exports now produce identical content: same columns (Section, Content, Speaker, Start, End, Duration), same section-grouped structure, same header/footer rows.
+- **Non-presentation items in exports** — Demo, Video, Fireside, and other non-presentation elements now appear as their own rows in exports with type prefix and individual timing, rather than being collapsed into the section row.
+- **Shared export data builder** — extracted `buildShowData()` to eliminate duplicated logic between Word and Excel exports.
+- **Cleaner export filenames** — removed `.showflow.` and `_run_of_show` from exported filenames. Now just `{name}.docx` and `{name}.xlsx`.
+
 ## v2.10.0
 
 ### New Features

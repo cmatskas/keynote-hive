@@ -20,7 +20,7 @@ function parkedItems(show) {
   return show.items.filter(i => i.inParkingLot).sort((a, b) => a.position - b.position);
 }
 
-// ── Excel export ──────────────────────────────────────────────────────────────
+// ── Shared data builder ───────────────────────────────────────────────────────
 
 function toHHMM(totalSeconds) {
   const h = Math.floor(totalSeconds / 3600);
@@ -37,9 +37,9 @@ function toMinLabel(secs) {
   return m % 1 === 0 ? m + ' min' : m.toFixed(1) + ' min';
 }
 
-async function exportToExcel(show) {
-  const XLSX_LIB = window.XLSX;
-  const items = show.items.filter(i => !i.inParkingLot).sort((a, b) => a.position - b.position);
+function buildShowData(show) {
+  const items = runItems(show);
+  const parked = parkedItems(show);
   const totalSecs = items.filter(i => !i.isChapterMark).reduce((s, i) => s + (i.durationSeconds || 0), 0);
   const estSecs = show.estimatedDurationSeconds ||
     items.filter(i => i.isChapterMark && i.estimatedDurationSeconds).reduce((s, i) => s + (i.estimatedDurationSeconds || 0), 0);
@@ -54,105 +54,133 @@ async function exportToExcel(show) {
     } else if (currentSection) {
       currentSection.items.push(item);
     } else {
-      // Items before any chapter mark
       sections.push({ chapter: null, items: [item] });
     }
   }
 
+  // Build timed rows — section-grouped with non-presentation items as separate rows
   const rows = [];
-
-  // Title row
-  rows.push([show.name, '', '', '', '', '']);
-  // Summary row
-  const speakerNames = [...new Set(items.filter(i => i.performer).map(i => i.performer))].join(', ');
-  rows.push([
-    (speakerNames ? 'Speaker: ' + speakerNames + '  |  ' : '') +
-    'Target: ' + toMinLabel(estSecs) + '  |  Script rate: 140 wpm',
-    '', '', '', '', ''
-  ]);
-  rows.push(['', '', '', '', '', '', '', '']);
-  // Header row
-  rows.push(['Section', 'Content', 'Speaker', 'Start', 'End', 'Duration']);
-
-  let cursor = 0; // running seconds
+  let cursor = 0;
   let sectionNum = 0;
 
   for (const sec of sections) {
     const chapter = sec.chapter;
     const secItems = sec.items;
 
-    // Presentation items — collapsed into chapter row
-    const presentationItems = secItems.filter(i => {
-      const et = show.elementTypes.find(t => t.id === i.elementTypeId);
-      return !et || et.name === 'Presentation' || et.isDefault;
-    });
-    const nonPresentationItems = secItems.filter(i => {
-      const et = show.elementTypes.find(t => t.id === i.elementTypeId);
-      return et && et.name !== 'Presentation' && !et.isSystem;
-    });
-
     if (chapter) {
       sectionNum++;
-      const sectionDuration = secItems.reduce((s, i) => s + (i.durationSeconds || 0), 0);
+
+      const presentationItems = secItems.filter(i => {
+        const et = show.elementTypes.find(t => t.id === i.elementTypeId);
+        return !et || et.name === 'Presentation' || (!et.isSystem && et.id === 'et-presentation');
+      });
+      const nonPresentationItems = secItems.filter(i => {
+        const et = show.elementTypes.find(t => t.id === i.elementTypeId);
+        return et && et.name !== 'Presentation' && et.id !== 'et-presentation';
+      });
+
+      const presDuration = presentationItems.reduce((s, i) => s + (i.durationSeconds || 0), 0);
       const start = toHHMM(cursor);
-      cursor += sectionDuration;
-      const end = toHHMM(cursor);
+      cursor += presDuration;
 
-      // Determine type label from non-presentation items
-      const typeLabels = [...new Set(nonPresentationItems.map(i => {
-        const et = show.elementTypes.find(t => t.id === i.elementTypeId);
-        return et?.name || '';
-      }).filter(Boolean))];
-      const typeLabel = typeLabels.length > 0 ? 'Script + ' + typeLabels.join(' + ') : 'Script';
-
-      // Speakers: chapter performer or first item performer
       const speakers = chapter.performer ||
-        [...new Set(secItems.filter(i => i.performer).map(i => i.performer))].join(' + ') || '';
+        [...new Set(presentationItems.filter(i => i.performer).map(i => i.performer))].join(' + ') || '';
 
-      // Notes: non-presentation item titles
-      const notes = nonPresentationItems.map(i => {
-        const et = show.elementTypes.find(t => t.id === i.elementTypeId);
-        return (et?.name || '') + (i.title !== chapter.title ? ': ' + i.title : '');
-      }).join(', ');
-
-      rows.push([
-        'Section ' + sectionNum,
-        chapter.title,
-        speakers,
+      rows.push({
+        section: 'Section ' + sectionNum,
+        content: chapter.title,
+        speaker: speakers,
         start,
-        end,
-        toMinLabel(sectionDuration),
-      ]);
-    } else {
-      // Items with no chapter — one row each
-      for (const item of secItems) {
+        end: toHHMM(cursor),
+        duration: presDuration,
+      });
+
+      for (const item of nonPresentationItems) {
         const et = show.elementTypes.find(t => t.id === item.elementTypeId);
+        const itemStart = toHHMM(cursor);
+        cursor += item.durationSeconds || 0;
+        rows.push({
+          section: '',
+          content: (et?.name ? et.name + ': ' : '') + item.title,
+          speaker: item.performer || '',
+          start: itemStart,
+          end: toHHMM(cursor),
+          duration: item.durationSeconds || 0,
+        });
+      }
+    } else {
+      for (const item of secItems) {
         const start = toHHMM(cursor);
         cursor += item.durationSeconds || 0;
-        rows.push(['', item.title, item.performer || '', start, toHHMM(cursor), toMinLabel(item.durationSeconds)]);
+        rows.push({
+          section: '',
+          content: item.title,
+          speaker: item.performer || '',
+          start,
+          end: toHHMM(cursor),
+          duration: item.durationSeconds || 0,
+        });
       }
     }
   }
 
-  // Total row
-  rows.push(['', 'TOTAL RUNTIME', '', toHHMM(0), toHHMM(totalSecs), toMinLabel(totalSecs)]);
-
-  // Target / buffer row
+  // Buffer/target info
+  let bufferInfo = null;
   if (estSecs > 0) {
     const diff = estSecs - totalSecs;
-    const sign = diff >= 0 ? '+' : '-';
-    const status = diff >= 0 ? '✅ ' + toMinLabel(Math.abs(diff)) + ' buffer' : '⚠️ ' + toMinLabel(Math.abs(diff)) + ' over';
-    rows.push(['', 'TARGET: ' + toMinLabel(estSecs) + '  |  ' + status, '', '', '', sign + toMinLabel(Math.abs(diff))]);
+    bufferInfo = {
+      diff,
+      sign: diff >= 0 ? '+' : '-',
+      status: diff >= 0 ? '✅ ' + toMinLabel(Math.abs(diff)) + ' buffer' : '⚠️ ' + toMinLabel(Math.abs(diff)) + ' over',
+    };
   }
 
-  const wb = XLSX_LIB.utils.book_new();
-  const ws = XLSX_LIB.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{ wch: 12 }, { wch: 40 }, { wch: 28 }, { wch: 8 }, { wch: 8 }, { wch: 10 }];
-  XLSX_LIB.utils.book_append_sheet(wb, ws, 'Run of Show');
+  // Speaker summary
+  const speakerNames = [...new Set(items.filter(i => i.performer).map(i => i.performer))].join(', ');
 
-  const filename = show.name.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '_run_of_show.xlsx';
-  const wbout = XLSX_LIB.write(wb, { bookType: 'xlsx', type: 'array' });
-  const blob = new Blob([wbout], { type: 'application/octet-stream' });
+  return { items, parked, totalSecs, estSecs, rows, bufferInfo, speakerNames };
+}
+
+// ── Excel export ──────────────────────────────────────────────────────────────
+
+async function exportToExcel(show) {
+  const { totalSecs, estSecs, rows, bufferInfo, speakerNames } = buildShowData(show);
+
+  const xlRows = [];
+
+  // Title row
+  xlRows.push([show.name, '', '', '', '', '']);
+  // Summary row
+  xlRows.push([
+    (speakerNames ? 'Speaker: ' + speakerNames + '  |  ' : '') +
+    'Target: ' + toMinLabel(estSecs) + '  |  Script rate: 140 wpm',
+    '', '', '', '', ''
+  ]);
+  xlRows.push(['', '', '', '', '', '', '', '']);
+  // Header row
+  xlRows.push(['Section', 'Content', 'Speaker', 'Start', 'End', 'Duration']);
+
+  // Data rows
+  for (const r of rows) {
+    xlRows.push([r.section, r.content, r.speaker, r.start, r.end, toMinLabel(r.duration)]);
+  }
+
+  // Total row
+  xlRows.push(['', 'TOTAL RUNTIME', '', toHHMM(0), toHHMM(totalSecs), toMinLabel(totalSecs)]);
+
+  // Target / buffer row
+  if (bufferInfo) {
+    xlRows.push(['', 'TARGET: ' + toMinLabel(estSecs) + '  |  ' + bufferInfo.status, '', '', '', bufferInfo.sign + toMinLabel(Math.abs(bufferInfo.diff))]);
+  }
+
+  const buffer = await window.ExcelExport.generate({
+    sheetName: 'Run of Show',
+    rows: xlRows,
+    colWidths: [12, 40, 28, 8, 8, 10],
+  });
+
+  const filename = show.name.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.xlsx';
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = filename;
@@ -167,16 +195,12 @@ async function exportToWord(show) {
   const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
     HeadingLevel, WidthType, BorderStyle } = window.docx;
 
-  const items  = runItems(show);
-  const parked = parkedItems(show);
-  const totalSecs = items.filter(i => !i.isChapterMark).reduce((s, i) => s + (i.durationSeconds || 0), 0);
-  const estSecs = show.estimatedDurationSeconds ||
-    items.filter(i => i.isChapterMark && i.estimatedDurationSeconds).reduce((s, i) => s + (i.estimatedDurationSeconds || 0), 0);
+  const { totalSecs, estSecs, rows, bufferInfo, speakerNames } = buildShowData(show);
 
   const border = { style: BorderStyle.SINGLE, size: 1, color: 'AAAAAA' };
   const borders = { top: border, bottom: border, left: border, right: border };
 
-  const cell = (text, bold = false, widthPct = 20) =>
+  const cell = (text, bold = false, widthPct = 16) =>
     new TableCell({
       width: { size: widthPct, type: WidthType.PERCENTAGE },
       borders,
@@ -186,65 +210,49 @@ async function exportToWord(show) {
       })],
     });
 
-  // Build section map: item id -> section name
-  const sectionMap = {};
-  let currentSection = '';
-  for (const item of items) {
-    if (item.isChapterMark) { currentSection = item.title; }
-    else { sectionMap[item.id] = currentSection; }
-  }
-
+  // Header row
   const headerRow = new TableRow({ tableHeader: true, children: [
-    cell('#', true, 5), cell('Section', true, 18), cell('Type', true, 12),
-    cell('Title', true, 28), cell(show.performerLabel, true, 17),
-    cell('Duration', true, 10), cell('Notes', true, 10),
+    cell('Section', true, 14), cell('Content', true, 34), cell('Speaker', true, 22),
+    cell('Start', true, 8), cell('End', true, 8), cell('Duration', true, 14),
   ]});
 
-  let seq = 0;
-  const dataRows = items
-    .filter(i => !i.isChapterMark)
-    .map(item => {
-      seq++;
-      const et = show.elementTypes.find(t => t.id === item.elementTypeId);
-      return new TableRow({ children: [
-        cell(seq, false, 5),
-        cell(sectionMap[item.id] || '', false, 18),
-        cell(et?.name || '', false, 12),
-        cell(item.title, false, 28),
-        cell(item.performer || '', false, 17),
-        cell(formatMins(item.durationSeconds), false, 10),
-        cell(item.notes || '', false, 10),
-      ]});
-    });
+  // Data rows from shared builder
+  const dataRows = rows.map(r => new TableRow({ children: [
+    cell(r.section, false, 14),
+    cell(r.content, false, 34),
+    cell(r.speaker, false, 22),
+    cell(r.start, false, 8),
+    cell(r.end, false, 8),
+    cell(toMinLabel(r.duration), false, 14),
+  ]}));
+
+  // Total row
+  const totalRow = new TableRow({ children: [
+    cell('', false, 14), cell('TOTAL RUNTIME', true, 34), cell('', false, 22),
+    cell(toHHMM(0), false, 8), cell(toHHMM(totalSecs), false, 8),
+    cell(toMinLabel(totalSecs), true, 14),
+  ]});
+
+  const tableRows = [headerRow, ...dataRows, totalRow];
+
+  if (bufferInfo) {
+    const targetRow = new TableRow({ children: [
+      cell('', false, 14),
+      cell('TARGET: ' + toMinLabel(estSecs) + '  |  ' + bufferInfo.status, true, 34),
+      cell('', false, 22), cell('', false, 8), cell('', false, 8),
+      cell(bufferInfo.sign + toMinLabel(Math.abs(bufferInfo.diff)), false, 14),
+    ]});
+    tableRows.push(targetRow);
+  }
 
   const docChildren = [
     new Paragraph({ text: show.name, heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }),
     new Paragraph({ spacing: { after: 300 }, children: [
-      new TextRun({ text: 'Total: ' + formatMins(totalSecs), size: 20, font: 'Calibri' }),
-      estSecs ? new TextRun({ text: '   Target: ' + formatMins(estSecs), size: 20, font: 'Calibri' }) : new TextRun(''),
-      new TextRun({ text: '   Items: ' + dataRows.length, size: 20, font: 'Calibri' }),
+      new TextRun({ text: (speakerNames ? 'Speaker: ' + speakerNames + '  |  ' : '') +
+        'Target: ' + toMinLabel(estSecs) + '  |  Script rate: 140 wpm', size: 20, font: 'Calibri' }),
     ]}),
-    new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] }),
+    new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: tableRows }),
   ];
-
-  if (parked.length > 0) {
-    docChildren.push(new Paragraph({ text: 'Parking Lot', heading: HeadingLevel.HEADING_2, spacing: { before: 400, after: 120 } }));
-    const parkRows = [
-      new TableRow({ tableHeader: true, children: [
-        cell('Type', true, 20), cell('Title', true, 40),
-        cell(show.performerLabel, true, 20), cell('Duration', true, 10), cell('Notes', true, 10),
-      ]}),
-      ...parked.map(item => {
-        const et = show.elementTypes.find(t => t.id === item.elementTypeId);
-        return new TableRow({ children: [
-          cell(et?.name || '', false, 20), cell(item.title, false, 40),
-          cell(item.performer || '', false, 20), cell(formatMins(item.durationSeconds), false, 10),
-          cell(item.notes || '', false, 10),
-        ]});
-      }),
-    ];
-    docChildren.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: parkRows }));
-  }
 
   const doc = new Document({
     sections: [{ children: docChildren }],
@@ -255,7 +263,7 @@ async function exportToWord(show) {
   const url = URL.createObjectURL(buffer);
   const a = document.createElement('a');
   a.href = url;
-  a.download = show.name.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.showflow.docx';
+  a.download = show.name.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.docx';
   document.body.appendChild(a); a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);

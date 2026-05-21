@@ -551,32 +551,12 @@ async function sendMessage() {
         appendChatError(error.message);
         showErrorToast(`Bedrock error: ${error.message}`);
     } finally {
+        window.electronAPI.removeAllListeners('bedrock-stream-chunk');
+        window.electronAPI.removeAllListeners('bedrock-stream-complete');
         setAnalyzeBtnState(false);
     }
 }
 
-/*
-// Handle transcription
-document.getElementById('transcribeButton').addEventListener('click', async () => {
-    const mediaFile = document.getElementById('mediaFile').files[0];
-    const transcriptionArea = document.getElementById('transcriptionResult');
-
-    if (!mediaFile) {
-        alert('Please select a media file first');
-        return;
-    }
-
-    transcriptionArea.innerHTML = 'Starting transcription...';
-    try {
-        const response = await ipcRenderer.invoke('transcribe-media', {
-            filePath: mediaFile.path
-        });
-        transcriptionArea.innerHTML = response;
-    } catch (error) {
-        transcriptionArea.innerHTML = `Error: ${error.message}`;
-    }
-});
-*/
 
 // Load available Bedrock models on startup
 async function loadBedrockModels() {
@@ -646,19 +626,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // Auto-update notifications
+    // Auto-update pill - inject into navbar
+    function showUpdatePill() {
+        if (document.getElementById('updatePill')) return;
+        const template = document.getElementById('updatePillTemplate');
+        const pill = template.content.cloneNode(true);
+        const navRight = document.querySelector('.navbar-nav.ms-auto');
+        navRight.insertBefore(pill, navRight.firstChild);
+        document.getElementById('updateInstallBtn')?.addEventListener('click', () => {
+            window.electronAPI.invoke('install-update');
+        });
+    }
+
     window.electronAPI.receive('update-available', (version) => {
-        const banner = document.getElementById('updateBanner');
-        document.getElementById('updateBannerText').textContent = `Update available: v${version} — downloading in background...`;
-        banner.style.display = 'block';
+        showUpdatePill();
+        const pillEl = document.querySelector('.update-pill');
+        pillEl.classList.add('update-pill--downloading');
+        document.getElementById('updatePillText').textContent = `v${version} downloading`;
     });
     window.electronAPI.receive('update-downloaded', () => {
-        const banner = document.getElementById('updateBanner');
-        document.getElementById('updateBannerText').textContent = 'Update ready to install.';
+        showUpdatePill();
+        const pillEl = document.querySelector('.update-pill');
+        pillEl.classList.remove('update-pill--downloading');
+        document.getElementById('updatePillText').textContent = 'Update ready';
         document.getElementById('updateInstallBtn').style.display = 'inline-block';
-        banner.style.display = 'block';
-    });
-    document.getElementById('updateInstallBtn')?.addEventListener('click', () => {
-        window.electronAPI.invoke('install-update');
     });
     
     // Auto-load the most recent conversation
@@ -730,13 +721,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Function to load knowledge bases
 async function loadKnowledgeBases() {
     try {
-        let knowledgeBases = localStorage.getItem('knowledgeBases');
-        if (knowledgeBases === null) {
+        const KB_TTL_MS = 30 * 60 * 1000; // 30 minutes
+        let knowledgeBases = null;
+        const cached = localStorage.getItem('knowledgeBases');
+        const cachedAt = parseInt(localStorage.getItem('knowledgeBases_ts') || '0', 10);
+        if (cached && (Date.now() - cachedAt) < KB_TTL_MS) {
+            knowledgeBases = JSON.parse(cached);
+        } else {
             knowledgeBases = await window.electronAPI.invoke('get-knowledge-bases');
             localStorage.setItem('knowledgeBases', JSON.stringify(knowledgeBases));
-        }
-        else {
-            knowledgeBases = JSON.parse(knowledgeBases);
+            localStorage.setItem('knowledgeBases_ts', String(Date.now()));
         }
 
         const knowledgeBaseSelect = document.getElementById('knowledgeBaseSelect');
@@ -792,11 +786,12 @@ async function renderConversationList(filter = '') {
         const item = document.createElement('div');
         item.className = 'conv-item' + (currentConversation && currentConversation.id === conv.id ? ' active' : '');
         item.dataset.id = conv.id;
+        const escaped = conv.title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         const title = query
-            ? conv.title.replace(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<mark>$1</mark>')
-            : conv.title;
+            ? escaped.replace(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<mark>$1</mark>')
+            : escaped;
         item.innerHTML = `
-            <span class="conv-item-title" title="${conv.title}">${title}</span>
+            <span class="conv-item-title" title="${escaped}">${title}</span>
             <button class="conv-item-delete" data-id="${conv.id}" title="Delete conversation">
                 <i class="bi bi-trash"></i>
             </button>`;
@@ -967,13 +962,10 @@ function simpleCitationParser(responseData) {
 }
 
 function formatText(text) {
-    // Handle bold markdown
-    text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
-    // Handle line breaks
-    text = text.replace(/\n/g, '<br>');
-
-    return text;
+    if (window.marked && window.marked.parse) {
+        return window.marked.parse(text);
+    }
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
 }
 
 function cleanupAnalysisText(text) {
@@ -1069,6 +1061,7 @@ function resetTranscriptionUI() {
 function performClearTranscription() {
     // Reset the file input
     fileInput.value = '';
+    currentTranscript = [];
 
     // Clear video player and hide video container
     videoPlayer.src = '';
@@ -1162,6 +1155,7 @@ async function uploadFile(file) {
     }
 }
 function displayTranscript(timestampedTranscript) {
+    currentTranscript = [];
 
     if (!timestampedTranscript || timestampedTranscript.length === 0) {
         transcriptionText.innerHTML = 'No transcription data available';

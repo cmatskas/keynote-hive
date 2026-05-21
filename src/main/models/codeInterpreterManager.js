@@ -23,7 +23,7 @@ class CodeInterpreterManager {
     const response = await this.client.send(
       new StartCodeInterpreterSessionCommand({
         codeInterpreterIdentifier: this.codeInterpreterIdentifier,
-        name: `transcribely-${Date.now()}`,
+        name: `hive-${Date.now()}`,
         sessionTimeoutSeconds: timeoutSeconds,
       })
     );

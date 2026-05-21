@@ -12,11 +12,10 @@ const log = require('electron-log/main');
  *       feed toolResult back → Converse again → repeat until end_turn.
  */
 class AgentToolExecutor {
-  constructor({ bedrockClient, skillsManager, codeInterpreterManager, browserManager, memoryManager, sessionId, settings, signal, onStatus, onChunk }) {
+  constructor({ bedrockClient, skillsManager, codeInterpreterManager, memoryManager, sessionId, settings, signal, onStatus, onChunk }) {
     this.bedrock = bedrockClient;
     this.skills = skillsManager;
     this.codeInterpreter = codeInterpreterManager;
-    this.browser = browserManager;
     this.memory = memoryManager;
     this.sessionId = sessionId;
     this.settings = settings || {};
@@ -216,34 +215,11 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
     }
 
     // Build user message content
+    const { buildFileContentBlocks } = require('../utils');
     const userContent = [{ text: prompt }];
-    for (const file of files) {
-      const ext = file.name.toLowerCase().split('.').pop();
-      if (['pptx', 'ppt'].includes(ext)) {
-        // Extract via code interpreter — start session if not already running
-        if (!this.codeInterpreter.sessionId) {
-          await this.codeInterpreter.startSession();
-        }
-        await this.codeInterpreter.writeFiles([{ path: file.name, blob: Buffer.from(Array.isArray(file.content) ? file.content : file.content) }]);
-        const result = await this.codeInterpreter.executeCode(`
-from pptx import Presentation
-prs = Presentation("${file.name}")
-slides = []
-for i, slide in enumerate(prs.slides):
-    texts = [shape.text_frame.text for shape in slide.shapes if shape.has_text_frame and shape.text_frame.text.strip()]
-    if texts:
-        slides.append(f"Slide {i+1}:\\n" + "\\n".join(texts))
-print("\\n\\n".join(slides))
-`);
-        userContent.push({ text: `\n--- Content from ${file.name} ---\n${result.text}\n--- End ---\n` });
-      } else if (['pdf', 'doc', 'docx', 'xls', 'xlsx'].includes(ext)) {
-        const bytes = Array.isArray(file.content) ? Buffer.from(file.content) : Buffer.from(file.content);
-        userContent.push({
-          document: { name: sanitizeFileName(file.name), format: ext, source: { bytes } },
-        });
-      } else {
-        userContent.push({ text: `\n--- Content from ${file.name} ---\n${file.content}\n--- End ---\n` });
-      }
+    if (files.length > 0) {
+      const fileBlocks = await buildFileContentBlocks(files, { codeInterpreter: this.codeInterpreter });
+      userContent.push(...fileBlocks);
     }
     messages.push({ role: 'user', content: userContent });
 
@@ -358,11 +334,6 @@ print("\\n\\n".join(slides))
         }
       }
 
-      // Browser cleanup (sandbox is managed externally per conversation)
-      if (this.browser.sessionId) {
-        this.onStatus({ tool: 'cleanup', detail: 'Closing browser', state: 'running' });
-        await this.browser.stopSession().catch(() => {});
-      }
     }
   }
 
@@ -541,12 +512,13 @@ print("\\n\\n".join(slides))
     this.onStatus(`Reading ${resolved}...`);
     const buffer = await fs.readFile(resolved);
     const base64 = buffer.toString('base64');
+    const safePath = sandboxPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const code = `
 import base64
 data = base64.b64decode("${base64}")
-with open("${sandboxPath}", "wb") as f:
+with open("${safePath}", "wb") as f:
     f.write(data)
-print(f"Wrote {len(data)} bytes to ${sandboxPath}")
+print(f"Wrote {len(data)} bytes to ${safePath}")
 `;
     const result = await this.codeInterpreter.executeCode(code);
     // Input files already exist locally (user provided them) — skip auto-save to Downloads
@@ -635,55 +607,44 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")
   }
 
   async _handleWeb({ url, query }) {
-    // Direct URL — always use browser
-    if (url) {
-      if (!this.browser.sessionId) {
-        this.onStatus('Starting browser session...');
-        await this.browser.startSession();
-      }
-      this.onStatus(`Navigating to ${url}...`);
-      const nav = await this.browser.navigate(url);
-      this.onStatus('Extracting page content...');
-      const content = await this.browser.getPageContent();
-      const truncated = content.length > 15000 ? content.substring(0, 15000) + '\n\n[Content truncated]' : content;
-      return { url, title: nav.title, content: truncated };
-    }
+    if (!this.settings.jinaApiKey) throw new Error('Jina API key not configured — web tool unavailable');
 
-    // Search query — use Jina if key available, else DuckDuckGo via browser
-    if (this.settings.jinaApiKey) {
-      this.onStatus(`Searching (Jina): ${query}...`);
-      const res = await fetch(`https://s.jina.ai/${encodeURIComponent(query)}`, {
+    if (url) {
+      this.onStatus(`Reading ${url}...`);
+      const res = await fetch(`https://r.jina.ai/${url}`, {
         headers: { 'Authorization': `Bearer ${this.settings.jinaApiKey}`, 'Accept': 'application/json' },
       });
-      if (!res.ok) throw new Error(`Jina search failed: ${res.status}`);
+      if (!res.ok) throw new Error(`Jina reader failed: ${res.status}`);
       const data = await res.json();
-      const results = (data.data || []).slice(0, 5).map(r => ({
-        title: r.title, url: r.url, content: (r.content || '').substring(0, 3000),
-      }));
-      return { query, source: 'jina', results };
+      const content = (data.data?.content || '').substring(0, 15000);
+      return { url, title: data.data?.title || '', content };
     }
 
-    // Fallback: DuckDuckGo via browser
-    if (!this.browser.sessionId) {
-      this.onStatus('Starting browser session...');
-      await this.browser.startSession();
-    }
-    const targetUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
     this.onStatus(`Searching: ${query}...`);
-    const nav = await this.browser.navigate(targetUrl);
-    this.onStatus('Extracting search results...');
-    const content = await this.browser.getPageContent();
-    const truncated = content.length > 10000 ? content.substring(0, 10000) + '\n\n[Content truncated]' : content;
-    return { url: targetUrl, title: nav.title, content: truncated };
+    const res = await fetch(`https://s.jina.ai/${encodeURIComponent(query)}`, {
+      headers: { 'Authorization': `Bearer ${this.settings.jinaApiKey}`, 'Accept': 'application/json' },
+    });
+    if (!res.ok) throw new Error(`Jina search failed: ${res.status}`);
+    const data = await res.json();
+    const results = (data.data || []).slice(0, 5).map(r => ({
+      title: r.title, url: r.url, content: (r.content || '').substring(0, 3000),
+    }));
+    return { query, source: 'jina', results };
   }
 
   async _handleListDirectory(dirPath) {
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    const resolved = path.resolve(dirPath);
+    const home = require('os').homedir();
+    if (!resolved.startsWith(home) && !resolved.startsWith('/tmp')) {
+      return { error: `Blocked: list path must be within user home directory (${home})` };
+    }
+
+    const entries = await fs.readdir(resolved, { withFileTypes: true });
     const items = entries.map(e => ({
       name: e.name,
       type: e.isDirectory() ? 'directory' : 'file',
     }));
-    return { path: dirPath, count: items.length, entries: items };
+    return { path: resolved, count: items.length, entries: items };
   }
 
 }

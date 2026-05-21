@@ -13,11 +13,10 @@ const { app } = require('electron');
 const log = require('electron-log/main');
 
 class SwarmOrchestrator {
-  constructor({ awsConfig, skillsManager, codeInterpreterManager, browserManager, settings, onEvent }) {
+  constructor({ awsConfig, skillsManager, codeInterpreterManager, settings, onEvent }) {
     this.awsConfig = awsConfig;
     this.skills = skillsManager;
     this.codeInterpreter = codeInterpreterManager;
-    this.browser = browserManager;
     this.settings = settings;
     this.onEvent = onEvent || (() => {});
     this.runs = new Map();
@@ -217,6 +216,7 @@ class SwarmOrchestrator {
       await this._saveState(swarmId, state);
       // Clean up checkpoint files — state.json has all we need for analytics
       this._cleanupOutputFiles(swarmId).catch(() => {});
+      this._pruneOldRuns().catch(() => {});
       this.onEvent('swarm-pipeline-done', { swarmId, finalOutput: previousOutput });
     } catch (err) {
       state.status = 'error';
@@ -255,7 +255,7 @@ class SwarmOrchestrator {
 
     // Build tools — platform tools from template config + request_input for non-quality-gate agents
     const tools = createSwarmTools(
-      { codeInterpreterManager: this.codeInterpreter, browserManager: this.browser, settings: this.settings, onStatus: (msg) => this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n🔧 ${msg}\n` }) },
+      { codeInterpreterManager: this.codeInterpreter, settings: this.settings, onStatus: (msg) => this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n🔧 ${msg}\n` }) },
       agentConfig.tools || []
     );
 
@@ -366,6 +366,20 @@ class SwarmOrchestrator {
     }
   }
 
+  async _pruneOldRuns(maxRuns = 50) {
+    try {
+      const dirs = await fs.readdir(this.runsDir);
+      if (dirs.length <= maxRuns) return;
+      const sorted = dirs.sort();
+      const toDelete = sorted.slice(0, sorted.length - maxRuns);
+      for (const dir of toDelete) {
+        const full = path.join(this.runsDir, dir);
+        await fs.rm(full, { recursive: true, force: true }).catch(() => {});
+      }
+      log.info(`[swarm] Pruned ${toDelete.length} old run(s)`);
+    } catch { /* runsDir may not exist */ }
+  }
+
   // ── Adaptive Learning ─────────────────────────────────
 
   async _runVideoAnalysisAgent(swarmId, agentConfig, input, brief, agentIndex, videoFiles) {
@@ -471,9 +485,9 @@ class SwarmOrchestrator {
       const fsLocal = require('fs').promises;
       const os = require('os');
       const home = os.homedir();
-      // Look for ~/Documents/Transcribely/*.docx or *.pptx in the output
-      const pathMatch = output.match(/~\/Documents\/Transcribely\/[^\s"'`]+\.(docx|pptx|xlsx)/i)
-        || output.match(new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/Documents/Transcribely/[^\\s"\'`]+\\.(docx|pptx|xlsx)', 'i'));
+      // Look for ~/Documents/Hive/*.docx or *.pptx in the output
+      const pathMatch = output.match(/~\/Documents\/Hive\/[^\s"'`]+\.(docx|pptx|xlsx)/i)
+        || output.match(new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/Documents/Hive/[^\\s"\'`]+\\.(docx|pptx|xlsx)', 'i'));
       if (!pathMatch) {
         this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: '\n⚠️ Formatter did not report a local file path.\n' });
         return null;

@@ -1,6 +1,6 @@
 /**
  * Strands tool factory — creates Zod-based Strands tools that wrap
- * Transcribely's existing tool implementations (code interpreter, browser, file I/O).
+ * Hive's existing tool implementations (code interpreter, web, file I/O).
  */
 const { tool } = require('@strands-agents/sdk');
 const { z } = require('zod');
@@ -9,7 +9,7 @@ const os = require('os');
 const fsPromises = require('fs').promises;
 const log = require('electron-log/main');
 
-function createSwarmTools({ codeInterpreterManager, browserManager, settings, onStatus }, toolNames) {
+function createSwarmTools({ codeInterpreterManager, settings, onStatus }, toolNames) {
   const home = os.homedir();
 
   /** Resolve path: expand ~, resolve to absolute, block outside home */
@@ -120,48 +120,29 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
       }),
       callback: async (input) => {
         try {
-          // Direct URL — always use browser
-          if (input.url) {
-            if (!browserManager) throw new Error('Browser not available');
-            if (!browserManager.sessionId) {
-              onStatus?.('Starting browser session...');
-              await browserManager.startSession();
-            }
-            onStatus?.(`Navigating to ${input.url}...`);
-            const nav = await browserManager.navigate(input.url);
-            onStatus?.('Extracting page content...');
-            const content = await browserManager.getPageContent();
-            const truncated = content.length > 15000 ? content.substring(0, 15000) + '\n\n[Content truncated]' : content;
-            return JSON.stringify({ url: input.url, title: nav.title, content: truncated });
-          }
+          if (!settings?.jinaApiKey) throw new Error('Jina API key not configured — web tool unavailable');
 
-          // Search query — use Jina if key available, else DuckDuckGo via browser
-          if (settings?.jinaApiKey) {
-            onStatus?.(`Searching (Jina): ${input.query}...`);
-            const res = await fetch(`https://s.jina.ai/${encodeURIComponent(input.query)}`, {
+          if (input.url) {
+            onStatus?.(`Reading ${input.url}...`);
+            const res = await fetch(`https://r.jina.ai/${input.url}`, {
               headers: { 'Authorization': `Bearer ${settings.jinaApiKey}`, 'Accept': 'application/json' },
             });
-            if (!res.ok) throw new Error(`Jina search failed: ${res.status}`);
+            if (!res.ok) throw new Error(`Jina reader failed: ${res.status}`);
             const data = await res.json();
-            const results = (data.data || []).slice(0, 5).map(r => ({
-              title: r.title, url: r.url, content: (r.content || '').substring(0, 3000),
-            }));
-            return JSON.stringify({ query: input.query, source: 'jina', results });
+            const content = (data.data?.content || '').substring(0, 15000);
+            return JSON.stringify({ url: input.url, title: data.data?.title || '', content });
           }
 
-          // Fallback: DuckDuckGo via browser
-          if (!browserManager) throw new Error('Browser not available');
-          if (!browserManager.sessionId) {
-            onStatus?.('Starting browser session...');
-            await browserManager.startSession();
-          }
-          const targetUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(input.query)}`;
           onStatus?.(`Searching: ${input.query}...`);
-          const nav = await browserManager.navigate(targetUrl);
-          onStatus?.('Extracting search results...');
-          const content = await browserManager.getPageContent();
-          const truncated = content.length > 10000 ? content.substring(0, 10000) + '\n\n[Content truncated]' : content;
-          return JSON.stringify({ url: targetUrl, title: nav.title, content: truncated });
+          const res = await fetch(`https://s.jina.ai/${encodeURIComponent(input.query)}`, {
+            headers: { 'Authorization': `Bearer ${settings.jinaApiKey}`, 'Accept': 'application/json' },
+          });
+          if (!res.ok) throw new Error(`Jina search failed: ${res.status}`);
+          const data = await res.json();
+          const results = (data.data || []).slice(0, 5).map(r => ({
+            title: r.title, url: r.url, content: (r.content || '').substring(0, 3000),
+          }));
+          return JSON.stringify({ query: input.query, source: 'jina', results });
         } catch (err) {
           onStatus?.(`Web error: ${err.message}`);
           return JSON.stringify({ error: err.message });

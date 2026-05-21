@@ -76,6 +76,70 @@ html[data-theme] {
     --info: #60a5fa;
 }
 
+/* Update notification pill */
+.update-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-accent);
+    border: 1px solid var(--border-accent);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--accent-primary);
+    animation: updateSlideIn 0.3s ease-out;
+    white-space: nowrap;
+}
+
+.update-pill-text {
+    opacity: 0.9;
+}
+
+.update-pill-btn {
+    background: var(--success);
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    padding: 2px 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.update-pill-btn:hover {
+    background: #059669;
+    transform: scale(1.05);
+}
+
+.update-pill-btn:active {
+    transform: scale(0.95);
+}
+
+/* Downloading state - subtle pulse */
+.update-pill--downloading .update-pill-text::after {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    background: var(--accent-primary);
+    border-radius: 50%;
+    margin-left: 6px;
+    vertical-align: middle;
+    animation: updatePulse 1.2s ease-in-out infinite;
+}
+
+@keyframes updateSlideIn {
+    from { opacity: 0; transform: translateX(10px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes updatePulse {
+    0%, 100% { opacity: 0.3; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.5); }
+}
+
 .header-banner {
     background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
     color: var(--text-inverse);

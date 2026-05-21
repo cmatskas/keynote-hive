@@ -162,7 +162,7 @@ STEP 1: Call execute_code with a SINGLE Python script that:
 
 STEP 2: Call save_file_locally with:
 - sandbox_path: /tmp/output.docx
-- local_path: ~/Documents/Transcribely/<descriptive_filename>.docx
+- local_path: ~/Documents/Hive/<descriptive_filename>.docx
 
 CRITICAL: Do NOT describe what you would do. Do NOT skip the execute_code call. Do NOT hallucinate file paths. Execute the code, then save the file. These are the only two actions you take.` },
     ],
@@ -205,7 +205,7 @@ STEP 1: Call execute_code with a SINGLE Python script that:
 
 STEP 2: Call save_file_locally with:
 - sandbox_path: /tmp/output.pptx
-- local_path: ~/Documents/Transcribely/<descriptive_filename>.pptx
+- local_path: ~/Documents/Hive/<descriptive_filename>.pptx
 
 CRITICAL: Do NOT describe what you would do. Do NOT skip the execute_code call. Do NOT hallucinate file paths. Execute the code, then save the file. These are the only two actions you take.` },
     ],
@@ -270,7 +270,7 @@ STEP 1: Call execute_code with a SINGLE Python script that:
 
 STEP 2: Call save_file_locally with:
 - sandbox_path: /tmp/output.pptx
-- local_path: ~/Documents/Transcribely/<descriptive_filename>.pptx
+- local_path: ~/Documents/Hive/<descriptive_filename>.pptx
 
 CRITICAL: Do NOT describe what you would do. Do NOT skip the execute_code call. Do NOT hallucinate file paths. Execute the code, then save the file. These are the only two actions you take.` },
     ],

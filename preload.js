@@ -2,21 +2,36 @@ const { contextBridge, ipcRenderer } = require('electron');
 const Toastify = require('toastify-js');
 const { marked } = require('marked');
 
-// Configure marked for safe rendering
+// Configure marked: enable GFM + line breaks, escape any raw HTML in source
 marked.setOptions({ breaks: true, gfm: true });
+const renderer = new marked.Renderer();
+const escapeHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+renderer.html = function (token) { return escapeHtml(token.raw || token.text || ''); };
+marked.use({ renderer });
 
-// Lightweight HTML sanitizer — strips script tags, event handlers, and dangerous elements
-function sanitizeHtml(html) {
-  return html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<iframe\b[^>]*>.*?<\/iframe>/gi, '')
-    .replace(/<object\b[^>]*>.*?<\/object>/gi, '')
-    .replace(/<embed\b[^>]*>/gi, '')
-    .replace(/\bon\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/javascript\s*:/gi, 'blocked:');
-}
+contextBridge.exposeInMainWorld('marked', { parse: (md) => marked.parse(md) });
 
-contextBridge.exposeInMainWorld('marked', { parse: (md) => sanitizeHtml(marked.parse(md)) });
+// Expose ExcelJS workbook generation to renderer
+const ExcelJS = require('exceljs');
+contextBridge.exposeInMainWorld('ExcelExport', {
+  /**
+   * Build an xlsx file from rows and return a downloadable Blob.
+   * @param {object} opts - { sheetName, rows: string[][], colWidths: number[] }
+   * @returns {Promise<Uint8Array>}
+   */
+  generate: async ({ sheetName, rows, colWidths }) => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(sheetName || 'Sheet1');
+    if (colWidths) {
+      sheet.columns = colWidths.map(w => ({ width: w }));
+    }
+    for (const row of rows) {
+      sheet.addRow(row);
+    }
+    const buffer = await workbook.xlsx.writeBuffer();
+    return new Uint8Array(buffer);
+  },
+});
 
 const ALLOWED_INVOKE_CHANNELS = new Set([
     'add-custom-prompt', 'cancel-agent', 'cancel-bedrock', 'compress-conversation', 'create-conversation', 'delete-conversation',

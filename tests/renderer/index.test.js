@@ -23,6 +23,16 @@ Object.defineProperty(window, 'electronAPI', {
     writable: true
 });
 
+// Mock window.marked (mirrors preload's exposed API)
+Object.defineProperty(window, 'marked', {
+    value: {
+        parse: (md) => md
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\n/g, '<br>')
+    },
+    writable: true
+});
+
 // Mock fetch
 global.fetch = jest.fn();
 

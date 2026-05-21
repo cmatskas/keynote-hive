@@ -17,7 +17,7 @@ const {
 const { BedrockAgentCoreClient } = require('@aws-sdk/client-bedrock-agentcore');
 const log = require('electron-log/main');
 
-const MEMORY_NAME = 'transcribely_memory';
+const MEMORY_NAME = 'hive_memory';
 const ACTOR_ID = 'user';
 const DEFAULT_STRATEGIES = [
   { semanticMemoryStrategy: { name: 'Facts', namespaces: ['/user/facts/'] } },
@@ -39,7 +39,7 @@ class MemoryManager {
 
   // ── Control Plane ──────────────────────────────────────────────
 
-  /** Create the Transcribely memory resource. Returns { id, status }. */
+  /** Create the Hive memory resource. Returns { id, status }. */
   async createMemory() {
     // Check if one already exists
     const existing = await this.findExistingMemory();
@@ -52,7 +52,7 @@ class MemoryManager {
     try {
       const res = await this.controlClient.send(new CreateMemoryCommand({
         name: MEMORY_NAME,
-        description: 'Transcribely agent memory — stores conversation context and user preferences',
+        description: 'Hive agent memory — stores conversation context and user preferences',
         strategies: DEFAULT_STRATEGIES,
         eventExpiryDuration: EVENT_EXPIRY_DAYS,
       }));
@@ -111,7 +111,7 @@ class MemoryManager {
     return res.memory.status;
   }
 
-  /** Find existing transcribely memory by name */
+  /** Find existing Hive memory by name */
   async findExistingMemory() {
     const res = await this.controlClient.send(new ListMemoriesCommand({ maxResults: 100 }));
     return (res.memories || []).find(m => m.name === MEMORY_NAME) || null;
