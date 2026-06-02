@@ -34,9 +34,6 @@ async function invokeBedrockNoKB(ctx, model, prompt, conversationHistory, files 
   ];
 
   const inferenceConfig = { maxTokens: 4096 };
-  if (!model.includes('opus-4-7')) {
-    inferenceConfig.temperature = 0.7;
-  }
 
   const command = new ConverseStreamCommand({ modelId: model, messages, inferenceConfig });
   const response = await ctx.awsClients.bedrock.send(command, signal ? { abortSignal: signal } : {});

@@ -184,9 +184,7 @@ describe('Bedrock LLM Integration Tests', () => {
             }
           ],
           inferenceConfig: {
-            maxTokens: 4096,
-            temperature: 0.7
-            // Note: topP cannot be used together with temperature per Bedrock API requirements
+            maxTokens: 4096
           }
         };
         
@@ -244,8 +242,7 @@ describe('Bedrock LLM Integration Tests', () => {
           }
         ],
         inferenceConfig: {
-          maxTokens: 100,
-          temperature: 0.7
+          maxTokens: 100
         }
       };
       
@@ -264,8 +261,7 @@ describe('Bedrock LLM Integration Tests', () => {
           }
         ],
         inferenceConfig: {
-          maxTokens: 100,
-          temperature: 0.7
+          maxTokens: 100
         }
       };
       
@@ -298,8 +294,7 @@ describe('Bedrock LLM Integration Tests', () => {
             }
           ],
           inferenceConfig: {
-            maxTokens: 4096,
-            temperature: 0.7
+            maxTokens: 4096
           }
         };
         
@@ -336,42 +331,6 @@ describe('Bedrock LLM Integration Tests', () => {
     const model = bedrockModels[0]; // Test with first model
     const prompt = `${defaultPrompts[0].prompt}\n\nText:\n${SAMPLE_TEXT}`;
     
-    it('should handle different temperature settings', async () => {
-      const temperatures = [0.1, 0.5, 0.9];
-      const responses = [];
-      
-      for (const temp of temperatures) {
-        const request = {
-          modelId: model.inferenceProfileId,
-          messages: [
-            {
-              role: "user",
-              content: [{ text: prompt }]
-            }
-          ],
-          inferenceConfig: {
-            maxTokens: 500,
-            temperature: temp
-          }
-        };
-        
-        const command = new ConverseCommand(request);
-        const response = await bedrockClient.send(command);
-        const responseText = response.output.message.content[0].text;
-        
-        responses.push({ temperature: temp, response: responseText });
-        
-        expect(responseText).toBeDefined();
-        expect(responseText.length).toBeGreaterThan(0);
-      }
-      
-      console.log('\n=== Temperature Variation Test ===');
-      responses.forEach(r => {
-        console.log(`\nTemperature ${r.temperature}:`);
-        console.log(`  Length: ${r.response.length} characters`);
-      });
-    }, 90000);
-
     it('should handle different maxTokens settings', async () => {
       const tokenLimits = [100, 500, 2000];
       

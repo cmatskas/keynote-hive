@@ -343,7 +343,7 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
       system: [{ text: await this.buildSystemPrompt(this._memoryContext) }],
       messages,
       toolConfig: this.getToolConfig(),
-      inferenceConfig: { maxTokens: model.includes('claude') ? 16384 : 8192, ...(model.includes('opus-4-7') ? {} : { temperature: 0.7 }) },
+      inferenceConfig: { maxTokens: model.includes('claude') ? 16384 : 8192 },
     });
 
     const response = await this.bedrock.send(command, { abortSignal: this.signal });
