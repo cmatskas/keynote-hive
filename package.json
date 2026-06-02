@@ -1,6 +1,6 @@
 {
   "name": "Hive",
-  "version": "2.11.1",
+  "version": "2.11.2",
   "description": "Electron app for Bedrock models and media transcription",
   "main": "main.js",
   "author": "Hive Team",
@@ -144,7 +144,7 @@
     "publish": {
       "provider": "github",
       "owner": "cmatskas",
-      "repo": "Hive"
+      "repo": "keynote-hive"
     }
   }
 }

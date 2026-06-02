@@ -91,4 +91,4 @@ if [ "$PLATFORM" = "win" ] || [ "$PLATFORM" = "all" ]; then
   echo ""
 fi
 
-echo "✓ Done. Release published to https://github.com/cmatskas/transcribly-xplat/releases"
+echo "✓ Done. Release published to https://github.com/cmatskas/keynote-hive/releases"
