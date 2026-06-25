@@ -37,35 +37,6 @@
       });
     });
 
-    // Jina API key — debounced autosave
-    let jinaDebounce = null;
-    document.getElementById('jinaApiKey').addEventListener('input', (e) => {
-      const status = document.getElementById('jinaKeyStatus');
-      clearTimeout(jinaDebounce);
-      const val = e.target.value.trim();
-      if (!val) {
-        status.textContent = '';
-        jinaDebounce = setTimeout(async () => {
-          await window.electronAPI.invoke('delete-jina-key');
-          status.textContent = 'Cleared';
-          setTimeout(() => { status.textContent = ''; }, 2000);
-        }, 500);
-        return;
-      }
-      status.textContent = 'Saving...';
-      jinaDebounce = setTimeout(async () => {
-        try {
-          await window.electronAPI.invoke('save-jina-key', val);
-          status.textContent = 'Saved ✓';
-          status.className = 'text-success small text-nowrap';
-          setTimeout(() => { status.textContent = ''; status.className = 'text-muted small text-nowrap'; }, 2000);
-        } catch {
-          status.textContent = 'Error';
-          status.className = 'text-danger small text-nowrap';
-        }
-      }, 500);
-    });
-
     // Config save
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
 
@@ -96,12 +67,6 @@
         document.getElementById('sessionToken').value = creds.sessionToken || '';
       }
     } catch { /* no credentials yet */ }
-
-    // Load Jina key status (masked value returned from main process)
-    try {
-      const jinaKey = await window.electronAPI.invoke('load-jina-key');
-      document.getElementById('jinaApiKey').value = jinaKey || '';
-    } catch { /* no key yet */ }
   }
 
   async function saveCredentials() {

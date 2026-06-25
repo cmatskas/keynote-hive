@@ -12,11 +12,12 @@ const log = require('electron-log/main');
  *       feed toolResult back → Converse again → repeat until end_turn.
  */
 class AgentToolExecutor {
-  constructor({ bedrockClient, skillsManager, codeInterpreterManager, memoryManager, sessionId, settings, signal, onStatus, onChunk }) {
+  constructor({ bedrockClient, skillsManager, codeInterpreterManager, memoryManager, webSearchManager, sessionId, settings, signal, onStatus, onChunk }) {
     this.bedrock = bedrockClient;
     this.skills = skillsManager;
     this.codeInterpreter = codeInterpreterManager;
     this.memory = memoryManager;
+    this.webSearchManager = webSearchManager;
     this.sessionId = sessionId;
     this.settings = settings || {};
     this.signal = signal || null;
@@ -607,29 +608,30 @@ print(f"Wrote {len(data)} bytes to ${safePath}")
   }
 
   async _handleWeb({ url, query }) {
-    if (!this.settings.jinaApiKey) throw new Error('Jina API key not configured — web tool unavailable');
-
     if (url) {
       this.onStatus(`Reading ${url}...`);
-      const res = await fetch(`https://r.jina.ai/${url}`, {
-        headers: { 'Authorization': `Bearer ${this.settings.jinaApiKey}`, 'Accept': 'application/json' },
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HiveAgent/1.0)' },
+        signal: AbortSignal.timeout(15000),
       });
-      if (!res.ok) throw new Error(`Jina reader failed: ${res.status}`);
-      const data = await res.json();
-      const content = (data.data?.content || '').substring(0, 15000);
-      return { url, title: data.data?.title || '', content };
+      if (!res.ok) throw new Error(`Failed to read URL (${res.status})`);
+      const html = await res.text();
+      // Strip HTML tags for a text-only view
+      const content = html
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+        .substring(0, 15000);
+      const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      return { url, title: titleMatch?.[1]?.trim() || '', content };
     }
 
+    if (!this.webSearchManager?.ready) throw new Error('Web search not available — AgentCore Gateway not initialized');
     this.onStatus(`Searching: ${query}...`);
-    const res = await fetch(`https://s.jina.ai/${encodeURIComponent(query)}`, {
-      headers: { 'Authorization': `Bearer ${this.settings.jinaApiKey}`, 'Accept': 'application/json' },
-    });
-    if (!res.ok) throw new Error(`Jina search failed: ${res.status}`);
-    const data = await res.json();
-    const results = (data.data || []).slice(0, 5).map(r => ({
-      title: r.title, url: r.url, content: (r.content || '').substring(0, 3000),
-    }));
-    return { query, source: 'jina', results };
+    const results = await this.webSearchManager.search(query, 5);
+    return { query, source: 'agentcore', results };
   }
 
   async _handleListDirectory(dirPath) {

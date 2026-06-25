@@ -83,38 +83,6 @@ class CredentialsManager {
     }
   }
 
-  // ── Jina API Key ────────────────────────────────────────
-
-  get jinaKeyPath() {
-    return path.join(path.dirname(this.credentialsPath), 'jina-credentials.json');
-  }
-
-  async saveJinaApiKey(key) {
-    const encrypted = safeStorage.encryptString(key);
-    await fs.writeFile(this.jinaKeyPath, JSON.stringify({ apiKey: encrypted }));
-    return true;
-  }
-
-  async loadJinaApiKey() {
-    try {
-      const data = JSON.parse(await fs.readFile(this.jinaKeyPath, 'utf8'));
-      let buf = data.apiKey;
-      if (buf && buf.type === 'Buffer' && buf.data) buf = Buffer.from(buf.data);
-      return safeStorage.decryptString(buf);
-    } catch (error) {
-      if (error.code === 'ENOENT') return null;
-      throw new Error(`Failed to load Jina API key: ${error.message}`);
-    }
-  }
-
-  async deleteJinaApiKey() {
-    try {
-      await fs.unlink(this.jinaKeyPath);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-    return true;
-  }
 }
 
 module.exports = CredentialsManager;

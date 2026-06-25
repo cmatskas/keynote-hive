@@ -40,8 +40,7 @@ npm run build      # production (all platforms)
 1. Open Settings → Credentials
 2. Paste your AWS credentials (auto-detected from any format)
 3. Click "Save & Test Credentials"
-4. (Optional) Add a [Jina AI](https://jina.ai) API key for high-quality web search — agents fall back to DuckDuckGo without one
-5. Start using the Work tab
+4. Start using the Work tab
 
 ## AWS Permissions Required
 
@@ -50,6 +49,7 @@ Your IAM user/role needs access to:
 - **Transcribe**: `StartTranscriptionJob`, `GetTranscriptionJob` (for Transcribe tab)
 - **S3**: `GetObject`, `PutObject`, `DeleteObject` on your bucket (for Transcribe tab)
 - **AgentCore**: `bedrock-agentcore:StartCodeInterpreterSession`, `bedrock-agentcore:InvokeCodeInterpreter`, `bedrock-agentcore:StopCodeInterpreterSession`, `bedrock-agentcore:StartBrowserSession`, `bedrock-agentcore:StopBrowserSession` (for Work/Swarm code execution and web browsing)
+- **AgentCore Gateway**: `bedrock-agentcore:CreateGateway`, `bedrock-agentcore:CreateGatewayTarget`, `bedrock-agentcore:ListGateways`, `bedrock-agentcore:GetGateway`, `bedrock-agentcore:ListGatewayTargets`, `bedrock-agentcore:GetGatewayTarget`, `bedrock-agentcore:InvokeGateway`, `bedrock-agentcore:InvokeWebSearch` (for web search via AgentCore Web Search Tool)
 
 <details>
 <summary>Optional permissions</summary>

@@ -9,7 +9,7 @@ const os = require('os');
 const fsPromises = require('fs').promises;
 const log = require('electron-log/main');
 
-function createSwarmTools({ codeInterpreterManager, settings, onStatus }, toolNames) {
+function createSwarmTools({ codeInterpreterManager, webSearchManager, settings, onStatus }, toolNames) {
   const home = os.homedir();
 
   /** Resolve path: expand ~, resolve to absolute, block outside home */
@@ -120,29 +120,29 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
       }),
       callback: async (input) => {
         try {
-          if (!settings?.jinaApiKey) throw new Error('Jina API key not configured — web tool unavailable');
-
           if (input.url) {
             onStatus?.(`Reading ${input.url}...`);
-            const res = await fetch(`https://r.jina.ai/${input.url}`, {
-              headers: { 'Authorization': `Bearer ${settings.jinaApiKey}`, 'Accept': 'application/json' },
+            const res = await fetch(input.url, {
+              headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HiveAgent/1.0)' },
+              signal: AbortSignal.timeout(15000),
             });
-            if (!res.ok) throw new Error(`Jina reader failed: ${res.status}`);
-            const data = await res.json();
-            const content = (data.data?.content || '').substring(0, 15000);
-            return JSON.stringify({ url: input.url, title: data.data?.title || '', content });
+            if (!res.ok) throw new Error(`Failed to read URL (${res.status})`);
+            const html = await res.text();
+            const content = html
+              .replace(/<script[\s\S]*?<\/script>/gi, '')
+              .replace(/<style[\s\S]*?<\/style>/gi, '')
+              .replace(/<[^>]+>/g, ' ')
+              .replace(/\s{2,}/g, ' ')
+              .trim()
+              .substring(0, 15000);
+            const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+            return JSON.stringify({ url: input.url, title: titleMatch?.[1]?.trim() || '', content });
           }
 
+          if (!webSearchManager?.ready) throw new Error('Web search not available — AgentCore Gateway not initialized');
           onStatus?.(`Searching: ${input.query}...`);
-          const res = await fetch(`https://s.jina.ai/${encodeURIComponent(input.query)}`, {
-            headers: { 'Authorization': `Bearer ${settings.jinaApiKey}`, 'Accept': 'application/json' },
-          });
-          if (!res.ok) throw new Error(`Jina search failed: ${res.status}`);
-          const data = await res.json();
-          const results = (data.data || []).slice(0, 5).map(r => ({
-            title: r.title, url: r.url, content: (r.content || '').substring(0, 3000),
-          }));
-          return JSON.stringify({ query: input.query, source: 'jina', results });
+          const results = await webSearchManager.search(input.query, 5);
+          return JSON.stringify({ query: input.query, source: 'agentcore', results });
         } catch (err) {
           onStatus?.(`Web error: ${err.message}`);
           return JSON.stringify({ error: err.message });

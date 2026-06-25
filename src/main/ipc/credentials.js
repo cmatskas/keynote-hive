@@ -45,23 +45,6 @@ function register(ipcMain, ctx) {
     }
   });
 
-  // Jina API key
-  ipcMain.handle('save-jina-key', async (_event, key) => {
-    await ctx.credentialsManager.saveJinaApiKey(key);
-    ctx.currentJinaApiKey = key;
-    return true;
-  });
-
-  ipcMain.handle('load-jina-key', async () => {
-    if (!ctx.currentJinaApiKey) ctx.currentJinaApiKey = await ctx.credentialsManager.loadJinaApiKey();
-    return ctx.currentJinaApiKey ? '••••••••' : null;
-  });
-
-  ipcMain.handle('delete-jina-key', async () => {
-    await ctx.credentialsManager.deleteJinaApiKey();
-    ctx.currentJinaApiKey = null;
-    return true;
-  });
 }
 
 module.exports = { register };

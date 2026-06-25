@@ -155,10 +155,6 @@ app.whenReady().then(async () => {
     }
   }
 
-  try {
-    ctx.currentJinaApiKey = await ctx.credentialsManager.loadJinaApiKey();
-  } catch { /* no key yet */ }
-
   // Ensure splash visible for minimum time
   const MIN_SPLASH_MS = 1500;
   const elapsed = Date.now() - splashStart;

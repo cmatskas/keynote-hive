@@ -11,12 +11,13 @@ const CustomPromptsManager = require('./models/customPromptsManager');
 const SkillsManager = require('./models/skillsManager');
 const WorkHistoryManager = require('./models/workHistoryManager');
 const CodeInterpreterManager = require('./models/codeInterpreterManager');
+const WebSearchManager = require('./models/webSearchManager');
 
 class AppContext {
   constructor() {
     this.currentCredentials = null;
     this.currentSettings = null;
-    this.currentJinaApiKey = null;
+    this.webSearchManager = null;
     this.awsClients = {};
     this.mainWindow = null;
     this.credentialMonitor = null;
@@ -55,6 +56,12 @@ class AppContext {
       }),
       agentCoreConfig: clientConfig,
     };
+
+    // Initialize web search (async, non-blocking)
+    this.webSearchManager = new WebSearchManager(credentials);
+    this.webSearchManager.initialize().catch(err => {
+      console.warn('[web-search] Initialization deferred:', err.message);
+    });
   }
 
   getOrCreateSandbox(sessionId) {

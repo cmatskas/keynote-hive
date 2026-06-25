@@ -18,7 +18,8 @@ function createSwarmOrchestrator(ctx) {
     awsConfig: ctx.awsClients.agentCoreConfig,
     skillsManager: ctx.skillsManager,
     codeInterpreterManager: new CodeInterpreterManager(ctx.awsClients.agentCoreConfig),
-    settings: { ...(ctx.currentSettings || {}), jinaApiKey: ctx.currentJinaApiKey },
+    webSearchManager: ctx.webSearchManager,
+    settings: { ...(ctx.currentSettings || {}) },
     onEvent: (channel, data) => {
       if (ctx.mainWindow) ctx.mainWindow.webContents.send(channel, data);
       if (channel === 'swarm-review-pause') {

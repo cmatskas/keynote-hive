@@ -16,7 +16,6 @@ function register(ipcMain, ctx) {
     ctx.agentAbortControllers.set(sessionId, abortController);
 
     const settings = await ctx.settingsManager.loadSettings();
-    settings.jinaApiKey = ctx.currentJinaApiKey;
     let memManager = null;
     if (settings.memoryId && settings.memoryEnabled && ctx.awsClients.agentCoreConfig) {
       memManager = new MemoryManager(ctx.awsClients.agentCoreConfig);
@@ -31,6 +30,7 @@ function register(ipcMain, ctx) {
       skillsManager: ctx.skillsManager,
       codeInterpreterManager: ciManager,
       memoryManager: memManager,
+      webSearchManager: ctx.webSearchManager,
       sessionId,
       settings,
       signal: abortController.signal,

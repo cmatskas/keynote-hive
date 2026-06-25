@@ -13,10 +13,11 @@ const { app } = require('electron');
 const log = require('electron-log/main');
 
 class SwarmOrchestrator {
-  constructor({ awsConfig, skillsManager, codeInterpreterManager, settings, onEvent }) {
+  constructor({ awsConfig, skillsManager, codeInterpreterManager, webSearchManager, settings, onEvent }) {
     this.awsConfig = awsConfig;
     this.skills = skillsManager;
     this.codeInterpreter = codeInterpreterManager;
+    this.webSearchManager = webSearchManager;
     this.settings = settings;
     this.onEvent = onEvent || (() => {});
     this.runs = new Map();
@@ -255,7 +256,7 @@ class SwarmOrchestrator {
 
     // Build tools — platform tools from template config + request_input for non-quality-gate agents
     const tools = createSwarmTools(
-      { codeInterpreterManager: this.codeInterpreter, settings: this.settings, onStatus: (msg) => this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n🔧 ${msg}\n` }) },
+      { codeInterpreterManager: this.codeInterpreter, webSearchManager: this.webSearchManager, settings: this.settings, onStatus: (msg) => this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n🔧 ${msg}\n` }) },
       agentConfig.tools || []
     );
 
