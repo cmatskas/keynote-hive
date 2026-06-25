@@ -1,5 +1,24 @@
 # Release Notes
 
+## v2.12.0
+
+### New Features
+- **AgentCore Web Search Tool** — web search for Work and Swarm agents now uses Amazon Bedrock AgentCore's managed Web Search Tool instead of Jina AI. Queries stay entirely within AWS infrastructure (no third-party data egress), backed by Amazon's purpose-built index of tens of billions of documents with knowledge graph grounding and semantic snippet extraction.
+
+### Improvements
+- **No API key required for web search** — removed the Jina API key requirement from Settings → Credentials. Web search now authenticates via your existing AWS credentials automatically.
+- **Auto-provisioned Gateway** — Hive creates an AgentCore Gateway with the web-search connector on first use (in `us-east-1`). Subsequent launches reuse the existing gateway.
+- **URL reading without third-party dependency** — reading specific web pages no longer routes through Jina's reader API. Uses direct fetch with HTML-to-text extraction.
+
+### Removed
+- **Jina AI integration** — all Jina code, API key storage, IPC handlers, and Settings UI have been removed. The `jina-credentials.json` file is no longer used (safe to delete if present).
+
+### Permissions
+New IAM permissions required for web search:
+- `bedrock-agentcore:CreateGateway`, `CreateGatewayTarget`, `ListGateways`, `GetGateway`, `ListGatewayTargets`, `GetGatewayTarget` (one-time gateway setup)
+- `bedrock-agentcore:InvokeGateway` (per search invocation)
+- `bedrock-agentcore:InvokeWebSearch` (on the Gateway's service role)
+
 ## v2.11.0
 
 ### New Features
