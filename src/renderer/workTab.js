@@ -137,6 +137,33 @@
       badge.classList.add('d-none');
     });
 
+    // Skills Palette
+    const skillsBtn = document.getElementById('workSkillsBtn');
+    const skillsPalette = document.getElementById('workSkillsPalette');
+    const skillsPaletteClose = document.getElementById('workSkillsPaletteClose');
+
+    skillsBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const isOpen = skillsPalette.classList.contains('open');
+      if (isOpen) {
+        skillsPalette.classList.remove('open');
+      } else {
+        skillsPalette.classList.add('open');
+        await loadSkillsPalette();
+      }
+    });
+
+    skillsPaletteClose.addEventListener('click', (e) => {
+      e.stopPropagation();
+      skillsPalette.classList.remove('open');
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.skills-menu-wrap')) {
+        skillsPalette.classList.remove('open');
+      }
+    });
+
     // New Chat button
     const newChatBtn = document.getElementById('workNewChatBtn');
     if (newChatBtn) {
@@ -265,6 +292,94 @@
   async function cancelWorkMessage() {
     const sid = activeSessionId;
     await window.electronAPI.invoke('cancel-agent', { sessionId: sid }).catch(() => {});
+  }
+
+  // ── Skills Palette ─────────────────────────────────────────
+  const SKILL_STARTERS = {
+    'storybrand': 'Run a StoryBrand SB7 audit on this content:\n\n',
+    'copywriting': 'Write copy for: ',
+    'copy-editing': 'Edit and improve this copy:\n\n',
+    'marketing-psychology': 'Apply marketing psychology principles to: ',
+    'customer-research': 'Analyze this customer feedback:\n\n',
+    'launch-strategy': 'Help me plan a launch for: ',
+    'demo-storyboard': 'Create a demo storyboard for: ',
+    'doc-coauthoring': 'Help me write a document about: ',
+    'analysis-framework': 'Analyze this:\n\n',
+    'research-first': 'Research this topic: ',
+    'docx': 'Create a Word document: ',
+    'pptx': 'Create a PowerPoint presentation: ',
+    'xlsx': 'Create a spreadsheet: ',
+    'pdf': 'Create or read a PDF: ',
+    'web-browse': 'Search the web for: ',
+    'algorithmic-art': 'Create generative art: ',
+    'task-planner': 'Plan this task: ',
+    'self-correction': '',
+  };
+
+  const SKILL_ICONS = {
+    'storybrand': 'bi-bullseye',
+    'copywriting': 'bi-pencil-square',
+    'copy-editing': 'bi-spellcheck',
+    'marketing-psychology': 'bi-lightbulb',
+    'customer-research': 'bi-people',
+    'launch-strategy': 'bi-rocket-takeoff',
+    'demo-storyboard': 'bi-camera-reels',
+    'doc-coauthoring': 'bi-file-earmark-text',
+    'analysis-framework': 'bi-graph-up',
+    'research-first': 'bi-search',
+    'docx': 'bi-file-earmark-word',
+    'pptx': 'bi-file-earmark-ppt',
+    'xlsx': 'bi-file-earmark-spreadsheet',
+    'pdf': 'bi-file-earmark-pdf',
+    'web-browse': 'bi-globe',
+    'algorithmic-art': 'bi-palette',
+    'task-planner': 'bi-list-check',
+    'self-correction': 'bi-arrow-repeat',
+  };
+
+  async function loadSkillsPalette() {
+    const list = document.getElementById('workSkillsList');
+    try {
+      const skills = await window.electronAPI.invoke('get-skills');
+      const enabled = (skills || []).filter(s => !s.disabled);
+      if (enabled.length === 0) {
+        list.innerHTML = '<div class="text-muted small text-center py-3">No skills available.</div>';
+        return;
+      }
+      list.innerHTML = enabled.map(s => {
+        const icon = SKILL_ICONS[s.name] || 'bi-lightning';
+        const desc = s.description.replace(/Use when.*$/, '').replace(/\.$/, '').trim();
+        // Truncate description to first sentence
+        const shortDesc = desc.length > 100 ? desc.slice(0, 100).replace(/[,;]?\s+\S*$/, '…') : desc;
+        return `
+          <div class="skill-palette-item" data-skill="${escapeHtml(s.name)}">
+            <div class="skill-palette-item-icon"><i class="bi ${icon}"></i></div>
+            <div class="skill-palette-item-info">
+              <div class="skill-palette-item-name">${escapeHtml(s.name)}</div>
+              <div class="skill-palette-item-desc">${escapeHtml(shortDesc)}</div>
+            </div>
+            <button class="skill-palette-item-use" data-skill="${escapeHtml(s.name)}">Use</button>
+          </div>`;
+      }).join('');
+
+      list.querySelectorAll('.skill-palette-item').forEach(item => {
+        item.addEventListener('click', () => useSkill(item.dataset.skill));
+      });
+    } catch (err) {
+      list.innerHTML = `<div class="text-danger small text-center py-3">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function useSkill(name) {
+    const promptInput = document.getElementById('workPromptEditor');
+    const starter = SKILL_STARTERS[name] || `Use the ${name} skill: `;
+    promptInput.value = starter;
+    promptInput.focus();
+    // Adjust textarea height
+    promptInput.style.height = 'auto';
+    promptInput.style.height = Math.min(promptInput.scrollHeight, 200) + 'px';
+    // Close palette
+    document.getElementById('workSkillsPalette').classList.remove('open');
   }
 
   async function sendWorkMessage() {

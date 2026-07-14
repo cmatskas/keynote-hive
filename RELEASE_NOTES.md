@@ -1,5 +1,15 @@
 # Release Notes
 
+## v2.13.0
+
+### New Features
+- **StoryBrand SB7 Skill** — new skill that analyzes any content (websites, emails, pitches, keynotes, product pages) against Donald Miller's 7-element StoryBrand framework. Returns a structured audit with element-by-element scoring, quick-win rewrites, and a BrandScript draft. Includes a 25-brand reference library covering Consumer, B2B/SaaS, Non-Profit, and Finance sectors.
+- **Skills Palette (⚡ button)** — new button in the Work tab input toolbar that opens a browsable palette of all available skills. Each skill shows an icon and description; clicking "Use" inserts a contextual starter prompt into the textarea. Makes skills discoverable without needing to know they exist or memorize names.
+
+### Improvements
+- **Skill icons** — each skill now has a dedicated Bootstrap Icon in the palette for quick visual identification.
+- **Starter prompts** — selecting a skill from the palette pre-fills the input with a relevant prompt template, reducing friction for first-time use.
+
 ## v2.12.0
 
 ### New Features
