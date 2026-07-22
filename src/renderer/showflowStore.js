@@ -12,26 +12,6 @@ const DEFAULT_ELEMENT_TYPES = {
     { id: 'et-video',        name: 'Video',        icon: '🎬', color: '#F06292', isChapterMark: false, isDefault: true },
     { id: 'et-fireside',     name: 'Fireside',     icon: '🎤', color: '#4DB6AC', isChapterMark: false, isDefault: true },
   ],
-  dance_recital: [
-    { id: 'et-number',       name: 'Dance Number',  icon: '💃', color: '#F48FB1', isChapterMark: false, isDefault: true },
-    { id: 'et-costume',      name: 'Costume Change',icon: '👗', color: '#CE93D8', isChapterMark: false, isDefault: true },
-    { id: 'et-announcement', name: 'Announcement',  icon: '📢', color: '#80CBC4', isChapterMark: false, isDefault: true },
-    { id: 'et-intermission', name: 'Intermission',  icon: '⏸️', color: '#FFCC80', isChapterMark: false, isDefault: true },
-  ],
-  play: [
-    { id: 'et-scene',        name: 'Scene',        icon: '🎭', color: '#EF9A9A', isChapterMark: false, isDefault: true },
-    { id: 'et-song',         name: 'Song',         icon: '🎵', color: '#F48FB1', isChapterMark: false, isDefault: true },
-    { id: 'et-blackout',     name: 'Blackout',     icon: '⚫', color: '#616161', isChapterMark: false, isDefault: true },
-    { id: 'et-scene-change', name: 'Scene Change', icon: '🔄', color: '#80CBC4', isChapterMark: false, isDefault: true },
-    { id: 'et-intermission-play', name: 'Intermission', icon: '⏸️', color: '#FFCC80', isChapterMark: false, isDefault: true },
-  ],
-  concert: [
-    { id: 'et-song-c',   name: 'Song',      icon: '🎸', color: '#EF9A9A', isChapterMark: false, isDefault: true },
-    { id: 'et-set-break',name: 'Set Break', icon: '⏸️', color: '#FFCC80', isChapterMark: false, isDefault: true },
-    { id: 'et-intro',    name: 'Intro',     icon: '🎙️', color: '#80DEEA', isChapterMark: false, isDefault: true },
-    { id: 'et-outro',    name: 'Outro',     icon: '🎤', color: '#A5D6A7', isChapterMark: false, isDefault: true },
-    { id: 'et-encore',   name: 'Encore',    icon: '⭐', color: '#FFD54F', isChapterMark: false, isDefault: true },
-  ],
   custom: [
     { id: 'et-item', name: 'Item', icon: '📋', color: '#90CAF9', isChapterMark: false, isDefault: true },
   ],
@@ -41,9 +21,6 @@ const DEFAULT_ELEMENT_TYPES = {
 const DEFAULT_ET_IDS = new Set([
   'et-sys-chapter',
   'et-presentation', 'et-demo', 'et-video', 'et-fireside',
-  'et-number', 'et-costume', 'et-announcement', 'et-intermission',
-  'et-scene', 'et-song', 'et-blackout', 'et-scene-change', 'et-intermission-play',
-  'et-song-c', 'et-set-break', 'et-intro', 'et-outro', 'et-encore',
   'et-item',
 ]);
 
@@ -55,13 +32,11 @@ const CHAPTER_MARK_TYPE = {
 };
 
 const PERFORMER_LABELS = {
-  keynote: 'Speaker', dance_recital: 'Dancer', play: 'Actor',
-  concert: 'Performer', custom: 'Performer',
+  keynote: 'Speaker', custom: 'Performer',
 };
 
 const CHAPTER_LABELS = {
-  keynote: 'Section', dance_recital: 'Act', play: 'Act',
-  concert: 'Set', custom: 'Chapter',
+  keynote: 'Section', custom: 'Chapter',
 };
 
 function formatDuration(seconds) {
@@ -223,6 +198,15 @@ function updateShowEstimate(seconds) {
   _set(s => {
     if (!s.show) return s;
     const show = { ...s.show, estimatedDurationSeconds: seconds, updatedAt: new Date().toISOString() };
+    saveToStorage(show);
+    return { show };
+  });
+}
+
+function updateShowStartTime(startClockTime) {
+  _set(s => {
+    if (!s.show) return s;
+    const show = { ...s.show, startClockTime, updatedAt: new Date().toISOString() };
     saveToStorage(show);
     return { show };
   });
@@ -415,7 +399,7 @@ window.ShowflowStore = {
   getShow, getExpandedItemId, getOrphanCount, getRunItems, getParkingLotItems,
   getTotalDuration, getTotalEstimatedDuration, getChapterDuration, getPerformerSuggestions,
   // Actions
-  setShow, createShow, updateShowName, updateShowEstimate,
+  setShow, createShow, updateShowName, updateShowEstimate, updateShowStartTime,
   addItem, updateItem, deleteItem, moveToParking, moveFromParking,
   reorderItems, addElementType, updateElementType, deleteElementType, setExpandedItem,
   // File

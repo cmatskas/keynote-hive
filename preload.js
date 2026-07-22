@@ -15,7 +15,147 @@ contextBridge.exposeInMainWorld('marked', { parse: (md) => marked.parse(md) });
 const ExcelJS = require('exceljs');
 contextBridge.exposeInMainWorld('ExcelExport', {
   /**
-   * Build an xlsx file from rows and return a downloadable Blob.
+   * Build a showflow-style run-of-show xlsx workbook with live formulas,
+   * real Excel durations/times, merged header cells, and styling —
+   * matching the reference "Keynote" run-of-show format.
+   *
+   * @param {object} opts
+   * @param {string} opts.sheetName - worksheet tab name
+   * @param {string} opts.showName - title shown in the merged header banner
+   * @param {string} opts.lastUpdatedLabel - e.g. "Last Updated Jun 29"
+   * @param {string[]} opts.legendLines - short key/legend lines under the title (e.g. speaker roles)
+   * @param {string|null} opts.startClockTime - "HH:MM" 24h anchor for the clock-time column, or null
+   * @param {Array<{section:string, subsection:string, speaker:string, durationSeconds:number, notes?:string, bold?:boolean}>} opts.rows
+   * @returns {Promise<Uint8Array>}
+   */
+  generateShowflow: async ({ sheetName, showName, lastUpdatedLabel, legendLines, startClockTime, rows }) => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(sheetName || 'Keynote');
+
+    const HEADERS = ['Section', 'Subsection', 'Speaker', ' Length', 'Cumulative', 'Clock Time \n(Start)', 'Notes'];
+    const COL_WIDTHS = [31.66, 64.16, 24.16, 13.33, 12.83, 19.0, 45.66];
+    sheet.columns = COL_WIDTHS.map(w => ({ width: w }));
+
+    const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E75B6' } };
+    const HEADER_FONT = { bold: true, color: { argb: 'FFFFFFFF' } };
+    const BOLD = { bold: true };
+    const DURATION_FMT = '[h]:mm:ss;@';
+    const CLOCK_FMT = '[$-409]h:mm AM/PM;@';
+
+    // ── Header block (rows 1-N): key/legend, merged A1:A{N} ──
+    const legend = legendLines && legendLines.length ? legendLines : ['Launch', 'Demo', 'Video'];
+    let r = 1;
+    if (legend.length > 1) {
+      sheet.mergeCells(`A1:A${legend.length}`);
+    }
+    sheet.getCell('A1').value = 'KEY';
+    sheet.getCell('A1').font = BOLD;
+    sheet.getCell('A1').alignment = { vertical: 'top' };
+    legend.forEach((line, idx) => {
+      sheet.getCell(`B${idx + 1}`).value = line;
+    });
+    if (lastUpdatedLabel) sheet.getCell(`C1`).value = lastUpdatedLabel;
+    r = legend.length + 1;
+
+    // ── Confidential banner (merged full width) ──
+    const bannerRow = r;
+    sheet.mergeCells(`A${bannerRow}:G${bannerRow}`);
+    const bannerCell = sheet.getCell(`A${bannerRow}`);
+    bannerCell.value = 'AMAZON CONFIDENTIAL - DO NOT COPY, DO NOT DISTRIBUTE, DO NOT FORWARD';
+    bannerCell.font = { bold: true, color: { argb: 'FFFF0000' } };
+    bannerCell.alignment = { horizontal: 'center' };
+    r++;
+
+    // ── Title (merged full width) ──
+    const titleRow = r;
+    sheet.mergeCells(`A${titleRow}:G${titleRow}`);
+    const titleCell = sheet.getCell(`A${titleRow}`);
+    titleCell.value = showName || 'Run of Show';
+    titleCell.font = { bold: true, size: 13 };
+    titleCell.alignment = { horizontal: 'center' };
+    r++;
+
+    // ── Column headers ──
+    const headerRow = r;
+    HEADERS.forEach((h, i) => {
+      const cell = sheet.getCell(headerRow, i + 1);
+      cell.value = h;
+      cell.font = HEADER_FONT;
+      cell.fill = HEADER_FILL;
+      cell.alignment = { horizontal: 'center', vertical: 'center', wrapText: true };
+    });
+    r++;
+
+    // ── Data rows ──
+    const firstDataRow = r;
+    const lengthCol = 4, cumulativeCol = 5, clockCol = 6;
+
+    if (startClockTime) {
+      const [hh, mm] = startClockTime.split(':').map(Number);
+      sheet.getCell(`F${firstDataRow}`).value = (hh * 3600 + mm * 60) / 86400; // fraction of a day
+      sheet.getCell(`F${firstDataRow}`).numFmt = CLOCK_FMT;
+    }
+
+    for (let idx = 0; idx < rows.length; idx++) {
+      const row = rows[idx];
+      const excelRow = firstDataRow + idx;
+
+      const sectionCell = sheet.getCell(excelRow, 1);
+      sectionCell.value = row.section || null;
+      if (row.bold) sectionCell.font = BOLD;
+
+      const subCell = sheet.getCell(excelRow, 2);
+      subCell.value = row.subsection || null;
+
+      const speakerCell = sheet.getCell(excelRow, 3);
+      speakerCell.value = row.speaker || null;
+
+      const lengthCell = sheet.getCell(excelRow, lengthCol);
+      const secs = row.durationSeconds || 0;
+      lengthCell.value = secs / 86400; // Excel stores time-of-day/duration as a fraction of a day
+      lengthCell.numFmt = DURATION_FMT;
+
+      // Cumulative — running SUM formula anchored to the first data row
+      const cumCell = sheet.getCell(excelRow, cumulativeCol);
+      cumCell.value = { formula: `SUM($D$${firstDataRow}:D${excelRow})` };
+      cumCell.numFmt = DURATION_FMT;
+
+      // Clock time — anchor + previous cumulative (skip on the very first row, already seeded)
+      if (idx > 0 && startClockTime) {
+        const clockCell = sheet.getCell(excelRow, clockCol);
+        clockCell.value = { formula: `$F$${firstDataRow}+E${excelRow - 1}` };
+        clockCell.numFmt = CLOCK_FMT;
+      }
+
+      const notesCell = sheet.getCell(excelRow, 7);
+      notesCell.value = row.notes || null;
+
+      if (row.bold) {
+        [subCell, speakerCell, lengthCell, cumCell, notesCell].forEach(c => { c.font = BOLD; });
+      }
+    }
+
+    // ── Total row ──
+    const totalRow = firstDataRow + rows.length;
+    sheet.getCell(totalRow, lengthCol).value = 'Keynote Total:';
+    sheet.getCell(totalRow, lengthCol).font = BOLD;
+    const totalCumCell = sheet.getCell(totalRow, cumulativeCol);
+    totalCumCell.value = { formula: `SUM($D$${firstDataRow}:D${totalRow})` };
+    totalCumCell.numFmt = DURATION_FMT;
+    totalCumCell.font = BOLD;
+    if (startClockTime && rows.length > 0) {
+      const totalClockCell = sheet.getCell(totalRow, clockCol);
+      totalClockCell.value = { formula: `$F$${firstDataRow}+E${totalRow - 1}` };
+      totalClockCell.numFmt = CLOCK_FMT;
+      totalClockCell.font = BOLD;
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return new Uint8Array(buffer);
+  },
+
+  /**
+   * Legacy generic exporter — build an xlsx file from plain string rows.
    * @param {object} opts - { sheetName, rows: string[][], colWidths: number[] }
    * @returns {Promise<Uint8Array>}
    */

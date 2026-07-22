@@ -143,40 +143,40 @@ function buildShowData(show) {
 
 // ── Excel export ──────────────────────────────────────────────────────────────
 
+const SHOW_TYPE_SHEET_LABELS = {
+  keynote: 'Keynote', custom: 'Run of Show',
+};
+
+function excelSafeSheetName(name) {
+  // Excel sheet names: max 31 chars, no \ / ? * [ ] : characters
+  return (name || 'Sheet1').replace(/[\\/?*[\]:]/g, '').slice(0, 31) || 'Sheet1';
+}
+
 async function exportToExcel(show) {
-  const { totalSecs, estSecs, rows, bufferInfo, speakerNames } = buildShowData(show);
+  const { rows, estSecs, speakerNames } = buildShowData(show);
 
-  const xlRows = [];
+  const legendLines = [];
+  if (speakerNames) legendLines.push('Speakers: ' + speakerNames);
+  if (estSecs) legendLines.push('Target: ' + toMinLabel(estSecs));
 
-  // Title row
-  xlRows.push([show.name, '', '', '', '', '']);
-  // Summary row
-  xlRows.push([
-    (speakerNames ? 'Speaker: ' + speakerNames + '  |  ' : '') +
-    'Target: ' + toMinLabel(estSecs) + '  |  Script rate: 140 wpm',
-    '', '', '', '', ''
-  ]);
-  xlRows.push(['', '', '', '', '', '', '', '']);
-  // Header row
-  xlRows.push(['Section', 'Content', 'Speaker', 'Start', 'End', 'Duration']);
+  const showflowRows = rows.map(r => ({
+    section: r.section,
+    subsection: r.content,
+    speaker: r.speaker,
+    durationSeconds: r.duration,
+    bold: !!r.section, // section header rows (chapter marks) get bold treatment
+  }));
 
-  // Data rows
-  for (const r of rows) {
-    xlRows.push([r.section, r.content, r.speaker, r.start, r.end, toMinLabel(r.duration)]);
-  }
+  const today = new Date();
+  const lastUpdatedLabel = 'Last Updated ' + today.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-  // Total row
-  xlRows.push(['', 'TOTAL RUNTIME', '', toHHMM(0), toHHMM(totalSecs), toMinLabel(totalSecs)]);
-
-  // Target / buffer row
-  if (bufferInfo) {
-    xlRows.push(['', 'TARGET: ' + toMinLabel(estSecs) + '  |  ' + bufferInfo.status, '', '', '', bufferInfo.sign + toMinLabel(Math.abs(bufferInfo.diff))]);
-  }
-
-  const buffer = await window.ExcelExport.generate({
-    sheetName: 'Run of Show',
-    rows: xlRows,
-    colWidths: [12, 40, 28, 8, 8, 10],
+  const buffer = await window.ExcelExport.generateShowflow({
+    sheetName: excelSafeSheetName(SHOW_TYPE_SHEET_LABELS[show.showType] || 'Run of Show'),
+    showName: show.name,
+    lastUpdatedLabel,
+    legendLines,
+    startClockTime: show.startClockTime || null,
+    rows: showflowRows,
   });
 
   const filename = show.name.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.xlsx';

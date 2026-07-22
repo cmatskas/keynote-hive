@@ -1,5 +1,16 @@
 # Release Notes
 
+## v2.16.0
+
+### Fixes
+- **Showflow Excel export now matches the reference run-of-show format** — previously the exported .xlsx had all durations and cumulative timings baked in as static text (e.g. "3 min"), diverging from the standard keynote run-of-show template used across the team. The exporter now produces a workbook with real Excel duration values, live `SUM()` running-total formulas for cumulative time, and chained clock-time formulas anchored to a configurable show start time — matching cell-for-cell the reference Keynote run-of-show format (merged header/title rows, confidential banner, bold column headers, correct column widths).
+
+### New Features
+- **Show start time** — added a "🕐 start time" control next to the duration target in the Showflow header. Setting a start time anchors the exported Clock Time column so it reflects actual wall-clock times instead of relative offsets.
+
+### Improvements
+- **Simplified show types** — removed Dance Recital, Play/Musical, and Concert from the New Show picker; only Keynote and Custom remain relevant to this version of the app. Removed all associated dead element-type definitions, labels, and sheet-name mappings. Existing saved shows of the removed types are unaffected (each show stores its own element types and labels).
+
 ## v2.15.0
 
 ### Fixes

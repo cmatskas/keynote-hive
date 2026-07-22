@@ -121,7 +121,7 @@ function updateVisibility(show) {
   const has = !!show;
   $('sf-welcome').style.display = has ? 'none' : 'flex';
   $('sf-body').style.display    = has ? 'flex' : 'none';
-  ['sf-duration-pill','sf-overflow-wrap','sf-save-btn'].forEach(id => {
+  ['sf-duration-pill','sf-starttime-pill','sf-overflow-wrap','sf-save-btn'].forEach(id => {
     const el = $(id); if (el) el.style.display = has ? '' : 'none';
   });
   if (!has) $('sf-show-name').style.display = 'none';
@@ -155,6 +155,24 @@ function renderHeader(show) {
     targetEl.textContent = '+ target';
     targetEl.classList.add('unset');
   }
+
+  const startTimeEl = $('sf-starttime-value');
+  if (startTimeEl) {
+    if (show.startClockTime) {
+      startTimeEl.textContent = formatClockTime12h(show.startClockTime);
+      startTimeEl.classList.remove('unset');
+    } else {
+      startTimeEl.textContent = '+ start time';
+      startTimeEl.classList.add('unset');
+    }
+  }
+}
+
+function formatClockTime12h(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${period}`;
 }
 
 function bindHeaderButtons() {
@@ -215,6 +233,32 @@ function bindHeaderButtons() {
       $('sf-duration-target-input').style.display = 'none';
       $('sf-duration-target-label').style.display = 'none';
       $('sf-duration-target').style.display = '';
+    }
+  });
+
+  // Start clock time inline edit (used to anchor the Excel export's clock-time column)
+  $('sf-starttime-value').addEventListener('click', () => {
+    const show = ShowflowStore.getShow(); if (!show) return;
+    const valueEl = $('sf-starttime-value');
+    const input   = $('sf-starttime-input');
+    input.value = show.startClockTime || '';
+    valueEl.style.display = 'none';
+    input.style.display = '';
+    input.focus();
+  });
+  const commitStartTime = () => {
+    const input  = $('sf-starttime-input');
+    const valueEl = $('sf-starttime-value');
+    ShowflowStore.updateShowStartTime(input.value || null);
+    input.style.display = 'none';
+    valueEl.style.display = '';
+  };
+  $('sf-starttime-input').addEventListener('blur', commitStartTime);
+  $('sf-starttime-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') e.target.blur();
+    if (e.key === 'Escape') {
+      $('sf-starttime-input').style.display = 'none';
+      $('sf-starttime-value').style.display = '';
     }
   });
 
@@ -645,9 +689,6 @@ function bindImportExport() {
 
 const SHOW_TYPES = [
   { value: 'keynote',       label: 'Keynote',        emoji: '🎤', desc: 'Speaker + Presenter field' },
-  { value: 'dance_recital', label: 'Dance Recital',  emoji: '💃', desc: 'Dancer field, Act chapters' },
-  { value: 'play',          label: 'Play / Musical', emoji: '🎭', desc: 'Actor field, Act chapters' },
-  { value: 'concert',       label: 'Concert',        emoji: '🎸', desc: 'Performer field, Set chapters' },
   { value: 'custom',        label: 'Custom',         emoji: '✨', desc: 'You name everything' },
 ];
 

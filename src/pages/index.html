@@ -788,6 +788,12 @@ Instructions for the agent go here.
                    style="display:none;" placeholder="0" />
             <span id="sf-duration-target-label" style="display:none; font-size:11px; color:var(--text-muted)">min</span>
           </div>
+          <div id="sf-starttime-pill" class="sf-duration-pill" style="display:none;">
+            <span>🕐</span>
+            <span id="sf-starttime-value" class="sf-duration-target" title="Click to set the show's start clock time (used in Excel export)">+ start time</span>
+            <input id="sf-starttime-input" class="sf-duration-target-input" type="time"
+                   style="display:none;" />
+          </div>
         </div>
       </div>
 
@@ -828,7 +834,7 @@ Instructions for the agent go here.
       <div id="sf-welcome" class="sf-welcome">
         <div style="font-size:64px;">🎬</div>
         <h1 class="sf-welcome-title">Welcome to ShowFlow</h1>
-        <p class="sf-welcome-sub">The run-of-show editor for keynotes, dance recitals, concerts, theater — anything with a schedule.</p>
+        <p class="sf-welcome-sub">The run-of-show editor for keynotes and any event with a schedule.</p>
         <div class="sf-welcome-actions">
           <button class="btn btn-outline-secondary btn-lg" id="sf-open-btn">Open Show</button>
           <button class="btn btn-primary btn-lg" id="sf-create-btn">+ Create New Show</button>
