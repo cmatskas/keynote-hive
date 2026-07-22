@@ -1,5 +1,13 @@
 # Release Notes
 
+## v2.15.0
+
+### Fixes
+- **Swarm formatter agents no longer fail silently** — the Demo/Storyboard, Article, and Keynote pipelines' formatter agents (docx/pptx generators) previously could report success without actually producing an output file if the underlying model's tool-calling loop terminated early. The orchestrator now retries the formatter (up to 2 attempts by default) with explicit corrective feedback when no verified file is found, and hard-fails the pipeline with a clear error instead of silently completing if all retries are exhausted. A failed run is no longer checkpointed, so resuming a pipeline correctly re-attempts the formatter rather than skipping it.
+
+### Tests
+- Added `tests/main/swarmOrchestrator.test.js` covering file-save verification and the retry/failure flow (7 new tests).
+
 ## v2.14.0
 
 ### Dependency Updates

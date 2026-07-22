@@ -144,7 +144,7 @@ const TEMPLATES = {
         prompt: 'You are a professional editor. Apply the Eight Sweeps framework from your copy-editing skill, starting with Sweep 0 (de-slop). Review for: clarity, grammar, tone consistency, logical structure, redundancy, and factual accuracy against the research. Make direct improvements. Output the complete improved version.' },
       { id: 'quality-gate-2', label: 'Final Check', model: "creator", tools: [], isQualityGate: true, maxRetries: 2, skills: ['copy-editing'],
         prompt: 'Evaluate the edited article using the de-slop checklist from your copy-editing skill. Check: (1) addresses the brief, (2) free of all 22 AI slop patterns, (3) specific not generic, (4) right length/depth. If ALL pass: respond with "PASS" then the article unchanged. If ANY fail: respond with "REVISE:" then specific feedback referencing which patterns were found.' },
-      { id: 'formatter', label: 'Formatter', model: "formatter", skills: ['docx'], tools: ['execute_code', 'save_file_locally'],
+      { id: 'formatter', label: 'Formatter', model: "formatter", skills: ['docx'], tools: ['execute_code', 'save_file_locally'], maxRetries: 2,
         prompt: `You are a document formatter. Your ONLY job is to convert the final article into a .docx file and save it locally.
 
 You MUST follow these steps exactly:
@@ -188,7 +188,7 @@ CRITICAL: Do NOT describe what you would do. Do NOT skip the execute_code call. 
         prompt: 'Apply the Eight Sweeps framework starting with Sweep 0 (de-slop). Calibrate to creative/inspirational register — preserve vivid imagery and rhetorical devices, strip only dead giveaway AI patterns. Review for: message clarity, consistent tone, logical flow, appropriate detail level, and compelling speaker notes. Output the complete improved version.' },
       { id: 'quality-gate-2', label: 'Final Check', model: "creator", tools: [], isQualityGate: true, maxRetries: 2, skills: ['copy-editing'],
         prompt: 'Evaluate using the de-slop checklist at creative/inspirational register. Check: (1) addresses brief, (2) no Tier 1 AI vocabulary, (3) slides scannable, (4) speaker notes conversational. Preserve intentional rhetorical devices. If ALL pass: "PASS" then content unchanged. If ANY fail: "REVISE:" then feedback referencing specific patterns.' },
-      { id: 'formatter', label: 'Slide Creator', model: "formatter", skills: ['pptx'], tools: ['execute_code', 'save_file_locally'],
+      { id: 'formatter', label: 'Slide Creator', model: "formatter", skills: ['pptx'], tools: ['execute_code', 'save_file_locally'], maxRetries: 2,
         prompt: `You are a presentation formatter. Your ONLY job is to convert the final slides into a .pptx file and save it locally.
 
 You MUST follow these steps exactly:
@@ -252,7 +252,7 @@ CRITICAL: Do NOT describe what you would do. Do NOT skip the execute_code call. 
         prompt: 'You are a demo script writer. For each scene in the storyboard, write the complete scene card using the exact format from your demo-storyboard skill. Include: specific visual descriptions, exact callout annotations (arrows, zoom levels, blur regions), word-for-word narration in conversational tone, on-screen text overlays, transitions, and emotional beats. Mark pauses with [PAUSE Xs]. Insert [CUSTOMER REFERENCE NEEDED: description] where proof points are missing. IMPORTANT: If extracted video frames are listed in the analysis, reference the specific frame paths (e.g. /tmp/frames/frame_0005_0010.jpg) in each scene\'s Visual field. Choose the frame that best represents what should be on screen for that scene.' },
       { id: 'editor', label: 'Editor', model: "worker", skills: ['copy-editing', 'demo-storyboard', 'analysis-framework'], tools: [],
         prompt: 'Apply the Eight Sweeps framework plus Sweep 9 (AWS Reference Audit). For demo storyboards specifically: verify all callouts are specific (not vague), narration sounds natural when spoken aloud, scene durations are realistic, click paths are explicit, and data shown is realistic. Check that no scene exceeds 30 seconds. Verify that frame references (if present) point to actual /tmp/frames/ paths from the analysis. Strip AI vocabulary. Output the complete polished storyboard.' },
-      { id: 'formatter', label: 'Deck Creator', model: "formatter", skills: ['pptx'], tools: ['execute_code', 'save_file_locally'],
+      { id: 'formatter', label: 'Deck Creator', model: "formatter", skills: ['pptx'], tools: ['execute_code', 'save_file_locally'], maxRetries: 2,
         prompt: `You are a storyboard deck formatter. Your ONLY job is to convert the final scene cards into a .pptx file and save it locally.
 
 You MUST follow these steps exactly:

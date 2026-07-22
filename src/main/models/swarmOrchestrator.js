@@ -177,12 +177,30 @@ class SwarmOrchestrator {
             if (output) previousOutput = output;
           }
 
-          // Verify formatter agents actually saved a file locally
+          // Verify formatter agents actually saved a file locally — retry on failure, fail pipeline if exhausted
           if (agentConfig.id === 'formatter' && output) {
-            const saved = await this._verifyLocalSave(swarmId, i, output);
-            if (saved) {
-              previousOutput = output + `\n\n✅ File verified at: ${saved}`;
+            const maxFormatterRetries = agentConfig.maxRetries || 2;
+            let saved = await this._verifyLocalSave(swarmId, i, output);
+            let formatterAttempts = 0;
+
+            while (!saved && formatterAttempts < maxFormatterRetries) {
+              formatterAttempts++;
+              log.warn(`[swarm:${swarmId}] Formatter did not save a file (attempt ${formatterAttempts}/${maxFormatterRetries}), retrying`);
+              this.onEvent('swarm-agent-chunk', { swarmId, agentIndex: i, chunk: `\n🔁 Retrying formatter (attempt ${formatterAttempts}/${maxFormatterRetries})...\n` });
+              const retryInput = previousOutput + '\n\nIMPORTANT: Your previous attempt did NOT save a file. You MUST call execute_code to build the file, then call save_file_locally with the exact sandbox_path and local_path. Do not describe the steps — execute them now.';
+              output = await this._runAgent(swarmId, agentConfig, retryInput, brief, i, adaptedRubric || template.rubric, historicalFeedback);
+              saved = await this._verifyLocalSave(swarmId, i, output);
             }
+
+            if (!saved) {
+              log.error(`[swarm:${swarmId}] Formatter agent ${i} (${agentConfig.id}) failed to save a file after ${maxFormatterRetries} retries`);
+              state.agents[i].status = 'error';
+              state.status = 'error';
+              this.onEvent('swarm-error', { swarmId, error: `Formatter did not produce a file after ${maxFormatterRetries} retries. No output asset was generated.`, agentIndex: i });
+              await this._saveState(swarmId, state);
+              return;
+            }
+            previousOutput = output + `\n\n✅ File verified at: ${saved}`;
           }
 
           state.agents[i].status = 'done';
