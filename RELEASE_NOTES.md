@@ -1,5 +1,18 @@
 # Release Notes
 
+## v2.14.0
+
+### Dependency Updates
+- **Security fixes** — resolved 12 of 17 npm audit vulnerabilities (1 critical, 8 high, 6 moderate, 2 low → 5 moderate remaining) via `npm audit fix`. Remaining moderate issues require major version changes to `@modelcontextprotocol/sdk` (transitive via Strands SDK) and `exceljs`, deferred pending a dedicated regression pass.
+- **AWS SDK clients** — all 12 `@aws-sdk/*` packages bumped to 3.1092.0.
+- **Strands Agents SDK** — upgraded from `1.0.0-rc.1` to `1.10.0` (stable). Reviewed the full changelog between these versions; no breaking changes affect Hive's usage of `Agent`, `BedrockModel`, or tool calling.
+- **Electron** — upgraded from 40.10.0 to 43.2.0. Reviewed breaking changes; the only relevant one (window controls overlay behavior) doesn't apply since Hive uses standard OS title bars.
+- **marked** — upgraded from 17.0.6 to 18.0.7 (Node version floor bump only, no code impact).
+- Minor/patch bumps: `docx`, `electron-log`, `electron-updater`, `electron-builder`, `zod`, `jest`, `jest-environment-jsdom`, `@testing-library/jest-dom`.
+
+### Fixes
+- **Missing direct dependencies** — `@aws-crypto/sha256-js`, `@smithy/signature-v4`, and `@smithy/protocol-http` are used directly in the web search SigV4 signing code but were previously undeclared, riding along as transitive dependencies of older AWS SDK versions. Bumping the AWS SDK clients dropped them from the dependency tree, which would have caused a runtime crash on load. Now declared explicitly. Caught via an Electron app launch smoke test before release.
+
 ## v2.13.0
 
 ### New Features
