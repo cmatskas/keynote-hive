@@ -1,5 +1,10 @@
 # Release Notes
 
+## v2.18.0
+
+### New Features
+- **Transcript copy/download now preserves speaker and timestamp breakout** — previously, copying or downloading a transcript always stripped it down to plain text, even though the preview shows each segment's speaker and timestamp range. A new "Include speaker & timestamps" toggle above the transcript action buttons lets you choose: off (default) copies/downloads the plain text as before, on preserves the full `[timestamp --> timestamp] Speaker N` breakout shown in the preview for each segment.
+
 ## v2.17.0
 
 ### Fixes

@@ -997,7 +997,7 @@ function downloadTranscript() {
     }
 
     // Create a Blob with the transcript text
-    const blob = new Blob([cleanupTranscript()], { type: 'text/plain' });
+    const blob = new Blob([getTranscriptForExport()], { type: 'text/plain' });
 
     // Create a download link
     const link = document.createElement('a');
@@ -1020,7 +1020,7 @@ function copyTranscript() {
         return Promise.resolve();
     }
 
-    return navigator.clipboard.writeText(cleanupTranscript())
+    return navigator.clipboard.writeText(getTranscriptForExport())
         .then(() => {
             showSuccessToast('Transcript copied to clipboard');
 
@@ -1170,7 +1170,7 @@ function displayTranscript(timestampedTranscript) {
         const speakerLabel = segment.speaker ?
             `<span class="speaker-label">Speaker ${segment.speaker}</span>` :
             '<span class="speaker-label">Unknown</span>';
-        currentTranscript.push(segment.text);
+        currentTranscript.push(segment);
 
         return `<div class="transcript-segment">
             <div class="transcript-header">
@@ -1235,10 +1235,30 @@ function formatTimestamp(seconds) {
 function cleanupTranscript() {
     // Combine all text segments into a single string, separated by spaces
     return currentTranscript
+        .map(segment => segment.text)
         .join(' ')
         // Clean up any double spaces that might occur between segments
         .replace(/\s+/g, ' ')
         .trim();
+}
+
+function formatTranscriptWithSpeakers() {
+    // Render each segment as shown in the preview: timestamp range + speaker
+    // label on one line, followed by the segment's text.
+    return currentTranscript
+        .map(segment => {
+            const start = formatTimestamp(segment.startTime);
+            const end = formatTimestamp(segment.endTime);
+            const speakerLabel = segment.speaker ? `Speaker ${segment.speaker}` : 'Unknown';
+            return `[${start} --> ${end}] ${speakerLabel}\n${segment.text}`;
+        })
+        .join('\n\n')
+        .trim();
+}
+
+function getTranscriptForExport() {
+    const includeSpeakerTimestamps = document.getElementById('includeSpeakerTimestamps')?.checked;
+    return includeSpeakerTimestamps ? formatTranscriptWithSpeakers() : cleanupTranscript();
 }
 
 
