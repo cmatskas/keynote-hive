@@ -1,19 +1,25 @@
-const { ConverseStreamCommand } = require('@aws-sdk/client-bedrock-runtime');
-const { SageMakerRuntimeClient, InvokeEndpointCommand } = require('@aws-sdk/client-sagemaker-runtime');
-const { sanitizeFileName } = require('../utils');
+const { tool, AfterToolCallEvent } = require('@strands-agents/sdk');
+const { z } = require('zod');
+const { createSwarmTools } = require('./swarmTools');
+const { createAgent } = require('./strandsAgentFactory');
 const fs = require('fs').promises;
 const path = require('path');
 const log = require('electron-log/main');
 
 /**
- * AgentToolExecutor — runs the agentic Converse loop with tool use.
+ * AgentToolExecutor — runs the Work tab's agent loop on a real Strands Agent.
  *
- * Flow: user prompt → Converse (with tools) → if tool_use → execute tool →
- *       feed toolResult back → Converse again → repeat until end_turn.
+ * Previously this hand-rolled the Bedrock Converse streaming loop and tool
+ * dispatch directly. It now builds a Strands Agent (via strandsAgentFactory,
+ * shared with Swarm) and drives it with agent.stream() — so model-call
+ * retries, tool-call retries, and introspective logging come from the
+ * framework instead of bespoke code, and both Work and Swarm agents behave
+ * identically for free.
  */
 class AgentToolExecutor {
-  constructor({ bedrockClient, skillsManager, codeInterpreterManager, memoryManager, webSearchManager, sessionId, settings, signal, onStatus, onChunk }) {
+  constructor({ bedrockClient, awsConfig, skillsManager, codeInterpreterManager, memoryManager, webSearchManager, sessionId, settings, signal, onStatus, onChunk }) {
     this.bedrock = bedrockClient;
+    this.awsConfig = awsConfig || {};
     this.skills = skillsManager;
     this.codeInterpreter = codeInterpreterManager;
     this.memory = memoryManager;
@@ -71,138 +77,35 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
       : base;
   }
 
-  getToolConfig() {
-    const tools = [
-      {
-        toolSpec: {
-          name: 'activate_skill',
-          description: 'Load full instructions for a skill. Call this before using a skill.',
-          inputSchema: {
-            json: {
-              type: 'object',
-              properties: {
-                name: {
-                  type: 'string',
-                  description: 'The skill name to activate',
-                  enum: this.skills.getCatalog().map(s => s.name),
-                },
-              },
-              required: ['name'],
-            },
-          },
-        },
-      },
-      {
-        toolSpec: {
-          name: 'execute_code',
-          description: 'Execute Python code in a secure sandbox. Use for computations, file generation, data processing.',
-          inputSchema: {
-            json: {
-              type: 'object',
-              properties: {
-                code: { type: 'string', description: 'Python code to execute' },
-              },
-              required: ['code'],
-            },
-          },
-        },
-      },
-      {
-        toolSpec: {
-          name: 'save_file_locally',
-          description: 'Save a file from the sandbox to the user\'s local filesystem.',
-          inputSchema: {
-            json: {
-              type: 'object',
-              properties: {
-                sandbox_path: { type: 'string', description: 'Path to the file in the sandbox (e.g. /tmp/output.docx)' },
-                local_path: { type: 'string', description: 'Absolute path on the user\'s local filesystem to save the file. Must be a full absolute path (e.g. C:\\Users\\name\\file.txt or /Users/name/file.txt), never concatenate with the working directory.' },
-              },
-              required: ['sandbox_path', 'local_path'],
-            },
-          },
-        },
-      },
-      {
-        toolSpec: {
-          name: 'read_local_file',
-          description: 'Read a file from the user\'s local filesystem and upload it to the sandbox.',
-          inputSchema: {
-            json: {
-              type: 'object',
-              properties: {
-                local_path: { type: 'string', description: 'Absolute path to the local file' },
-                sandbox_path: { type: 'string', description: 'Path in the sandbox to write the file (e.g. /tmp/input.docx)' },
-              },
-              required: ['local_path', 'sandbox_path'],
-            },
-          },
-        },
-      },
-      {
-        toolSpec: {
-          name: 'generate_image',
-          description: 'Generate an image using AI. The system automatically picks the best model. Use for photos, illustrations, backgrounds, icons, or any visual content needed in documents or presentations.',
-          inputSchema: {
-            json: {
-              type: 'object',
-              properties: {
-                prompt: { type: 'string', description: 'Detailed description of the image to generate' },
-                negative_prompt: { type: 'string', description: 'What to avoid in the image (optional)' },
-                width: { type: 'integer', description: 'Image width in pixels (default 1024). Must be 320-4096 in increments of 64.' },
-                height: { type: 'integer', description: 'Image height in pixels (default 1024). Must be 320-4096 in increments of 64.' },
-              },
-              required: ['prompt'],
-            },
-          },
-        },
-      },
-      {
-        toolSpec: {
-          name: 'web',
-          description: 'Browse the web. Provide a URL to navigate directly, or a search query to search the web. For research tasks: search first, then browse specific result URLs for details.',
-          inputSchema: {
-            json: {
-              type: 'object',
-              properties: {
-                url: { type: 'string', description: 'A URL to navigate to directly (e.g. https://example.com)' },
-                query: { type: 'string', description: 'A search query to search Google (e.g. "python-docx latest version")' },
-              },
-            },
-          },
-        },
-      },
-      {
-        toolSpec: {
-          name: 'list_directory',
-          description: 'List files and subdirectories in a local directory. Use when the user provides a workspace or you need to discover files before reading them.',
-          inputSchema: {
-            json: {
-              type: 'object',
-              properties: {
-                dir_path: { type: 'string', description: 'Absolute path to the directory to list' },
-              },
-              required: ['dir_path'],
-            },
-          },
-        },
-      },
-    ];
+  /** activate_skill is Work-tab specific (skills catalog isn't a Swarm concept) — the other 6 tools are shared via createSwarmTools(). */
+  _buildActivateSkillTool() {
+    return tool({
+      name: 'activate_skill',
+      description: 'Load full instructions for a skill. Call this before using a skill.',
+      inputSchema: z.object({
+        name: z.string().describe('The skill name to activate'),
+      }),
+      callback: async (input) => this._handleActivateSkill(input.name),
+    });
+  }
 
-    // Only include activate_skill if there are skills
-    if (this.skills.getCatalog().length === 0) {
-      tools.shift();
+  /** Build the full tool list: 6 shared tools (execute_code, save_file_locally, read_local_file, web, generate_image, list_directory) + activate_skill. */
+  _buildTools() {
+    const onStatus = (msg) => this.onStatus(typeof msg === 'string' ? { tool: 'sandbox', detail: msg, state: 'running' } : msg);
+    const tools = createSwarmTools(
+      { codeInterpreterManager: this.codeInterpreter, webSearchManager: this.webSearchManager, settings: this.settings, onStatus },
+      ['execute_code', 'save_file_locally', 'read_local_file', 'web', 'generate_image', 'list_directory']
+    );
+    if (this.skills.getCatalog().length > 0) {
+      tools.push(this._buildActivateSkillTool());
     }
-
-    return { tools };
+    return tools;
   }
 
   /**
    * Run the full agent loop. Returns the final assistant text.
    */
   async run(model, prompt, conversationHistory = [], files = []) {
-    const messages = [...conversationHistory];
-
     // Load memory context if available
     let memoryContext = '';
     if (this.memory && this.sessionId) {
@@ -215,98 +118,95 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
       }
     }
 
-    // Build user message content
-    const { buildFileContentBlocks } = require('../utils');
-    const userContent = [{ text: prompt }];
+    const systemPrompt = await this.buildSystemPrompt(memoryContext);
+    const tools = this._buildTools();
+
+    const introspectionLog = (entry) => {
+      const label = entry.source === 'model' ? 'model call' : `tool "${entry.name}"`;
+      log.info(`[work:${this.sessionId}] ${label} attempt ${entry.attempt} failed: ${entry.error} (retried=${entry.retried})`);
+      if (entry.retried) {
+        this.onStatus({ tool: entry.source === 'model' ? 'model' : entry.name, detail: `Recovering from transient error (attempt ${entry.attempt})...`, state: 'running' });
+      }
+    };
+
+    const { agent, dispose } = createAgent({
+      modelId: model,
+      region: this.awsConfig.region,
+      credentials: this.awsConfig.credentials,
+      systemPrompt,
+      tools,
+      id: `work-${this.sessionId}`,
+      onLog: introspectionLog,
+    });
+
+    // Track sandbox-written / locally-saved files for the auto-save-to-Downloads
+    // safety net. AfterToolCallEvent reliably exposes the tool name + exact input
+    // args (unlike the raw stream events), so this hook is the source of truth.
+    const cleanupFileTracking = agent.addHook(AfterToolCallEvent, (event) => {
+      if (event.error) return;
+      const { name, input } = event.toolUse;
+      if (name === 'execute_code') {
+        const outputText = event.result?.content?.map(c => c.text || '').join('\n') || '';
+        const tmpMatches = `${input.code || ''}\n${outputText}`.match(/\/tmp\/[\w.\-]+/g) || [];
+        tmpMatches.forEach(f => this._sandboxFiles.add(f));
+      }
+      if (name === 'save_file_locally' && typeof input.sandbox_path === 'string') {
+        this._savedLocally.add(input.sandbox_path);
+      }
+      if (name === 'read_local_file' && typeof input.sandbox_path === 'string') {
+        // Input files already exist locally (user provided them) — skip auto-save to Downloads
+        this._savedLocally.add(input.sandbox_path);
+      }
+    });
+
+    // Build user message content (text + any file attachments — oversized
+    // documents are uploaded into the sandbox and the model is pointed at
+    // them rather than sent as native document blocks; see buildFileContentBlocks()).
+    const { buildFileContentBlocks, toStrandsContentBlocks } = require('../utils');
+    let userInput = prompt;
     if (files.length > 0) {
-      const fileBlocks = await buildFileContentBlocks(files, { codeInterpreter: this.codeInterpreter });
-      userContent.push(...fileBlocks);
+      const fileBlocks = await buildFileContentBlocks(files, {
+        codeInterpreter: this.codeInterpreter,
+      });
+      // agent.stream()'s ContentBlock[] variant expects real Strands SDK class
+      // instances (TextBlock/DocumentBlock), not the raw Bedrock-API-shaped
+      // plain objects buildFileContentBlocks() returns for its other consumer
+      // (ipc/bedrock.js, which calls the Converse API directly) — convert here.
+      userInput = toStrandsContentBlocks([{ text: prompt }, ...fileBlocks]);
     }
-    messages.push({ role: 'user', content: userContent });
 
-    // Store the system prompt with memory context for this run
-    this._memoryContext = memoryContext;
-
-    let sessionStarted = !!this.codeInterpreter.sessionId; // may already be started for file extraction
     const maxIterations = 30;
-    const wrapUpAt = maxIterations - 2; // trigger wrap-up 2 iterations before hard limit
-    let finalText = '';
-    let accumulatedText = ''; // track streamed text for abort case
+    let accumulatedText = '';
+    let iterationCount = 0;
+    let aborted = false;
 
     try {
-      for (let i = 0; i < maxIterations; i++) {
-        // Check for cancellation before each iteration
-        if (this.signal?.aborted) {
-          finalText = accumulatedText || '';
-          return finalText;
-        }
+      for await (const event of agent.stream(userInput)) {
+        if (this.signal?.aborted) { aborted = true; break; }
 
-        // Approaching limit — inject wrap-up nudge so the model finishes gracefully
-        if (i === wrapUpAt) {
-          messages.push({ role: 'user', content: [{ text: '[SYSTEM] You are running low on remaining steps. Save any generated files NOW using save_file_locally, then give the user a final summary of what was completed and what remains.' }] });
-        }
-
-        const response = await this._converse(model, messages);
-
-        // Collect assistant response
-        const assistantContent = response.content;
-        messages.push({ role: 'assistant', content: assistantContent });
-
-        // Stream text chunks
-        const textParts = assistantContent.filter(b => b.text);
-        for (const part of textParts) {
-          this.onChunk(part.text);
-          accumulatedText += part.text;
-        }
-
-        if (response.stopReason !== 'tool_use') {
-          finalText = textParts.map(p => p.text).join('');
-          return finalText;
-        }
-
-        // Process tool calls
-        const toolResults = [];
-        for (const block of assistantContent) {
-          if (!block.toolUse) continue;
-
-          const { toolUseId, name, input } = block.toolUse;
-          const detail = this._toolDetail(name, input);
-          this.onStatus({ tool: name, detail, state: 'running' });
-
-          let result;
-          try {
-            result = await this._executeTool(name, input, { sessionStarted });
-            if (name === 'execute_code' && !sessionStarted) sessionStarted = true;
-            this.onStatus({ tool: name, detail, state: 'done' });
-          } catch (err) {
-            log.error(`[work:${this.sessionId}] Tool "${name}" failed: ${err.message}`);
-            result = { error: err.message };
-            this.onStatus({ tool: name, detail: err.message, state: 'done' });
+        if (event.type === 'modelStreamUpdateEvent') {
+          const inner = event.event;
+          if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
+            accumulatedText += inner.delta.text;
+            this.onChunk(inner.delta.text);
           }
-
-          toolResults.push({
-            toolResult: {
-              toolUseId,
-              content: [{ text: typeof result === 'string' ? result : JSON.stringify(result) }],
-            },
-          });
+        } else if (event.type === 'toolResultEvent') {
+          iterationCount++;
+          if (iterationCount === maxIterations - 2) {
+            log.warn(`[work:${this.sessionId}] Approaching iteration soft-limit — model should wrap up soon.`);
+          }
         }
-
-        messages.push({ role: 'user', content: toolResults });
       }
-
-      const exhaustionMsg = '\n\n⚠️ I ran out of steps before finishing. Please send a follow-up message and I\'ll continue where I left off.';
-      this.onChunk(exhaustionMsg);
-      accumulatedText += exhaustionMsg;
-      finalText = accumulatedText;
-      return finalText;
     } finally {
+      dispose();
+      cleanupFileTracking();
+
       // Save conversation to memory
-      if (this.memory && this.sessionId && finalText) {
+      if (this.memory && this.sessionId && accumulatedText) {
         try {
           await this.memory.saveEvent(this.sessionId, [
             { role: 'user', content: prompt },
-            { role: 'assistant', content: finalText },
+            { role: 'assistant', content: accumulatedText },
           ]);
         } catch (err) {
           log.warn('[work] Memory save failed:', err.message);
@@ -332,130 +232,20 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
         if (autoSaved.length > 0) {
           const notice = `\n\n⚠️ The following files were auto-saved to your Downloads folder:\n${autoSaved.map(p => `- ${p}`).join('\n')}`;
           this.onChunk(notice);
+          accumulatedText += notice;
         }
-      }
-
-    }
-  }
-
-  async _converse(model, messages) {
-    const command = new ConverseStreamCommand({
-      modelId: model,
-      system: [{ text: await this.buildSystemPrompt(this._memoryContext) }],
-      messages,
-      toolConfig: this.getToolConfig(),
-      inferenceConfig: { maxTokens: model.includes('claude') ? 16384 : 8192 },
-    });
-
-    const response = await this.bedrock.send(command, { abortSignal: this.signal });
-
-    // Collect the full streamed response into content blocks
-    const content = [];
-    let currentText = '';
-    let currentToolUse = null;
-    let toolInput = '';
-
-    for await (const event of response.stream) {
-      if (event.contentBlockStart?.start?.toolUse) {
-        if (currentText) { content.push({ text: currentText }); currentText = ''; }
-        currentToolUse = event.contentBlockStart.start.toolUse;
-        toolInput = '';
-      }
-      if (event.contentBlockDelta?.delta?.text) {
-        currentText += event.contentBlockDelta.delta.text;
-      }
-      if (event.contentBlockDelta?.delta?.toolUse) {
-        toolInput += event.contentBlockDelta.delta.toolUse.input || '';
-      }
-      if (event.contentBlockStop) {
-        if (currentToolUse) {
-          let parsedInput = {};
-          try { parsedInput = JSON.parse(toolInput); } catch {}
-          content.push({ toolUse: { toolUseId: currentToolUse.toolUseId, name: currentToolUse.name, input: parsedInput } });
-          currentToolUse = null;
-          toolInput = '';
-        }
-      }
-      if (event.messageStop) {
-        if (currentText) { content.push({ text: currentText }); currentText = ''; }
-        return { content, stopReason: event.messageStop.stopReason };
       }
     }
 
-    if (currentText) content.push({ text: currentText });
-    return { content, stopReason: 'end_turn' };
-  }
+    if (aborted) return accumulatedText;
 
-  _toolDetail(name, input) {
-    switch (name) {
-      case 'activate_skill': return input.name;
-      case 'execute_code': return (input.code || '').split('\n')[0].slice(0, 60);
-      case 'save_file_locally': return input.local_path?.split('/').pop();
-      case 'read_local_file': return input.local_path?.split('/').pop();
-      case 'generate_image': return input.prompt?.slice(0, 60);
-      case 'web': return input.url || input.query?.slice(0, 60);
-      case 'list_directory': return input.dir_path?.split('/').pop();
-      default: return '';
+    if (iterationCount >= maxIterations) {
+      const exhaustionMsg = '\n\n⚠️ I ran out of steps before finishing. Please send a follow-up message and I\'ll continue where I left off.';
+      this.onChunk(exhaustionMsg);
+      accumulatedText += exhaustionMsg;
     }
-  }
 
-  async _executeTool(name, input, state) {
-    switch (name) {
-      case 'activate_skill':
-        return this._handleActivateSkill(input.name);
-
-      case 'execute_code':
-        if (!this.codeInterpreter.sessionId) {
-          this.onStatus({ tool: 'sandbox', detail: 'Starting sandbox...', state: 'running' });
-          await this.codeInterpreter.startSession(7200);
-          this.onStatus({ tool: 'sandbox', detail: 'Sandbox ready', state: 'done' });
-        }
-        try {
-          const result = await this.codeInterpreter.executeCode(input.code);
-          if (!result.success) return { error: result.errors.join('\n'), output: result.text };
-          // Track any /tmp/ files mentioned in code or output
-          const tmpMatches = (input.code + (result.text || '')).match(/\/tmp\/[\w.\-]+/g) || [];
-          tmpMatches.forEach(f => this._sandboxFiles.add(f));
-          return { output: result.text };
-        } catch (err) {
-          // Session may have expired — reset and retry once
-          const isSessionError = err.name === 'ResourceNotFoundException' ||
-            err.name === 'ValidationException' ||
-            err.$fault === 'client' ||
-            (err.message || '').toLowerCase().includes('session');
-          if (isSessionError && this.codeInterpreter.sessionId) {
-            log.warn('[work] Code interpreter session error, restarting:', err.message);
-            this.codeInterpreter.sessionId = null;
-            this.onStatus({ tool: 'sandbox', detail: 'Restarting sandbox...', state: 'running' });
-            await this.codeInterpreter.startSession(7200);
-            this.onStatus({ tool: 'sandbox', detail: 'Sandbox ready', state: 'done' });
-            const retryResult = await this.codeInterpreter.executeCode(input.code);
-            if (!retryResult.success) return { error: retryResult.errors.join('\n'), output: retryResult.text };
-            const tmpMatches = (input.code + (retryResult.text || '')).match(/\/tmp\/[\w.\-]+/g) || [];
-            tmpMatches.forEach(f => this._sandboxFiles.add(f));
-            return { output: retryResult.text };
-          }
-          return { error: `Code execution failed: ${err.message}` };
-        }
-
-      case 'save_file_locally':
-        return this._handleSaveFile(input.sandbox_path, input.local_path);
-
-      case 'read_local_file':
-        return this._handleReadFile(input.local_path, input.sandbox_path);
-
-      case 'generate_image':
-        return this._handleGenerateImage(input);
-
-      case 'web':
-        return this._handleWeb(input);
-
-      case 'list_directory':
-        return this._handleListDirectory(input.dir_path);
-
-      default:
-        return { error: `Unknown tool: ${name}` };
-    }
+    return accumulatedText;
   }
 
   async _handleActivateSkill(name) {
@@ -464,7 +254,7 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
     }
 
     const body = await this.skills.getSkillBody(name);
-    if (!body) return { error: `Skill not found: ${name}` };
+    if (!body) return JSON.stringify({ error: `Skill not found: ${name}` });
 
     this.skills.markActivated(name);
     const resources = await this.skills.listResources(name);
@@ -477,178 +267,6 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
     wrapped += '\n</skill_content>';
     return wrapped;
   }
-
-  async _handleSaveFile(sandboxPath, localPath) {
-    // Fix double-path bug: agent may concatenate working dir with an absolute path
-    const driveMatch = localPath.match(/^[A-Za-z]:\\.*?([A-Za-z]:\\.*)/);
-    if (driveMatch) localPath = driveMatch[1];
-
-    // Expand tilde
-    const home = require('os').homedir();
-    if (localPath.startsWith('~')) localPath = localPath.replace('~', home);
-
-    // Block writes outside user home directory
-    const resolved = path.resolve(localPath);
-    if (!resolved.startsWith(home) && !resolved.startsWith('/tmp')) {
-      return { error: `Blocked: save path must be within user home directory (${home})` };
-    }
-
-    this.onStatus(`Saving file to ${resolved}...`);
-    const base64 = await this.codeInterpreter.readFileBase64(sandboxPath);
-    const buffer = Buffer.from(base64, 'base64');
-    await fs.mkdir(path.dirname(resolved), { recursive: true });
-    await fs.writeFile(resolved, buffer);
-    this._savedLocally.add(sandboxPath); // mark as saved
-    return { success: true, path: resolved, size: buffer.length };
-  }
-
-  async _handleReadFile(localPath, sandboxPath) {
-    // Block reads outside user home directory
-    const resolved = path.resolve(localPath);
-    const home = require('os').homedir();
-    if (!resolved.startsWith(home) && !resolved.startsWith('/tmp')) {
-      return { error: `Blocked: read path must be within user home directory (${home})` };
-    }
-
-    this.onStatus(`Reading ${resolved}...`);
-    const buffer = await fs.readFile(resolved);
-    const base64 = buffer.toString('base64');
-    const safePath = sandboxPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const code = `
-import base64
-data = base64.b64decode("${base64}")
-with open("${safePath}", "wb") as f:
-    f.write(data)
-print(f"Wrote {len(data)} bytes to ${safePath}")
-`;
-    const result = await this.codeInterpreter.executeCode(code);
-    // Input files already exist locally (user provided them) — skip auto-save to Downloads
-    this._savedLocally.add(sandboxPath);
-    return { success: result.success, output: result.text };
-  }
-
-  async _handleGenerateImage({ prompt, negative_prompt, width, height }) {
-    const w = width || 1024;
-    const h = height || 1024;
-
-    this.onStatus({ tool: 'generate_image', detail: prompt?.slice(0, 40), state: 'running' });
-
-    let base64Image;
-    let modelUsed;
-    const smEndpoint = this.settings.sagemakerImageEndpoint;
-
-    if (smEndpoint) {
-      try {
-        // Primary: SageMaker SDXL endpoint
-        const smClient = new SageMakerRuntimeClient({ region: this.settings.region || 'us-east-1' });
-        const payload = JSON.stringify({
-          text_prompts: [
-            { text: prompt },
-            ...(negative_prompt ? [{ text: negative_prompt, weight: -1 }] : []),
-          ],
-          width: w,
-          height: h,
-          samples: 1,
-          steps: 30,
-          cfg_scale: 7.5,
-        });
-
-        const params = {
-          EndpointName: smEndpoint,
-          ContentType: 'application/json',
-          Accept: 'application/json',
-          Body: Buffer.from(payload),
-        };
-        if (this.settings.sagemakerImageComponent) {
-          params.InferenceComponentName = this.settings.sagemakerImageComponent;
-        }
-
-        const response = await smClient.send(new InvokeEndpointCommand(params));
-        const body = JSON.parse(Buffer.from(response.Body).toString());
-        base64Image = body.generated_image;
-        modelUsed = 'sdxl-1.0-sagemaker';
-      } catch (err) {
-        log.warn('[work] SageMaker image gen failed, falling back to Nova Canvas:', err.message);
-      }
-    }
-
-    if (!base64Image) {
-      // Fallback: Nova Canvas via Bedrock
-      const { InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
-      const fallbackModel = 'amazon.nova-canvas-v1:0';
-      const body = JSON.stringify({
-        taskType: 'TEXT_IMAGE',
-        textToImageParams: {
-          text: prompt,
-          ...(negative_prompt && { negativeText: negative_prompt }),
-        },
-        imageGenerationConfig: { numberOfImages: 1, width: w, height: h, cfgScale: 8.0 },
-      });
-
-      const response = await this.bedrock.send(new InvokeModelCommand({
-        modelId: fallbackModel, body, accept: 'application/json', contentType: 'application/json',
-      }));
-
-      base64Image = JSON.parse(new TextDecoder().decode(response.body)).images[0];
-      modelUsed = fallbackModel;
-    }
-
-    const buffer = Buffer.from(base64Image, 'base64');
-    const result = { success: true, model: modelUsed, width: w, height: h, size: buffer.length };
-
-    // If sandbox is running, write there for document embedding
-    if (this.codeInterpreter.sessionId) {
-      const sandboxPath = `/tmp/generated_${Date.now()}.png`;
-      const code = `import base64\ndata = base64.b64decode("""${base64Image}""")\nwith open("${sandboxPath}", "wb") as f:\n    f.write(data)\nprint(f"Image saved: ${sandboxPath} ({len(data)} bytes)")`;
-      await this.codeInterpreter.executeCode(code);
-      result.sandbox_path = sandboxPath;
-    }
-
-    return result;
-  }
-
-  async _handleWeb({ url, query }) {
-    if (url) {
-      this.onStatus(`Reading ${url}...`);
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HiveAgent/1.0)' },
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!res.ok) throw new Error(`Failed to read URL (${res.status})`);
-      const html = await res.text();
-      // Strip HTML tags for a text-only view
-      const content = html
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s{2,}/g, ' ')
-        .trim()
-        .substring(0, 15000);
-      const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-      return { url, title: titleMatch?.[1]?.trim() || '', content };
-    }
-
-    if (!this.webSearchManager?.ready) throw new Error('Web search not available — AgentCore Gateway not initialized');
-    this.onStatus(`Searching: ${query}...`);
-    const results = await this.webSearchManager.search(query, 5);
-    return { query, source: 'agentcore', results };
-  }
-
-  async _handleListDirectory(dirPath) {
-    const resolved = path.resolve(dirPath);
-    const home = require('os').homedir();
-    if (!resolved.startsWith(home) && !resolved.startsWith('/tmp')) {
-      return { error: `Blocked: list path must be within user home directory (${home})` };
-    }
-
-    const entries = await fs.readdir(resolved, { withFileTypes: true });
-    const items = entries.map(e => ({
-      name: e.name,
-      type: e.isDirectory() ? 'directory' : 'file',
-    }));
-    return { path: resolved, count: items.length, entries: items };
-  }
-
 }
 
 module.exports = AgentToolExecutor;

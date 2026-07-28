@@ -27,6 +27,7 @@ function register(ipcMain, ctx) {
     const ciManager = ctx.getOrCreateSandbox(sessionId);
     const executor = new AgentToolExecutor({
       bedrockClient: ctx.awsClients.bedrock,
+      awsConfig: { ...ctx.awsClients.agentCoreConfig, s3Client: ctx.awsClients.s3 },
       skillsManager: ctx.skillsManager,
       codeInterpreterManager: ciManager,
       memoryManager: memManager,

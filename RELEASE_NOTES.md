@@ -1,5 +1,16 @@
 # Release Notes
 
+## v2.17.0
+
+### Fixes
+- **Large file attachments (>4.5MB) in the Work tab no longer fail** — previously, attaching a PDF, Word, or Excel document larger than Bedrock's inline document limit could either hit an unfixed AWS Bedrock service-side bug (when routed through S3) or risk overflowing the model's context window (when pre-extracted and dumped as text). Oversized documents are now written directly into the agent's Code Interpreter sandbox, and the model is told exactly where to find them — it uses its own `execute_code` tool to read, search, or extract only what it actually needs, on demand. Small files (≤4.5MB) are unaffected and continue to attach inline as before.
+
+### Improvements
+- **Work tab agent now self-heals from transient errors** — the Work tab's agent loop has been migrated from a hand-rolled Bedrock streaming loop to the Strands Agent SDK. Model-call failures (throttling, timeouts) are automatically retried with exponential backoff, and tool-call failures (timeouts, throttling, transient network errors) are automatically retried up to 3 times — all using the SDK's own retry/hook primitives rather than custom logic. Non-retryable errors (invalid model ID, context overflow) correctly fail fast instead of retrying pointlessly. Swarm pipeline agents inherit the same retry and introspective logging behavior automatically, since both now share a single agent-construction helper.
+
+### Tests
+- Rewrote `tests/main/utils.test.js` to cover the sandbox-pointer attachment design (12 tests): small files unchanged, large files routed to the sandbox with a text pointer (not extracted), automatic session start, clear error when no sandbox is available, non-document files unaffected, and mixed batches.
+
 ## v2.16.0
 
 ### Fixes

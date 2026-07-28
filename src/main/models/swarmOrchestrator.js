@@ -2,7 +2,8 @@
  * SwarmOrchestrator — runs multi-agent pipelines using Strands Graph pattern.
  * Handles checkpoint persistence, quality gate loops, autonomy modes, and IPC streaming.
  */
-const { Agent, BedrockModel, tool } = require('@strands-agents/sdk');
+const { tool } = require('@strands-agents/sdk');
+const { createAgent } = require('./strandsAgentFactory');
 const { z } = require('zod');
 const { createSwarmTools } = require('./swarmTools');
 const { evaluate, decide, buildRubricPrompt, parseJudgeResponse } = require('./rubricEvaluator');
@@ -304,26 +305,33 @@ class SwarmOrchestrator {
       }));
     }
 
-    const model = new BedrockModel({
+    const { agent, dispose } = createAgent({
       modelId: agentConfig.model,
-      clientConfig: {
-        region: this.awsConfig.region,
-        credentials: this.awsConfig.credentials,
+      region: this.awsConfig.region,
+      credentials: this.awsConfig.credentials,
+      systemPrompt,
+      tools,
+      id: agentConfig.id,
+      onLog: (entry) => {
+        const label = entry.source === 'model' ? 'model call' : `tool "${entry.name}"`;
+        log.info(`[swarm:${swarmId}] Agent ${agentIndex} (${agentConfig.id}) ${label} attempt ${entry.attempt} failed: ${entry.error} (retried=${entry.retried})`);
       },
     });
 
-    const agent = new Agent({ model, systemPrompt, tools, id: agentConfig.id });
-
     let fullText = '';
-    for await (const event of agent.stream(handoff)) {
-      if (this.runs.get(swarmId)?.aborted) throw new Error('Pipeline cancelled');
-      if (event.type === 'modelStreamUpdateEvent') {
-        const inner = event.event;
-        if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
-          fullText += inner.delta.text;
-          this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: inner.delta.text });
+    try {
+      for await (const event of agent.stream(handoff)) {
+        if (this.runs.get(swarmId)?.aborted) throw new Error('Pipeline cancelled');
+        if (event.type === 'modelStreamUpdateEvent') {
+          const inner = event.event;
+          if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
+            fullText += inner.delta.text;
+            this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: inner.delta.text });
+          }
         }
       }
+    } finally {
+      dispose();
     }
     return fullText;
   }
@@ -711,30 +719,31 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
 
   async _adaptRubric(rubric, brief) {
     try {
-      const model = new BedrockModel({
-        modelId: require('./pipelineTemplates').DEFAULT_MODELS.formatter,
-        clientConfig: { region: this.awsConfig.region, credentials: this.awsConfig.credentials },
-      });
-
       const criteriaList = rubric.criteria.map((c, i) =>
         `${i}: [weight ${c.weight}] "${c.text}"${c.canBeNA ? ' (can be N/A)' : ''}`
       ).join('\n');
 
-      const agent = new Agent({
-        model,
+      const { agent, dispose } = createAgent({
+        modelId: require('./pipelineTemplates').DEFAULT_MODELS.formatter,
+        region: this.awsConfig.region,
+        credentials: this.awsConfig.credentials,
         systemPrompt: `You specialize in making evaluation criteria specific and concrete. Given generic rubric criteria and a user brief, rewrite each criterion to reference the specific content of the brief. Keep the same number of criteria, same weights, same meaning — just make the text specific. Output ONLY a JSON array of objects: [{"index": 0, "text": "specific criterion text"}, ...]`,
         tools: [],
         id: 'rubric-adapter',
       });
 
       let result = '';
-      for await (const event of agent.stream(`Brief: ${brief}\n\nCriteria:\n${criteriaList}`)) {
-        if (event.type === 'modelStreamUpdateEvent') {
-          const inner = event.event;
-          if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
-            result += inner.delta.text;
+      try {
+        for await (const event of agent.stream(`Brief: ${brief}\n\nCriteria:\n${criteriaList}`)) {
+          if (event.type === 'modelStreamUpdateEvent') {
+            const inner = event.event;
+            if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
+              result += inner.delta.text;
+            }
           }
         }
+      } finally {
+        dispose();
       }
 
       // Parse the adapted criteria

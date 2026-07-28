@@ -24,7 +24,10 @@ async function invokeBedrockNoKB(ctx, model, prompt, conversationHistory, files 
   if (files && files.length > 0) {
     logger.info(`Processing ${files.length} files for Bedrock analysis`);
     const ci = new CodeInterpreterManager(ctx.awsClients.agentCoreConfig);
-    const fileBlocks = await buildFileContentBlocks(files, { codeInterpreter: ci, stopSession: true });
+    const fileBlocks = await buildFileContentBlocks(files, {
+      codeInterpreter: ci,
+      stopSession: true,
+    });
     messageContent.push(...fileBlocks);
   }
 
