@@ -209,27 +209,25 @@ class MemoryManager {
 
   // ── Context Builder ────────────────────────────────────────────
 
-  /** Build memory context string to inject into system prompt */
+  /**
+   * Build memory context string to inject into system prompt.
+   *
+   * Only reads long-term memory (semantic facts/preferences extracted from
+   * past sessions) via retrieveMemories() — bounded (topK) and exactly the
+   * documented low-level API pattern. This deliberately does NOT read back
+   * raw short-term events (ListEvents) into the prompt: within-session turn
+   * history is the caller's job (conversationHistory), and short-term
+   * events here exist to feed AgentCore's automatic long-term extraction
+   * (see saveEvent()), not to be replayed verbatim on every turn.
+   */
   async buildContext(sessionId, currentPrompt) {
     if (!this.memoryId) return '';
 
-    const parts = [];
-
-    // LTM: retrieve relevant memories based on current prompt
     const memories = await this.retrieveMemories(currentPrompt);
-    if (memories.length > 0) {
-      const memText = memories.map(m => `- ${m.content}`).join('\n');
-      parts.push(`<long_term_memory>\nRelevant facts and preferences about this user:\n${memText}\n</long_term_memory>`);
-    }
+    if (memories.length === 0) return '';
 
-    // STM: load recent conversation from this session
-    const recent = await this.loadRecentEvents(sessionId, 10);
-    if (recent.length > 0) {
-      const stmText = recent.map(m => `${m.role}: ${m.content}`).join('\n');
-      parts.push(`<short_term_memory>\nRecent conversation in this session:\n${stmText}\n</short_term_memory>`);
-    }
-
-    return parts.join('\n\n');
+    const memText = memories.map(m => `- ${m.content}`).join('\n');
+    return `<long_term_memory>\nRelevant facts and preferences about this user:\n${memText}\n</long_term_memory>`;
   }
 }
 

@@ -1,5 +1,11 @@
 # Release Notes
 
+## v2.19.0
+
+### Fixes
+- **Work tab agent no longer hits "maximum token limit" errors on trivial follow-up messages** — a regression from the Strands/AgentCore migration (v2.17.0) caused every turn in a session to reload the *entire raw text* of the last 10 conversation events and re-inject it into the system prompt. Once any single turn produced a long response (a generated document, a detailed explanation), every subsequent turn in that session — no matter how simple — carried that same oversized blob and could fail outright. The within-session conversation history mechanism has been restored (capped to the most recent 20 messages) and AgentCore Memory is now used only for its intended purpose: bounded long-term recall of facts/preferences. Long-term memory extraction (which requires every turn to be saved) is unaffected — nothing changed there.
+- **Fixed a related content-block double-conversion bug** uncovered while fixing the above: file attachments on a turn with existing conversation history could be misclassified internally by the Strands SDK. Attachments are now passed through in their native data shape exactly once.
+
 ## v2.18.0
 
 ### New Features

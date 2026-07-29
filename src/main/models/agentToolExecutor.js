@@ -159,21 +159,40 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
       }
     });
 
-    // Build user message content (text + any file attachments — oversized
+    // Build the new turn's content (text + any file attachments — oversized
     // documents are uploaded into the sandbox and the model is pointed at
     // them rather than sent as native document blocks; see buildFileContentBlocks()).
-    const { buildFileContentBlocks, toStrandsContentBlocks } = require('../utils');
-    let userInput = prompt;
+    const { buildFileContentBlocks } = require('../utils');
+    let newTurnBlocks = [{ text: prompt }];
     if (files.length > 0) {
       const fileBlocks = await buildFileContentBlocks(files, {
         codeInterpreter: this.codeInterpreter,
       });
-      // agent.stream()'s ContentBlock[] variant expects real Strands SDK class
-      // instances (TextBlock/DocumentBlock), not the raw Bedrock-API-shaped
-      // plain objects buildFileContentBlocks() returns for its other consumer
-      // (ipc/bedrock.js, which calls the Converse API directly) — convert here.
-      userInput = toStrandsContentBlocks([{ text: prompt }, ...fileBlocks]);
+      newTurnBlocks = [...newTurnBlocks, ...fileBlocks];
     }
+
+    // Each invocation constructs a fresh Agent (createAgent() above), so it
+    // has no memory of prior turns on its own — conversationHistory (the
+    // renderer's own message list for this session) is what supplies that.
+    // Capped to a sliding window since it's otherwise unbounded (this is the
+    // within-session equivalent of AgentCore's own default truncation
+    // strategy for managed conversations). Long-term facts/preferences come
+    // from AgentCore Memory instead (see buildContext() above), which stays
+    // bounded via topK regardless of session length.
+    const MAX_HISTORY_MESSAGES = 20;
+    const trimmedHistory = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
+
+    // agent.stream()'s MessageData[] variant runs each message through
+    // Message.fromMessageData(), which itself converts plain content block
+    // data (e.g. {text}, {document: {...}}) into real ContentBlock instances
+    // via contentBlockFromData() — so newTurnBlocks must stay as plain data
+    // here (matching buildFileContentBlocks()'s raw output and the history
+    // messages' own shape), NOT be pre-converted, or DocumentBlock instances
+    // get passed back through that conversion a second time and misclassified.
+    const userInput = [
+      ...trimmedHistory,
+      { role: 'user', content: newTurnBlocks },
+    ];
 
     const maxIterations = 30;
     let accumulatedText = '';
