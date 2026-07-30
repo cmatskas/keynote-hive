@@ -14,11 +14,26 @@ jest.mock('electron-log/main', () => ({
   error: jest.fn(),
 }));
 
-jest.mock('@strands-agents/sdk', () => ({
-  Agent: jest.fn(),
-  BedrockModel: jest.fn(),
-  tool: jest.fn(),
-}));
+jest.mock('@strands-agents/sdk', () => {
+  class DefaultModelRetryStrategy {
+    constructor(opts = {}) { this._opts = opts; }
+    isRetryable() { return false; }
+  }
+  class ExponentialBackoff {
+    constructor(opts = {}) { this._opts = opts; }
+  }
+  class AfterModelCallEvent {}
+  class AfterToolCallEvent {}
+  return {
+    Agent: jest.fn(),
+    BedrockModel: jest.fn(),
+    tool: jest.fn(),
+    DefaultModelRetryStrategy,
+    ExponentialBackoff,
+    AfterModelCallEvent,
+    AfterToolCallEvent,
+  };
+});
 
 jest.mock('@aws-sdk/client-bedrock-runtime', () => ({
   BedrockRuntimeClient: jest.fn(),

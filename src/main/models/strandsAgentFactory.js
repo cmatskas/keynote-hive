@@ -3,7 +3,10 @@
  * `Agent` instance in Hive (Work tab + Swarm). Attaches:
  *
  *  1. A ModelRetryStrategy with exponential backoff for transient model-call
- *     errors (throttling, timeouts) — self-healing with zero custom retry loops.
+ *     errors — throttling (Strands' own default) plus Bedrock's other
+ *     transient server-side error shapes (InternalServerException,
+ *     ServiceUnavailableException, ModelErrorException, etc. — see
+ *     HiveModelRetryStrategy below) — self-healing with zero custom retry loops.
  *  2. An introspection hook on AfterModelCallEvent + AfterToolCallEvent that
  *     logs every attempt/failure/retry decision through a caller-supplied
  *     `onLog` callback. This is the "internal log" that lets a user see why
@@ -39,6 +42,29 @@ function isRetryableToolError(err) {
   if (!err) return false;
   const haystack = `${err.name || ''} ${err.message || ''}`.toLowerCase();
   return RETRYABLE_TOOL_ERROR_PATTERNS.some(p => haystack.includes(p));
+}
+
+// DefaultModelRetryStrategy only retries ModelThrottledError out of the box
+// (its own doc comment invites subclassing to cover more). Bedrock also
+// returns several genuinely transient error shapes that are worth retrying —
+// InternalServerException / ServiceUnavailableException are explicitly
+// server-fault ($fault: 'server'), and ModelErrorException / ModelTimeoutException /
+// ModelStreamErrorException are typically transient blips on the model
+// provider's side rather than a problem with the request itself. Matched by
+// `.name` (stable across SDK versions) rather than message text.
+const RETRYABLE_MODEL_ERROR_NAMES = new Set([
+  'InternalServerException',
+  'ServiceUnavailableException',
+  'ModelErrorException',
+  'ModelTimeoutException',
+  'ModelStreamErrorException',
+  'ModelNotReadyException',
+]);
+
+class HiveModelRetryStrategy extends DefaultModelRetryStrategy {
+  isRetryable(error) {
+    return super.isRetryable(error) || RETRYABLE_MODEL_ERROR_NAMES.has(error?.name);
+  }
 }
 
 /**
@@ -116,7 +142,7 @@ function createAgent({ modelId, region, credentials, systemPrompt, tools, id, on
     clientConfig: { region, credentials },
   });
 
-  const retryStrategy = new DefaultModelRetryStrategy({
+  const retryStrategy = new HiveModelRetryStrategy({
     maxAttempts: maxModelAttempts,
     backoff: new ExponentialBackoff({ baseMs: 2000, maxMs: 30000 }),
   });

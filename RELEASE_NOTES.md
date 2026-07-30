@@ -1,5 +1,13 @@
 # Release Notes
 
+## v2.20.0
+
+### Fixes
+- **Work tab agent now retries transient Bedrock service errors** — previously, generic transient failures ("The system encountered an unexpected error during processing," "Bedrock is unable to process your request," and similar internal server / service-unavailable errors) failed the turn outright on the first attempt with no retry. The model retry strategy now also covers these transient error shapes (InternalServerException, ServiceUnavailableException, ModelErrorException, ModelTimeoutException, ModelStreamErrorException, ModelNotReadyException) with the same exponential backoff already used for throttling, instead of only retrying rate-limit errors.
+
+### Tests
+- Added `tests/main/strandsAgentFactory.test.js` covering the expanded retry classification (12 tests).
+
 ## v2.19.0
 
 ### Fixes
