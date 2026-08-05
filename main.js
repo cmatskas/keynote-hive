@@ -22,6 +22,8 @@ const showflowIPC = require('./src/main/ipc/showflow');
 const swarmIPC = require('./src/main/ipc/swarm');
 const agentIPC = require('./src/main/ipc/agent');
 const bedrockIPC = require('./src/main/ipc/bedrock');
+const setupWizardIPC = require('./src/main/ipc/setupWizard');
+const adminSetupIPC = require('./src/main/ipc/adminSetup');
 
 const ctx = new AppContext();
 
@@ -174,6 +176,8 @@ app.whenReady().then(async () => {
   // ── Register all IPC handlers ───────────────────────────
   credentialsIPC.register(ipcMain, ctx);
   settingsIPC.register(ipcMain, ctx);
+  setupWizardIPC.register(ipcMain, ctx);
+  adminSetupIPC.register(ipcMain, ctx);
   conversationsIPC.register(ipcMain, ctx, { invokeChatModel: (model, prompt) => bedrockIPC.invokeChatModel(ctx, model, prompt) });
   memoryIPC.register(ipcMain, ctx);
   workHistoryIPC.register(ipcMain, ctx);

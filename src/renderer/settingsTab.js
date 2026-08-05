@@ -18,6 +18,7 @@
         if (target === 'skills') loadSkills();
         if (target === 'models') loadModels();
         if (target === 'analytics') loadAnalytics();
+        if (target === 'admin') loadAdminTab();
       });
     });
 
@@ -39,6 +40,8 @@
 
     // Config save
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
+    document.getElementById('runSetupCheckBtn').addEventListener('click', () => showSetupCheckModal());
+    document.getElementById('setupCheckRefreshBtn').addEventListener('click', () => refreshSetupCheckList());
 
     // Web Search retry/test
     document.getElementById('webSearchRetryBtn').addEventListener('click', retryWebSearchInit);
@@ -56,6 +59,14 @@
 
     // Load credentials on first show
     loadCredentials();
+
+    // Toggle Admin tab visibility for returning users who already have
+    // credentials loaded, without requiring them to explicitly re-test.
+    // quick-validate-credentials is a single cheap STS call (~100ms),
+    // safe to run on every Settings load.
+    window.electronAPI.invoke('quick-validate-credentials')
+      .then(result => _toggleAdminTab(result.valid && result.isAdminAccount))
+      .catch(() => {});
   }
 
   // ── Credentials ────────────────────────────────────────────
@@ -111,6 +122,7 @@
 
     try {
       const result = await window.electronAPI.invoke('validate-credentials');
+      _toggleAdminTab(result.isAdminAccount);
       if (result.valid) {
         const perms = result.permissions;
         body.innerHTML = `
@@ -125,6 +137,27 @@
       }
     } catch (err) {
       body.innerHTML = `<span class="badge bg-danger">Error</span> <small>${err.message}</small>`;
+    }
+  }
+
+  /**
+   * Shows/hides the Admin nav tab based on whether the currently-loaded
+   * credentials resolve to the shared admin AWS account. This is a UX
+   * convenience only — see adminSetup.js's doc comment. Every action
+   * inside the Admin tab still requires real AWS permissions in that
+   * account regardless of whether this toggle shows or hides the tab.
+   */
+  function _toggleAdminTab(isAdminAccount) {
+    const navItem = document.getElementById('adminTabNavItem');
+    if (navItem) navItem.style.display = isAdminAccount ? '' : 'none';
+    if (!isAdminAccount) {
+      // If the user was on the Admin tab and credentials changed to a
+      // non-admin account, fall back to Credentials rather than leaving
+      // them stranded on a now-hidden tab.
+      const adminPane = document.getElementById('settings-admin');
+      if (adminPane && adminPane.style.display !== 'none') {
+        document.querySelector('[data-settings-tab="credentials"]')?.click();
+      }
     }
   }
 
@@ -179,6 +212,123 @@
 
     // Memory status — read toggle state directly from settings (no AWS call needed)
     // (handled by loadMemoryList called from init)
+  }
+
+  // ── Setup Check (Flow 1 — per-user, non-sequential checklist) ──────────
+  //
+  // Each item is independent (see setupWizard.js doc comment for why this
+  // is a checklist rather than a linear wizard) — checked and created on
+  // its own, in any order, with no forced sequence between items.
+
+  const SETUP_ITEM_LABELS = {
+    webSearchGateway: { title: 'Web Search Gateway', help: 'Needed for Work/Swarm web search' },
+    transcriptionBucket: { title: 'Transcription Storage Bucket', help: 'Needed for the Transcribe tab' },
+    memory: { title: 'AgentCore Memory', help: 'Needed for Work tab conversation memory' },
+  };
+
+  let _setupCheckModalInstance = null;
+
+  function showSetupCheckModal() {
+    const el = document.getElementById('setupCheckModal');
+    if (!_setupCheckModalInstance) _setupCheckModalInstance = new bootstrap.Modal(el);
+    _setupCheckModalInstance.show();
+    refreshSetupCheckList();
+  }
+
+  /**
+   * Check-only pass on first launch — never auto-creates anything, only
+   * decides whether to surface the modal at all. Safe to call every
+   * launch; if everything is already 'ready' it does nothing.
+   */
+  async function autoShowSetupCheckIfNeeded() {
+    try {
+      const status = await window.electronAPI.invoke('setup-wizard-check-status');
+      if (status.error) return; // no credentials yet — nothing to check
+      const anyMissing = Object.values(status).some(item => item.status === 'missing');
+      if (anyMissing) showSetupCheckModal();
+    } catch (err) {
+      console.warn('Setup Check auto-detection failed:', err.message);
+    }
+  }
+
+  async function refreshSetupCheckList() {
+    const list = document.getElementById('setupCheckList');
+    if (!list) return;
+    list.innerHTML = '<div class="text-center text-muted py-3" id="setupCheckLoading"><span class="spinner-border spinner-border-sm me-2"></span>Checking your AWS account…</div>';
+
+    try {
+      const status = await window.electronAPI.invoke('setup-wizard-check-status');
+      if (status.error) {
+        list.innerHTML = `<div class="alert alert-warning mb-0">${status.error}</div>`;
+        return;
+      }
+      list.innerHTML = '';
+      Object.entries(status).forEach(([itemId, item]) => {
+        list.appendChild(_renderSetupCheckRow(itemId, item));
+      });
+    } catch (err) {
+      list.innerHTML = `<div class="alert alert-danger mb-0">Setup check failed: ${err.message}</div>`;
+    }
+  }
+
+  function _renderSetupCheckRow(itemId, item) {
+    const meta = SETUP_ITEM_LABELS[itemId] || { title: itemId, help: '' };
+    const row = document.createElement('div');
+    row.className = 'list-group-item d-flex justify-content-between align-items-start';
+
+    const badgeClass = item.status === 'ready' ? 'bg-success'
+      : item.status === 'missing' ? 'bg-warning text-dark'
+      : 'bg-secondary';
+    const badgeText = item.status === 'ready' ? 'Ready' : item.status === 'missing' ? 'Missing' : 'Unknown';
+
+    row.innerHTML = `
+      <div>
+        <span class="badge ${badgeClass} mb-1">${badgeText}</span>
+        <div class="fw-semibold">${meta.title}</div>
+        <small class="text-muted">${item.detail || meta.help}</small>
+      </div>
+    `;
+
+    if (item.status === 'missing') {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-outline-primary align-self-center';
+      btn.textContent = 'Create';
+      btn.addEventListener('click', () => _createSetupItem(itemId, btn, row));
+      row.appendChild(btn);
+    }
+
+    return row;
+  }
+
+  async function _createSetupItem(itemId, btn, row) {
+    const meta = SETUP_ITEM_LABELS[itemId] || { title: itemId };
+    const confirmed = confirm(`Create ${meta.title} in your AWS account now?`);
+    if (!confirmed) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+    try {
+      const result = await window.electronAPI.invoke('setup-wizard-create-item', itemId);
+      row.querySelector('.badge').className = 'badge bg-success mb-1';
+      row.querySelector('.badge').textContent = 'Ready';
+      row.querySelector('small').textContent = result.detail;
+      btn.remove();
+      if (itemId === 'webSearchGateway') {
+        refreshWebSearchStatus();
+        // The IPC handler already persisted webSearchGatewayRoleArn to
+        // settings — also reflect it in the visible Configuration tab
+        // field immediately, so a user checking Settings right after
+        // running Setup Check doesn't see a stale/empty box until they
+        // navigate away and back (which is when loadConfig() would
+        // otherwise re-populate it).
+        const roleArnInput = document.getElementById('webSearchGatewayRoleArn');
+        if (roleArnInput && result.arn) roleArnInput.value = result.arn;
+      }
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Create';
+      alert(`Failed to create ${meta.title}: ${err.message}`);
+    }
   }
 
   /** Reflects webSearchManager's current readiness/error in the settings badge. */
@@ -685,9 +835,163 @@
     if (typeof loadBedrockModels === 'function') await loadBedrockModels();
   }
 
+  // ── Admin Tab (Flow 2 — aws-keynote-only) ───────────────────────────────
+  //
+  // Every function here assumes the tab is only reachable because
+  // _toggleAdminTab() already confirmed isAdminAccount — but the real
+  // enforcement is AWS IAM itself rejecting these calls if the loaded
+  // credentials don't actually have permissions in that account (see
+  // adminSetup.js's doc comment).
+
+  let _adminWizardState = null; // { step, action, roleArn, gatewayArn, preview }
+
+  async function loadAdminTab() {
+    _initAdminWizardListeners();
+    await Promise.all([_refreshAdminKbStatus(), _refreshAdminGatewayTargetStatus()]);
+  }
+
+  async function _refreshAdminKbStatus() {
+    const el = document.getElementById('adminKbStatus');
+    if (!el) return;
+    el.innerHTML = '<span class="badge bg-secondary">Checking…</span>';
+    try {
+      const status = await window.electronAPI.invoke('admin-check-kb-status');
+      const badgeClass = status.status === 'ready' ? 'bg-success' : status.status === 'missing' ? 'bg-warning text-dark' : 'bg-secondary';
+      el.innerHTML = `<span class="badge ${badgeClass}">Knowledge Base: ${status.status}</span> <small class="text-muted">${status.detail}</small>`;
+    } catch (err) {
+      el.innerHTML = `<span class="badge bg-danger">Error</span> <small>${err.message}</small>`;
+    }
+  }
+
+  async function _refreshAdminGatewayTargetStatus() {
+    const el = document.getElementById('adminGatewayTargetStatus');
+    if (!el) return;
+    el.innerHTML = '<span class="badge bg-secondary">Checking…</span>';
+    try {
+      const status = await window.electronAPI.invoke('admin-check-gateway-kb-target');
+      const badgeClass = status.status === 'ready' ? 'bg-success' : status.status === 'missing' ? 'bg-warning text-dark' : 'bg-secondary';
+      el.innerHTML = `<span class="badge ${badgeClass}">Gateway KB target: ${status.status}</span> <small class="text-muted">${status.detail}</small>`;
+    } catch (err) {
+      el.innerHTML = `<span class="badge bg-danger">Error</span> <small>${err.message}</small>`;
+    }
+  }
+
+  let _adminWizardListenersBound = false;
+  function _initAdminWizardListeners() {
+    if (_adminWizardListenersBound) return; // avoid double-binding across repeated tab visits
+    _adminWizardListenersBound = true;
+    document.getElementById('adminRefreshStatusBtn')?.addEventListener('click', loadAdminTab);
+    document.getElementById('adminOpenWizardBtn')?.addEventListener('click', _openAdminWizard);
+    document.getElementById('adminWizardNextBtn')?.addEventListener('click', _adminWizardNext);
+    document.getElementById('adminWizardBackBtn')?.addEventListener('click', _adminWizardBack);
+    document.getElementById('adminWizardApplyBtn')?.addEventListener('click', _adminWizardApply);
+  }
+
+  async function _openAdminWizard() {
+    // Resolve the gateway's real ARN up front so step 3 can compute a real
+    // policy diff against it.
+    let gatewayArn = null;
+    try {
+      const targetStatus = await window.electronAPI.invoke('admin-check-gateway-kb-target');
+      gatewayArn = targetStatus.gatewayArn || null;
+    } catch { /* fall through — step 2 will show an error if this is still null */ }
+
+    _adminWizardState = { step: 1, action: 'grant', roleArn: '', gatewayArn, preview: null };
+    _renderAdminWizardStep();
+    new bootstrap.Modal(document.getElementById('adminPolicyWizardModal')).show();
+  }
+
+  function _renderAdminWizardStep() {
+    const { step } = _adminWizardState;
+    document.getElementById('adminWizardStep1').style.display = step === 1 ? '' : 'none';
+    document.getElementById('adminWizardStep2').style.display = step === 2 ? '' : 'none';
+    document.getElementById('adminWizardStep3').style.display = step === 3 ? '' : 'none';
+    document.getElementById('adminWizardBackBtn').style.display = step > 1 ? '' : 'none';
+    document.getElementById('adminWizardNextBtn').style.display = step < 3 ? '' : 'none';
+    document.getElementById('adminWizardApplyBtn').style.display = step === 3 ? '' : 'none';
+  }
+
+  async function _adminWizardNext() {
+    const s = _adminWizardState;
+    if (s.step === 1) {
+      s.action = document.querySelector('input[name="adminWizardAction"]:checked').value;
+      s.step = 2;
+      _renderAdminWizardStep();
+      return;
+    }
+    if (s.step === 2) {
+      const roleArn = document.getElementById('adminRoleArnInput').value.trim();
+      if (!roleArn.startsWith('arn:aws:iam::')) {
+        alert('Enter a valid IAM role ARN (arn:aws:iam::...)');
+        return;
+      }
+      s.roleArn = roleArn;
+      if (!s.gatewayArn) {
+        alert('Could not resolve the Gateway — check the Knowledge Base status card and try again.');
+        return;
+      }
+      try {
+        s.preview = await window.electronAPI.invoke('admin-preview-policy-change', {
+          gatewayArn: s.gatewayArn, action: s.action, roleArn: s.roleArn,
+        });
+      } catch (err) {
+        alert(`Could not compute policy preview: ${err.message}`);
+        return;
+      }
+      s.step = 3;
+      _renderAdminWizardStep();
+      _renderAdminWizardReview();
+      return;
+    }
+  }
+
+  function _adminWizardBack() {
+    _adminWizardState.step = Math.max(1, _adminWizardState.step - 1);
+    _renderAdminWizardStep();
+  }
+
+  function _renderAdminWizardReview() {
+    const s = _adminWizardState;
+    const summary = document.getElementById('adminWizardReviewSummary');
+    const diff = document.getElementById('adminWizardPolicyDiff');
+    const applyBtn = document.getElementById('adminWizardApplyBtn');
+
+    if (!s.preview.changed) {
+      summary.innerHTML = `<div class="alert alert-info mb-2">${esc(s.preview.reason)}</div>`;
+      diff.textContent = JSON.stringify(s.preview.after, null, 2);
+      applyBtn.disabled = true;
+      return;
+    }
+
+    applyBtn.disabled = false;
+    const verb = s.action === 'grant' ? 'Grant' : 'Revoke';
+    summary.innerHTML = `<div class="alert alert-warning mb-2">${verb} <code>${esc(s.roleArn)}</code> access to <code>bedrock-agentcore:InvokeGateway</code></div>`;
+    diff.textContent = JSON.stringify(s.preview.after, null, 2);
+  }
+
+  async function _adminWizardApply() {
+    const s = _adminWizardState;
+    const btn = document.getElementById('adminWizardApplyBtn');
+    btn.disabled = true;
+    btn.textContent = 'Applying…';
+    try {
+      await window.electronAPI.invoke('admin-apply-policy-change', {
+        gatewayArn: s.gatewayArn,
+        policyDocument: s.preview.after,
+      });
+      window.electronAPI.showToast('Gateway access policy updated', 'success');
+      bootstrap.Modal.getInstance(document.getElementById('adminPolicyWizardModal'))?.hide();
+    } catch (err) {
+      alert(`Failed to apply policy change: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Apply';
+    }
+  }
+
   function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
   if (typeof window !== 'undefined') {
-    window.SettingsTab = { init };
+    window.SettingsTab = { init, autoShowSetupCheckIfNeeded };
   }
 })();

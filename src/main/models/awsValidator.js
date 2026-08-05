@@ -3,6 +3,16 @@ const { BedrockClient, ListFoundationModelsCommand } = require('@aws-sdk/client-
 const { TranscribeClient, ListTranscriptionJobsCommand } = require('@aws-sdk/client-transcribe');
 const { S3Client, ListBucketsCommand } = require('@aws-sdk/client-s3');
 
+// The shared admin AWS account that owns Hive's organization-wide
+// resources (the Managed Knowledge Base and its AgentCore Gateway). This
+// gates visibility of the Admin tab in Settings — see adminSetup.js's doc
+// comment for why this is a UX convenience, not the real security
+// boundary (AWS IAM itself is what actually rejects unauthorized calls).
+// Deliberately a hardcoded constant, not a setting — a regular user should
+// never be able to change which account is treated as the admin account
+// from the UI.
+const AWS_KEYNOTE_ACCOUNT_ID = '448778737104';
+
 class AWSValidator {
   constructor(credentials) {
     this.credentials = credentials;
@@ -26,6 +36,7 @@ class AWSValidator {
       return {
         valid: true,
         identity: { userId: identity.UserId, account: identity.Account, arn: identity.Arn },
+        isAdminAccount: identity.Account === AWS_KEYNOTE_ACCOUNT_ID,
         errors: []
       };
     } catch (error) {
@@ -41,6 +52,7 @@ class AWSValidator {
     const results = {
       valid: false,
       identity: null,
+      isAdminAccount: false,
       permissions: {
         bedrock: false,
         transcribe: false,
@@ -68,6 +80,7 @@ class AWSValidator {
         account: identity.Account,
         arn: identity.Arn
       };
+      results.isAdminAccount = identity.Account === AWS_KEYNOTE_ACCOUNT_ID;
       results.valid = true;
 
       // Test Bedrock permissions
@@ -171,3 +184,4 @@ class AWSValidator {
 }
 
 module.exports = AWSValidator;
+module.exports.AWS_KEYNOTE_ACCOUNT_ID = AWS_KEYNOTE_ACCOUNT_ID;

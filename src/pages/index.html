@@ -396,6 +396,11 @@
                     <li class="nav-item">
                         <a class="nav-link" href="#" data-settings-tab="about">About</a>
                     </li>
+                    <li class="nav-item" id="adminTabNavItem" style="display:none;">
+                        <a class="nav-link text-warning fw-bold border border-warning" href="#" data-settings-tab="admin">
+                            <i class="bi bi-shield-lock-fill me-1"></i>ADMIN
+                        </a>
+                    </li>
                 </ul>
 
                 <!-- Credentials Tab -->
@@ -576,6 +581,9 @@
                     </div>
 
                     <div class="d-flex gap-2 justify-content-end">
+                        <button type="button" class="btn btn-outline-secondary" id="runSetupCheckBtn">
+                            <i class="bi bi-clipboard-check me-1"></i>Run Setup Check
+                        </button>
                         <button type="button" class="btn btn-primary" id="saveConfigBtn">
                             <i class="bi bi-check-circle me-1"></i>Save Configuration
                         </button>
@@ -731,6 +739,7 @@ Instructions for the agent go here.
                     <div class="card mb-3">
                         <div class="card-body">
                             <h6 class="mb-3">Required IAM Permissions</h6>
+                            <p class="small text-muted">Reference only — most users authenticate with an Admin-level role that already covers everything below.</p>
                             <div class="mb-3">
                                 <strong class="small">Amazon Bedrock</strong>
                                 <div class="small text-muted">
@@ -774,6 +783,86 @@ Instructions for the agent go here.
                             <p class="small text-muted mb-0">🐛 <a href="https://github.com/cmatskas/transcribly-xplat/issues" class="text-muted">GitHub Issues</a></p>
                         </div>
                     </div>
+                </div>
+
+                <!-- Admin Tab (Flow 2 — only visible when isAdminAccount is true) -->
+                <div id="settings-admin" class="settings-tab-content" style="display:none;">
+                    <div class="alert alert-warning border-warning">
+                        <i class="bi bi-shield-lock-fill me-2"></i>
+                        <strong>Admin mode</strong> — you're signed in with credentials for the shared admin AWS account.
+                        Actions here affect the shared Knowledge Base and Gateway used by every Hive user, not just you.
+                    </div>
+
+                    <div class="card mb-3 border-warning">
+                        <div class="card-body">
+                            <h6 class="mb-3"><i class="bi bi-database me-2"></i>Shared Knowledge Base</h6>
+                            <div id="adminKbStatus" class="mb-2"><span class="badge bg-secondary">Checking…</span></div>
+                            <div id="adminGatewayTargetStatus" class="mb-0"><span class="badge bg-secondary">Checking…</span></div>
+                            <button type="button" class="btn btn-sm btn-outline-warning mt-3" id="adminRefreshStatusBtn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Re-check status
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card border-warning">
+                        <div class="card-body">
+                            <h6 class="mb-3"><i class="bi bi-person-check me-2"></i>Gateway Access</h6>
+                            <p class="small text-muted">Grant or revoke an individual IAM role's access to the shared Gateway. Each change requires review before it's applied.</p>
+                            <button type="button" class="btn btn-warning" id="adminOpenWizardBtn">
+                                <i class="bi bi-plus-circle me-1"></i>Manage Access
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Gateway Access Wizard (3-step: choose action -> specify principal -> review & confirm) -->
+    <div class="modal fade" id="adminPolicyWizardModal" tabindex="-1" aria-labelledby="adminPolicyWizardModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-warning">
+                <div class="modal-header bg-warning-subtle border-warning">
+                    <h5 class="modal-title" id="adminPolicyWizardModalLabel">
+                        <i class="bi bi-shield-lock-fill me-2"></i>ADMIN · Gateway Access
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Step 1: choose action -->
+                    <div id="adminWizardStep1">
+                        <p class="text-muted small">Step 1 of 3 — Choose action</p>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="adminWizardAction" id="adminActionGrant" value="grant" checked>
+                            <label class="form-check-label" for="adminActionGrant">Grant access to a role</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="adminWizardAction" id="adminActionRevoke" value="revoke">
+                            <label class="form-check-label" for="adminActionRevoke">Revoke access from a role</label>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: specify principal -->
+                    <div id="adminWizardStep2" style="display:none;">
+                        <p class="text-muted small">Step 2 of 3 — Specify principal</p>
+                        <label for="adminRoleArnInput" class="form-label">IAM Role ARN</label>
+                        <input type="text" class="form-control" id="adminRoleArnInput" placeholder="arn:aws:iam::123456789012:role/some-role">
+                        <div class="form-text">Provided by the Hive user requesting access.</div>
+                    </div>
+
+                    <!-- Step 3: review & confirm -->
+                    <div id="adminWizardStep3" style="display:none;">
+                        <p class="text-muted small">Step 3 of 3 — Review & confirm</p>
+                        <div id="adminWizardReviewSummary" class="mb-2"></div>
+                        <label class="form-label small">Resulting policy</label>
+                        <pre id="adminWizardPolicyDiff" class="bg-body-secondary p-2 rounded small" style="max-height:240px; overflow:auto;"></pre>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-outline-warning" id="adminWizardBackBtn" style="display:none;">Back</button>
+                    <button type="button" class="btn btn-warning" id="adminWizardNextBtn">Next</button>
+                    <button type="button" class="btn btn-warning" id="adminWizardApplyBtn" style="display:none;">Apply</button>
                 </div>
             </div>
         </div>
@@ -1024,6 +1113,42 @@ Instructions for the agent go here.
     </div>
 
     <!-- Clear Transcription Confirmation Modal -->
+    <div class="modal fade" id="setupCheckModal" tabindex="-1" aria-labelledby="setupCheckModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="setupCheckModalLabel">
+                        <i class="bi bi-clipboard-check me-2"></i>Setup Check
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small mb-3">A few things may need to be created in your AWS account before certain features will work. Each item below is independent — create only what you need, in any order.</p>
+                    <div id="setupCheckList" class="list-group">
+                        <!-- rows injected by settingsTab.js: one per item, e.g.
+                             <div class="list-group-item d-flex justify-content-between align-items-start">
+                               <div>
+                                 <span class="badge bg-success">Ready</span> / <span class="badge bg-warning text-dark">Missing</span>
+                                 <div class="fw-semibold">Web Search Gateway</div>
+                                 <small class="text-muted">detail text</small>
+                               </div>
+                               <button class="btn btn-sm btn-outline-primary">Create</button>
+                             </div> -->
+                        <div class="text-center text-muted py-3" id="setupCheckLoading">
+                            <span class="spinner-border spinner-border-sm me-2"></span>Checking your AWS account…
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Skip for now</button>
+                    <button type="button" class="btn btn-outline-primary" id="setupCheckRefreshBtn">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Re-check
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="clearTranscriptionModal" tabindex="-1" aria-labelledby="clearTranscriptionModalLabel"
         aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">

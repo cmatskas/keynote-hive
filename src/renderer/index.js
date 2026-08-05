@@ -255,19 +255,75 @@ templateSelect.addEventListener('change', () => {
     promptInput.value = selectedPrompt;
 });
 
-// Handle the use existing transcript checkbox
+// Handle the use existing transcript checkbox. Rather than splicing the
+// transcript text into the prompt (which used to dump the whole thing into
+// the chat bubble), it's attached as a synthetic file — same path as a
+// real uploaded .txt attachment, rendered as a chip instead of raw text.
+const TRANSCRIPT_ATTACHMENT_NAME = 'Transcript.txt';
+
+// Mirrors INLINE_TEXT_CHAR_LIMIT in src/main/utils.js — the main process
+// truncates any inline text attachment past this size before sending it to
+// the model (Chat's agent has no execute_code tool to fall back on, unlike
+// Work/Swarm). Duplicated here (renderer can't require() the main-process
+// module directly) purely so the UI can warn the user immediately instead of
+// them finding out only after the response comes back visibly incomplete.
+// If INLINE_TEXT_CHAR_LIMIT changes in utils.js, update this to match.
+const INLINE_TEXT_CHAR_LIMIT = 300000;
+
+function isTranscriptAttached() {
+    return selectedFiles.some(f => f.isTranscript);
+}
+
+function clearSelectedFilesAndTranscript() {
+    selectedFiles = [];
+    document.getElementById('fileUpload').value = '';
+    document.getElementById('useExistingTranscript').checked = false;
+    updateFileList();
+}
+
 document.getElementById('useExistingTranscript').addEventListener('change', () => {
-    const isChecked = document.getElementById('useExistingTranscript').checked;
+    const checkbox = document.getElementById('useExistingTranscript');
     const transcriptText = document.getElementById('transcriptionText').textContent || document.getElementById('transcriptionText').innerText;
 
-    if (isChecked) {
+    if (checkbox.checked) {
         // Check if there's actually transcript content
         if (!transcriptText || transcriptText.trim() === '' || transcriptText.includes('Upload a file to see transcription')) {
             showWarningToast('No transcript available. Please transcribe a file first.');
-            document.getElementById('useExistingTranscript').checked = false;
+            checkbox.checked = false;
             return;
         }
-        showInfoToast('Transcript will be included with your prompt');
+
+        if (selectedFiles.length >= 5) {
+            showWarningToast('Maximum 5 files allowed per message. Remove a file to attach the transcript.');
+            checkbox.checked = false;
+            return;
+        }
+
+        // getTranscriptForExport() applies the same sanitization used by
+        // Download/Copy Transcript — plain text with no HTML/timestamp/
+        // speaker markup, or speaker+timestamp text if the user opted into
+        // that via "Include speaker/timestamps".
+        const sanitizedText = getTranscriptForExport();
+        selectedFiles.push({
+            name: TRANSCRIPT_ATTACHMENT_NAME,
+            content: sanitizedText,
+            mimeType: 'text/plain',
+            size: sanitizedText.length,
+            isTranscript: true,
+        });
+        updateFileList();
+
+        if (sanitizedText.length > INLINE_TEXT_CHAR_LIMIT) {
+            showWarningToast(
+                `Transcript attached, but it's long (${sanitizedText.length.toLocaleString()} characters) and will be ` +
+                'truncated for Chat. For the full transcript, use the Work tab instead.'
+            );
+        } else {
+            showInfoToast('Transcript attached to your message');
+        }
+    } else {
+        selectedFiles = selectedFiles.filter(f => !f.isTranscript);
+        updateFileList();
     }
 });
 
@@ -362,8 +418,7 @@ promptEditor.addEventListener('keydown', (e) => {
 
 async function sendMessage() {
     const model = document.getElementById('modelSelect').value;
-    let prompt = document.getElementById('promptEditor').value.trim();
-    const useExistingTranscript = document.getElementById('useExistingTranscript').checked;
+    const prompt = document.getElementById('promptEditor').value.trim();
 
     if (!prompt) {
         showErrorToast('Please enter a prompt');
@@ -386,15 +441,11 @@ async function sendMessage() {
         return;
     }
 
-    // Append transcript if requested
-    if (useExistingTranscript) {
-        const transcriptText = document.getElementById('transcriptionText').textContent || document.getElementById('transcriptionText').innerText;
-        if (!transcriptText || transcriptText.trim() === '' || transcriptText.includes('Upload a file to see transcription')) {
-            showWarningToast('No transcript available. Please transcribe a file first or uncheck "Transcript".');
-            return;
-        }
-        prompt = `${prompt}\n\n--- TRANSCRIPT ---\n${transcriptText.trim()}\n--- END TRANSCRIPT ---`;
-    }
+    // Snapshot attachment metadata (name only — content isn't persisted onto
+    // the message) for rendering chips on the sent bubble. The transcript,
+    // if checked, is already in selectedFiles as a synthetic .txt file.
+    const attachments = selectedFiles.map(f => ({ name: f.name, isTranscript: !!f.isTranscript }));
+    const filesToSend = selectedFiles;
 
     // Create conversation if none active
     if (!currentConversation) {
@@ -402,7 +453,7 @@ async function sendMessage() {
     }
 
     // Add user message to conversation
-    const userMsg = { role: 'user', content: prompt, timestamp: new Date().toISOString() };
+    const userMsg = { role: 'user', content: prompt, timestamp: new Date().toISOString(), attachments };
     currentConversation.messages.push(userMsg);
     appendChatMessage(userMsg);
     document.getElementById('promptEditor').value = '';
@@ -454,9 +505,7 @@ async function sendMessage() {
             
             // Clear files after successful send
             if (selectedFiles.length > 0) {
-                selectedFiles = [];
-                document.getElementById('fileUpload').value = '';
-                updateFileList();
+                clearSelectedFilesAndTranscript();
             }
         };
         
@@ -471,14 +520,12 @@ async function sendMessage() {
             model,
             prompt,
             conversationHistory: history,
-            files: selectedFiles
+            files: filesToSend
         });
 
         // Clear files after successful send
         if (selectedFiles.length > 0) {
-            selectedFiles = [];
-            document.getElementById('fileUpload').value = '';
-            updateFileList();
+            clearSelectedFilesAndTranscript();
             showSuccessToast('Response received (files cleared)');
         }
 
@@ -572,6 +619,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { if (window.WorkTab) window.WorkTab.init(); } catch (e) { console.error('WorkTab init failed:', e); }
     try { if (window.SwarmTab) window.SwarmTab.init(); } catch (e) { console.error('SwarmTab init failed:', e); }
     try { if (window.SettingsTab) window.SettingsTab.init(); } catch (e) { console.error('SettingsTab init failed:', e); }
+
+    // First-launch (and every subsequent launch) check for missing AWS
+    // setup items — only meaningful once credentials exist, since the
+    // check itself needs them. Non-blocking; shows a checklist modal only
+    // if something is actually missing (see settingsTab.js).
+    try {
+        const hasCreds = await window.electronAPI.invoke('has-credentials');
+        if (hasCreds && window.SettingsTab?.autoShowSetupCheckIfNeeded) {
+            window.SettingsTab.autoShowSetupCheckIfNeeded();
+        }
+    } catch (e) { console.error('Setup Check auto-detection failed:', e); }
 
     // If main process says no credentials, show settings page
     window.electronAPI.receive('show-settings', () => {
@@ -749,8 +807,17 @@ function appendChatMessage(msg) {
     const copyBtn = msg.role === 'assistant' 
         ? `<button class="chat-copy-btn" title="Copy response"><i class="bi bi-clipboard"></i></button>`
         : '';
+
+    const attachmentsHtml = (msg.attachments && msg.attachments.length > 0)
+        ? `<div class="chat-attachments">${msg.attachments.map(a => {
+            const ext = a.name.toLowerCase().split('.').pop();
+            const icon = a.isTranscript ? 'bi bi-mic-fill' : getFileIcon(ext);
+            return `<div class="chat-attachment-chip"><i class="${icon}"></i><span>${a.name}</span></div>`;
+        }).join('')}</div>`
+        : '';
     
     el.innerHTML = `
+        ${attachmentsHtml}
         <div class="chat-bubble">
             ${copyBtn}
             ${formatText(msg.content)}
@@ -1125,9 +1192,13 @@ function setupFileUpload() {
 
     fileUpload.addEventListener('change', async (e) => {
         const files = Array.from(e.target.files);
+        const transcriptFile = selectedFiles.find(f => f.isTranscript);
+        const maxNewFiles = transcriptFile ? 4 : 5;
 
-        if (files.length > 5) {
-            showErrorToast('Maximum 5 files allowed per message');
+        if (files.length > maxNewFiles) {
+            showErrorToast(transcriptFile
+                ? 'Maximum 5 files allowed per message (transcript already attached)'
+                : 'Maximum 5 files allowed per message');
             e.target.value = '';
             return;
         }
@@ -1152,7 +1223,9 @@ function setupFileUpload() {
         }
 
         try {
-            selectedFiles = [];
+            // Keep the transcript attachment (if any) — only user-picked
+            // files are replaced here.
+            selectedFiles = transcriptFile ? [transcriptFile] : [];
 
             for (const file of files) {
                 const fileData = await readFileAsArrayBuffer(file);
@@ -1243,8 +1316,9 @@ function updateFileList() {
 
     fileList.innerHTML = selectedFiles.map((file, index) => {
         const ext = file.name.toLowerCase().split('.').pop();
-        return `<div class="file-chip">
-            <i class="${getFileIcon(ext)} chip-icon"></i>
+        const icon = file.isTranscript ? 'bi bi-mic-fill' : getFileIcon(ext);
+        return `<div class="file-chip${file.isTranscript ? ' transcript-chip' : ''}">
+            <i class="${icon} chip-icon"></i>
             <span class="chip-name">${file.name}</span>
             <button class="chip-remove" onclick="removeFile(${index})"><i class="bi bi-x"></i></button>
         </div>`;
@@ -1268,8 +1342,13 @@ function getFileIcon(extension) {
 }
 
 function removeFile(index) {
+    const removed = selectedFiles[index];
     selectedFiles.splice(index, 1);
     updateFileList();
+
+    if (removed?.isTranscript) {
+        document.getElementById('useExistingTranscript').checked = false;
+    }
 
     if (selectedFiles.length === 0) {
         document.getElementById('fileUpload').value = '';
