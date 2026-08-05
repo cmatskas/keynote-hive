@@ -1,4 +1,4 @@
-function register(ipcMain, ctx, { invokeBedrockNoKB }) {
+function register(ipcMain, ctx, { invokeChatModel }) {
   ipcMain.handle('list-conversations', async () => {
     return await ctx.conversationManager.list();
   });
@@ -24,7 +24,7 @@ function register(ipcMain, ctx, { invokeBedrockNoKB }) {
     const oldMessages = conversation.messages.slice(0, -4);
     const historyText = oldMessages.map(m => `${m.role}: ${m.content}`).join('\n\n');
     const summaryPrompt = `Summarize the following conversation history concisely, preserving all key facts, decisions, and context that would be needed to continue the conversation:\n\n${historyText}`;
-    const summary = await invokeBedrockNoKB(model, summaryPrompt);
+    const summary = await invokeChatModel(model, summaryPrompt);
     return ctx.conversationManager.applyCompression(conversation, summary);
   });
 }

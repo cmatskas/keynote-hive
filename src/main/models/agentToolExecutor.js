@@ -1,10 +1,60 @@
-const { tool, AfterToolCallEvent } = require('@strands-agents/sdk');
+const { tool, AfterToolCallEvent, BeforeToolCallEvent } = require('@strands-agents/sdk');
 const { z } = require('zod');
 const { createSwarmTools } = require('./swarmTools');
 const { createAgent } = require('./strandsAgentFactory');
 const fs = require('fs').promises;
 const path = require('path');
 const log = require('electron-log/main');
+
+/**
+ * Builds a short, human-readable status line for a tool call about to start,
+ * derived from the tool name and its input. Falls back to a generic label
+ * for tools/inputs this doesn't specifically recognize — the activity log
+ * still shows *something* for every tool call rather than nothing.
+ */
+function describeToolStart(name, input = {}) {
+  switch (name) {
+    case 'activate_skill':
+      return `Loading skill: ${input.name || ''}`.trim();
+    case 'execute_code':
+      return 'Running code...';
+    case 'save_file_locally':
+      return input.sandbox_path ? `Saving ${path.basename(input.sandbox_path)}...` : 'Saving file...';
+    case 'read_local_file':
+      return input.sandbox_path ? `Reading ${path.basename(input.sandbox_path)}...` : 'Reading file...';
+    case 'generate_image':
+      return 'Generating image...';
+    case 'web':
+      return input.query ? `Searching: ${input.query}` : (input.url ? `Browsing ${input.url}` : 'Browsing the web...');
+    case 'list_directory':
+      return input.path ? `Listing ${input.path}` : 'Listing files...';
+    default:
+      return 'Working...';
+  }
+}
+
+const NARRATION_SUMMARY_MAX_CHARS = 100;
+
+/**
+ * Compresses a model's raw pre-tool-call narration ("I'll check the file
+ * first, then generate the report and save it...") down to a short,
+ * activity-log-friendly summary. Models front-load the actual intent in the
+ * first clause/sentence, so this takes just that — the alternative of
+ * showing the full narration verbatim is what made the activity log
+ * unreadable for multi-step tasks (paragraphs of raw model reasoning
+ * stacking up in the timeline). Deliberately a cheap string heuristic rather
+ * than a second LLM call — this is a lightweight progress indicator, not
+ * something worth extra latency/cost for.
+ */
+function summarizeNarration(text) {
+  if (!text) return '';
+  const trimmed = text.trim().replace(/\s+/g, ' ');
+  // First sentence/clause: split on sentence-ending punctuation or newline,
+  // take the first non-empty segment.
+  const firstSegment = trimmed.split(/(?<=[.!?])\s+|\n+/)[0] || trimmed;
+  if (firstSegment.length <= NARRATION_SUMMARY_MAX_CHARS) return firstSegment;
+  return `${firstSegment.slice(0, NARRATION_SUMMARY_MAX_CHARS).trimEnd()}...`;
+}
 
 /**
  * AgentToolExecutor — runs the Work tab's agent loop on a real Strands Agent.
@@ -41,7 +91,7 @@ class AgentToolExecutor {
       : '';
 
     const base = catalog.length === 0
-      ? `You are a powerful work agent that completes complex, multi-step tasks. You can execute Python code via execute_code, read local files via read_local_file, and save files to the user's filesystem via save_file_locally. After generating any file, you MUST call save_file_locally to deliver it to the user and tell them the full local path where it was saved. Never leave generated files only in the sandbox.${autoBlock}`
+      ? `You are a powerful work agent that completes complex, multi-step tasks. You can execute Python code via execute_code, read local files via read_local_file, and save files to the user's filesystem via save_file_locally. After generating any file, you MUST call save_file_locally to deliver it to the user and tell them the full local path where it was saved. Never leave generated files only in the sandbox. For anything involving the internet — searching or reading a web page — you MUST use the web tool exclusively. Never write HTTP requests, scraping code, or search-API calls yourself in execute_code; if the web tool reports it's unavailable, tell the user rather than improvising a workaround in the sandbox.${autoBlock}`
       : `You are a powerful work agent that completes complex, multi-step tasks using tools.
 
 <available_skills>
@@ -58,7 +108,7 @@ ${catalog.map(s => `  <skill>\n    <name>${s.name}</name>\n    <description>${s.
 - After saving a file locally, you MUST tell the user the full local path where the file was saved. Example: "I've saved the document to /Users/name/Documents/report.docx"
 - Break complex tasks into steps. Execute code, inspect results, and iterate until the task is complete.
 - Do NOT proactively scan or list local directories unless the user explicitly asks you to or provides a working directory. Wait for instructions before exploring the filesystem.
-- You can browse the web using the web tool. Pass a URL to read a page, or a query to search the web. For research: search first, then browse specific result URLs for deeper content.
+- For ANYTHING involving the internet — searching or reading a web page — you MUST use the web tool exclusively. Pass a URL to read a page, or a query to search the web. For research: search first, then browse specific result URLs for deeper content. Do NOT write HTTP requests, scraping code, or call search APIs yourself in execute_code — that is never an acceptable substitute for the web tool. If the web tool errors because search is unavailable, tell the user and do not try to work around it via the sandbox.
 - If a library is missing in the sandbox, install it with pip via execute_code before using it.
 - If execute_code returns an error, fix the code and retry. Do NOT give up or describe what you would have done.
 - Write ALL document generation code in a SINGLE execute_code call. Do not split across multiple calls unless debugging an error.
@@ -91,6 +141,13 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
 
   /** Build the full tool list: 6 shared tools (execute_code, save_file_locally, read_local_file, web, generate_image, list_directory) + activate_skill. */
   _buildTools() {
+    // swarmTools.js's tool callbacks now always pass a structured
+    // {tool, detail, state} object tagged with their own tool name (fixed
+    // from a prior bug where this wrapper hardcoded every status/error as
+    // tool:'sandbox' — a web search failure, save error, etc. all showed up
+    // mislabeled as sandbox activity in the activity log). The string
+    // fallback below only guards against a future call site regressing to
+    // a bare string; it should never actually be hit in normal operation.
     const onStatus = (msg) => this.onStatus(typeof msg === 'string' ? { tool: 'sandbox', detail: msg, state: 'running' } : msg);
     const tools = createSwarmTools(
       { codeInterpreterManager: this.codeInterpreter, webSearchManager: this.webSearchManager, settings: this.settings, onStatus },
@@ -105,7 +162,17 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
   /**
    * Run the full agent loop. Returns the final assistant text.
    */
-  async run(model, prompt, conversationHistory = [], files = []) {
+  async run(model, prompt, conversationHistory = [], files = [], enableThinking = false) {
+    // Fire immediately so there's no dead air between hitting send and the
+    // first sign of activity — memory loading (below) can take a moment on
+    // its own, and previously nothing appeared until it resolved. Tagged
+    // 'agent', NOT 'sandbox' — no AgentCore Code Interpreter session is
+    // actually started here (that only happens lazily, the first time the
+    // model calls execute_code — see swarmTools.js). Mislabeling this as
+    // 'sandbox' made it look like a real, billable sandbox session spins up
+    // on every single message even when the model never touches execute_code.
+    this.onStatus({ tool: 'agent', detail: 'Starting up...', state: 'running' });
+
     // Load memory context if available
     let memoryContext = '';
     if (this.memory && this.sessionId) {
@@ -132,11 +199,12 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
     const { agent, dispose } = createAgent({
       modelId: model,
       region: this.awsConfig.region,
-      credentials: this.awsConfig.credentials,
+      mantleApiKey: this.settings?.mantleApiKey,
       systemPrompt,
       tools,
       id: `work-${this.sessionId}`,
       onLog: introspectionLog,
+      enableThinking,
     });
 
     // Track sandbox-written / locally-saved files for the auto-save-to-Downloads
@@ -157,6 +225,19 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
         // Input files already exist locally (user provided them) — skip auto-save to Downloads
         this._savedLocally.add(input.sandbox_path);
       }
+    });
+
+    // Surface every tool call in the activity log as it starts (BeforeToolCallEvent
+    // fires before execution) and mark it done when AfterToolCallEvent fires. Without
+    // this, the only visible activity between "Context loaded" and the final answer
+    // was whatever swarmTools' own onStatus happened to emit (sandbox cold-start only) —
+    // multi-step turns (skill activation -> code execution -> file save) looked silent.
+    const cleanupToolStatus = agent.addHook(BeforeToolCallEvent, (event) => {
+      const { name, input } = event.toolUse;
+      this.onStatus({ tool: name, detail: describeToolStart(name, input), state: 'running' });
+    });
+    const cleanupToolStatusDone = agent.addHook(AfterToolCallEvent, (event) => {
+      this.onStatus({ tool: event.toolUse.name, state: 'done' });
     });
 
     // Build the new turn's content (text + any file attachments — oversized
@@ -196,6 +277,19 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
 
     const maxIterations = 30;
     let accumulatedText = '';
+    // Text deltas are buffered per model-turn rather than flushed to onChunk
+    // immediately, because whether this turn's text is the real answer or
+    // just narration ("I'll check the file, then...") before a tool call is
+    // only known once the turn ends (modelMessageEvent.stopReason). Turns
+    // ending in 'toolUse' get routed to the activity log as a 'thinking'
+    // entry (summarized, not verbatim) instead of the chat bubble.
+    let turnText = '';
+    let turnReasoning = '';
+    // Tracks whether the static "Reasoning..." status has already been sent
+    // for the reasoning block currently in progress, so repeated deltas
+    // don't spam the activity log with one entry/append per token — raw
+    // chain-of-thought is not meant for end-user display anyway.
+    let reasoningStatusSent = false;
     let iterationCount = 0;
     let aborted = false;
 
@@ -205,10 +299,49 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
 
         if (event.type === 'modelStreamUpdateEvent') {
           const inner = event.event;
-          if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
-            accumulatedText += inner.delta.text;
-            this.onChunk(inner.delta.text);
+          if (inner.type === 'modelContentBlockDeltaEvent') {
+            if (inner.delta?.type === 'textDelta') {
+              turnText += inner.delta.text;
+            } else if (inner.delta?.type === 'reasoningContentDelta' && inner.delta.text) {
+              // Extended thinking/reasoning tokens — normalized to the same
+              // shape by the SDK for both Bedrock (Anthropic) and OpenAI
+              // (Mantle Responses API) providers. The raw reasoning text is
+              // NOT streamed to the UI (that's what made the activity log
+              // unreadable) — only a single static "Reasoning..." status is
+              // emitted the first time this block starts producing text.
+              // Still buffered internally in case it's useful for debug logs.
+              turnReasoning += inner.delta.text;
+              if (!reasoningStatusSent) {
+                reasoningStatusSent = true;
+                this.onStatus({ tool: 'thinking', detail: 'Reasoning...', state: 'running' });
+              }
+            }
           }
+        } else if (event.type === 'modelMessageEvent') {
+          if (event.stopReason === 'toolUse') {
+            // This turn's text was the model narrating its next step, not
+            // the final answer — surface a short summary as a distinct
+            // activity-log entry rather than the full text, and rather than
+            // merging it into the chat bubble.
+            const summary = summarizeNarration(turnText);
+            if (summary) {
+              this.onStatus({ tool: 'thinking', detail: summary, state: 'done' });
+            } else if (reasoningStatusSent) {
+              // No narration text, but reasoning did occur this turn — close
+              // out the "Reasoning..." entry so it doesn't stay stuck running.
+              this.onStatus({ tool: 'thinking', state: 'done' });
+            }
+          } else if (turnText) {
+            // Real answer content (endTurn, or any other terminal reason) —
+            // this is what actually reaches the chat bubble.
+            accumulatedText += turnText;
+            this.onChunk(turnText);
+          } else if (reasoningStatusSent) {
+            this.onStatus({ tool: 'thinking', state: 'done' });
+          }
+          turnText = '';
+          turnReasoning = '';
+          reasoningStatusSent = false;
         } else if (event.type === 'toolResultEvent') {
           iterationCount++;
           if (iterationCount === maxIterations - 2) {
@@ -219,6 +352,8 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
     } finally {
       dispose();
       cleanupFileTracking();
+      cleanupToolStatus();
+      cleanupToolStatusDone();
 
       // Save conversation to memory
       if (this.memory && this.sessionId && accumulatedText) {
@@ -289,3 +424,8 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
 }
 
 module.exports = AgentToolExecutor;
+// Exposed for unit testing the pure helper functions in isolation — the
+// primary export remains the class itself so existing `require(...)` call
+// sites (e.g. ipc/agent.js) are unaffected.
+module.exports.summarizeNarration = summarizeNarration;
+module.exports.describeToolStart = describeToolStart;

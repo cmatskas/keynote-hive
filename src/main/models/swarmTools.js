@@ -55,14 +55,14 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
       callback: async (input) => {
         try {
           if (!codeInterpreterManager.sessionId) {
-            onStatus?.('Starting sandbox...');
+            onStatus?.({ tool: 'execute_code', detail: 'Starting sandbox...', state: 'running' });
             await codeInterpreterManager.startSession(7200);
           }
           const result = await codeInterpreterManager.executeCode(input.code);
           if (!result.success) return JSON.stringify({ error: result.errors.join('\n'), output: result.text });
           return result.text || 'Code executed successfully (no output).';
         } catch (err) {
-          onStatus?.(`Code execution error: ${err.message}`);
+          onStatus?.({ tool: 'execute_code', detail: `Code execution error: ${err.message}`, state: 'running' });
           return JSON.stringify({ error: err.message });
         }
       },
@@ -85,7 +85,7 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
           await fsPromises.writeFile(localPath, buffer);
           return JSON.stringify({ success: true, path: localPath, size: buffer.length });
         } catch (err) {
-          onStatus?.(`Save error: ${err.message}`);
+          onStatus?.({ tool: 'save_file_locally', detail: `Save error: ${err.message}`, state: 'running' });
           return JSON.stringify({ error: err.message });
         }
       },
@@ -105,7 +105,7 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
           await uploadToSandbox(input.sandbox_path, buffer);
           return JSON.stringify({ success: true, local: localPath, sandbox: input.sandbox_path, size: buffer.length });
         } catch (err) {
-          onStatus?.(`Read error: ${err.message}`);
+          onStatus?.({ tool: 'read_local_file', detail: `Read error: ${err.message}`, state: 'running' });
           return JSON.stringify({ error: err.message });
         }
       },
@@ -121,7 +121,7 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
       callback: async (input) => {
         try {
           if (input.url) {
-            onStatus?.(`Reading ${input.url}...`);
+            onStatus?.({ tool: 'web', detail: `Reading ${input.url}...`, state: 'running' });
             const res = await fetch(input.url, {
               headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HiveAgent/1.0)' },
               signal: AbortSignal.timeout(15000),
@@ -139,12 +139,19 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
             return JSON.stringify({ url: input.url, title: titleMatch?.[1]?.trim() || '', content });
           }
 
-          if (!webSearchManager?.ready) throw new Error('Web search not available — AgentCore Gateway not initialized');
-          onStatus?.(`Searching: ${input.query}...`);
+          if (!webSearchManager?.ready) {
+            throw new Error(
+              'Web search is currently unavailable (AgentCore Gateway not initialized — the user needs to configure it in Settings > Web Search). ' +
+              'Do NOT attempt to search or fetch web content by writing HTTP/scraping code in execute_code — that will not work reliably in the sandbox ' +
+              'and is not an approved fallback. Instead, tell the user that web search is unavailable and ask them to enable it in Settings, or proceed ' +
+              'with the task using only information you already have.'
+            );
+          }
+          onStatus?.({ tool: 'web', detail: `Searching: ${input.query}...`, state: 'running' });
           const results = await webSearchManager.search(input.query, 5);
           return JSON.stringify({ query: input.query, source: 'agentcore', results });
         } catch (err) {
-          onStatus?.(`Web error: ${err.message}`);
+          onStatus?.({ tool: 'web', detail: `Web error: ${err.message}`, state: 'running' });
           return JSON.stringify({ error: err.message });
         }
       },
@@ -163,7 +170,7 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
         try {
           const w = input.width || 1024;
           const h = input.height || 1024;
-          onStatus?.(`Generating image: ${input.prompt?.slice(0, 40)}...`);
+          onStatus?.({ tool: 'generate_image', detail: `Generating image: ${input.prompt?.slice(0, 40)}...`, state: 'running' });
 
           let base64Image;
           let modelUsed;
@@ -218,7 +225,7 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
 
           return JSON.stringify({ success: true, model: modelUsed, sandbox_path: sandboxPath, width: w, height: h });
         } catch (err) {
-          onStatus?.(`Image generation error: ${err.message}`);
+          onStatus?.({ tool: 'generate_image', detail: `Image generation error: ${err.message}`, state: 'running' });
           return JSON.stringify({ error: err.message });
         }
       },

@@ -206,12 +206,6 @@
                                 <i class="bi bi-file-text me-1"></i>Transcript
                             </label>
                         </div>
-                        <div class="form-check form-check-inline mb-0">
-                            <input class="form-check-input" type="checkbox" id="useKnowledgeBase">
-                            <label class="form-check-label small" for="useKnowledgeBase">
-                                <i class="bi bi-database me-1"></i>Knowledge Base
-                            </label>
-                        </div>
                     </div>
                     <div class="d-flex gap-2">
                         <button id="downloadAnalysis" class="btn btn-outline-primary btn-sm d-none">
@@ -221,11 +215,6 @@
                             <i class="fas fa-copy me-1"></i>Copy
                         </button>
                     </div>
-                </div>
-                <div id="knowledgeBaseSection" class="analyze-kb-section" style="display:none;">
-                    <select class="form-select form-select-sm" id="knowledgeBaseSelect">
-                        <option selected disabled>Select a knowledge base...</option>
-                    </select>
                 </div>
 
                 <!-- Hidden File Upload Input -->
@@ -501,6 +490,18 @@
                         </div>
                     </div>
 
+                    <!-- Mantle (model invocation) -->
+                    <div class="card mb-3">
+                        <div class="card-body">
+                            <h6 class="mb-3"><i class="bi bi-key me-2"></i>Mantle API Key</h6>
+                            <small class="text-muted d-block mb-3">Required for all model calls (Work, Chat, Swarm) — every model is now invoked via Amazon Bedrock's Mantle endpoint. Generate a long-term Bedrock API key in the AWS console. Note: AWS documents long-term keys as recommended for exploration/development use.</small>
+                            <div class="mb-3">
+                                <label for="mantleApiKey" class="form-label">API Key</label>
+                                <input type="password" class="form-control" id="mantleApiKey" placeholder="Bedrock API key" autocomplete="off">
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Image Generation (SageMaker) -->
                     <div class="card mb-3">
                         <div class="card-body">
@@ -513,6 +514,25 @@
                             <div class="mb-3">
                                 <label for="sagemakerImageComponent" class="form-label">Inference Component Name</label>
                                 <input type="text" class="form-control" id="sagemakerImageComponent" placeholder="my-inference-component (optional)">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Web Search (AgentCore Gateway) -->
+                    <div class="card mb-3">
+                        <div class="card-body">
+                            <h6 class="mb-3"><i class="bi bi-globe2 me-2"></i>Web Search</h6>
+                            <small class="text-muted d-block mb-3">Required only the first time Hive creates the AgentCore Gateway for web search in this AWS account/region. The role must trust <code>bedrock-agentcore.amazonaws.com</code>. Once the Gateway exists, this is no longer needed.</small>
+                            <div class="mb-3">
+                                <label for="webSearchGatewayRoleArn" class="form-label">Gateway Execution Role ARN</label>
+                                <input type="text" class="form-control" id="webSearchGatewayRoleArn" placeholder="arn:aws:iam::123456789012:role/hive-web-search-gateway">
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <span id="webSearchStatusBadge" class="badge bg-secondary">Unknown</span>
+                                <small id="webSearchStatusDetail" class="text-muted"></small>
+                                <button type="button" id="webSearchRetryBtn" class="btn btn-outline-secondary btn-sm ms-auto">
+                                    <i class="bi bi-arrow-clockwise me-1"></i>Test / Retry
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -566,8 +586,8 @@
                 <div id="settings-models" class="settings-tab-content" style="display:none;">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <div>
-                            <h6 class="mb-0"><i class="bi bi-cpu me-2"></i>Bedrock Models</h6>
-                            <small class="text-muted">Manage available models and assign swarm pipeline roles</small>
+                            <h6 class="mb-0"><i class="bi bi-cpu me-2"></i>Models</h6>
+                            <small class="text-muted">Manage available models (served via Amazon Bedrock Mantle) and assign swarm pipeline roles</small>
                         </div>
                     </div>
                     <table class="table table-sm align-middle" id="modelsTable">
@@ -584,11 +604,11 @@
                     </table>
                     <div class="border rounded p-3 mt-2">
                         <div class="row g-2 align-items-end">
-                            <div class="col-md-3">
+                            <div class="col-md-4">
                                 <label class="form-label small mb-1">Display Name</label>
                                 <input type="text" class="form-control form-control-sm" id="newModelName" placeholder="e.g. Claude Sonnet 5">
                             </div>
-                            <div class="col-md-5">
+                            <div class="col-md-4">
                                 <label class="form-label small mb-1">Inference Profile ID</label>
                                 <input type="text" class="form-control form-control-sm" id="newModelId" placeholder="e.g. us.anthropic.claude-sonnet-5-v1">
                             </div>
@@ -946,6 +966,9 @@ Instructions for the agent go here.
                                 <span id="workDirBadgeText"></span>
                                 <button class="chip-remove ms-1" id="workDirRemoveBtn" style="background:none;border:none;padding:0;line-height:1;"><i class="bi bi-x"></i></button>
                             </span>
+                            <button id="workThinkingBtn" class="work-tool-btn" title="Extended thinking: off">
+                                <i class="bi bi-lightbulb"></i>
+                            </button>
                         </div>
                         <div class="work-toolbar-right">
                             <select class="work-model-pill" id="workModelSelect">

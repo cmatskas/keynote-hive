@@ -1,28 +1,40 @@
-const { ConverseStreamCommand } = require('@aws-sdk/client-bedrock-runtime');
-const { ListKnowledgeBasesCommand } = require('@aws-sdk/client-bedrock-agent');
-const { RetrieveAndGenerateCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
 const { GetObjectCommand } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
 const { StartTranscriptionJobCommand, GetTranscriptionJobCommand } = require('@aws-sdk/client-transcribe');
 const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const TranscriptMapper = require('../models/transcriptMapper');
+const { createAgent } = require('../models/strandsAgentFactory');
 const { buildFileContentBlocks } = require('../utils');
 const config = require('../../../config');
 const logger = require('electron-log/main');
 
-async function invokeBedrockNoKB(ctx, model, prompt, conversationHistory, files = [], event = null, signal = null) {
-  if (!ctx.awsClients.bedrock) {
-    throw new Error('AWS credentials not configured');
+/**
+ * Chat tab model invocation — simple, non-agentic back-and-forth with any
+ * configured model. Uses the same createAgent() factory as Work/Swarm (so
+ * Mantle routing, retry classification, and thinking support all come for
+ * free and never drift out of sync with those tabs), but with an empty
+ * `tools: []` array and no persistent memory — the whole point of Chat is
+ * a single model call with no tool loop.
+ *
+ * Previously this hand-rolled a Bedrock Converse streaming loop directly
+ * against ConverseStreamCommand. Now that Bedrock Converse/BedrockModel has
+ * been removed entirely in favor of Mantle-only routing, this goes through
+ * createAgent()/agent.stream() like every other model call in Hive.
+ */
+async function invokeChatModel(ctx, model, prompt, conversationHistory, files = [], event = null, signal = null) {
+  const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
+  if (!settings.mantleApiKey) {
+    throw new Error('Mantle API key not configured — set it in Settings > Mantle API Key');
   }
 
   if (files && files.length > 5) {
-    throw new Error('Maximum 5 documents allowed for Bedrock Converse API');
+    throw new Error('Maximum 5 documents allowed per message');
   }
 
   const messageContent = [{ text: prompt }];
 
   if (files && files.length > 0) {
-    logger.info(`Processing ${files.length} files for Bedrock analysis`);
+    logger.info(`Processing ${files.length} files for Chat analysis`);
     const ci = new CodeInterpreterManager(ctx.awsClients.agentCoreConfig);
     const fileBlocks = await buildFileContentBlocks(files, {
       codeInterpreter: ci,
@@ -31,44 +43,39 @@ async function invokeBedrockNoKB(ctx, model, prompt, conversationHistory, files 
     messageContent.push(...fileBlocks);
   }
 
-  const messages = [
+  const { agent, dispose } = createAgent({
+    modelId: model,
+    region: settings.region,
+    mantleApiKey: settings.mantleApiKey,
+    systemPrompt: 'You are a helpful assistant. Answer questions clearly and concisely based on the conversation and any attached files.',
+    tools: [],
+    id: 'chat',
+    maxTokens: 4096,
+  });
+
+  const userInput = [
     ...(conversationHistory || []),
     { role: 'user', content: messageContent },
   ];
 
-  const inferenceConfig = { maxTokens: 4096 };
-
-  const command = new ConverseStreamCommand({ modelId: model, messages, inferenceConfig });
-  const response = await ctx.awsClients.bedrock.send(command, signal ? { abortSignal: signal } : {});
-
   let fullText = '';
-  for await (const chunk of response.stream) {
-    if (chunk.contentBlockDelta?.delta?.text) {
-      const textChunk = chunk.contentBlockDelta.delta.text;
-      fullText += textChunk;
-      if (event) event.sender.send('bedrock-stream-chunk', textChunk);
+  try {
+    for await (const streamEvent of agent.stream(userInput)) {
+      if (signal?.aborted) break;
+      if (streamEvent.type === 'modelStreamUpdateEvent') {
+        const inner = streamEvent.event;
+        if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
+          fullText += inner.delta.text;
+          if (event) event.sender.send('bedrock-stream-chunk', inner.delta.text);
+        }
+      }
     }
+  } finally {
+    dispose();
   }
 
   if (event) event.sender.send('bedrock-stream-complete');
   return fullText;
-}
-
-async function invokeBedrockWithKB(ctx, model, prompt, knowledgeBaseId, signal = null) {
-  if (!ctx.awsClients.bedrockAgentRuntime) {
-    throw new Error('AWS credentials not configured');
-  }
-
-  const params = {
-    input: { text: prompt },
-    retrieveAndGenerateConfiguration: {
-      knowledgeBaseConfiguration: { knowledgeBaseId, modelArn: model },
-      type: 'KNOWLEDGE_BASE',
-    },
-  };
-
-  const command = new RetrieveAndGenerateCommand(params);
-  return await ctx.awsClients.bedrockAgentRuntime.send(command, signal ? { abortSignal: signal } : {});
 }
 
 function getMediaFormat(uri) {
@@ -95,15 +102,11 @@ function register(ipcMain, ctx) {
     if (ctx.bedrockAbortController) { ctx.bedrockAbortController.abort(); ctx.bedrockAbortController = null; }
   });
 
-  ipcMain.handle('send-to-bedrock', async (event, { model, prompt, knowledgeBaseId, conversationHistory, files = [] }) => {
+  ipcMain.handle('send-to-bedrock', async (event, { model, prompt, conversationHistory, files = [] }) => {
     ctx.bedrockAbortController = new AbortController();
     const { signal } = ctx.bedrockAbortController;
     try {
-      if (knowledgeBaseId) {
-        return await invokeBedrockWithKB(ctx, model, prompt, knowledgeBaseId, signal);
-      } else {
-        return await invokeBedrockNoKB(ctx, model, prompt, conversationHistory, files, event, signal);
-      }
+      return await invokeChatModel(ctx, model, prompt, conversationHistory, files, event, signal);
     } finally {
       ctx.bedrockAbortController = null;
     }
@@ -112,17 +115,6 @@ function register(ipcMain, ctx) {
   ipcMain.handle('get-bedrock-models', async () => {
     const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
     return settings.bedrockModels || config.bedrockModels;
-  });
-
-  ipcMain.handle('get-knowledge-bases', async () => {
-    if (!ctx.awsClients.bedrockAgent) throw new Error('AWS credentials not configured');
-    const command = new ListKnowledgeBasesCommand({ maxResults: 20 });
-    const response = await ctx.awsClients.bedrockAgent.send(command);
-    return response.knowledgeBaseSummaries.map(kb => ({
-      id: kb.knowledgeBaseId,
-      name: kb.name || kb.knowledgeBaseId,
-      description: kb.description || '',
-    }));
   });
 
   ipcMain.handle('transcribe-media', async (event, { file }) => {
@@ -181,4 +173,4 @@ function register(ipcMain, ctx) {
   });
 }
 
-module.exports = { register, invokeBedrockNoKB };
+module.exports = { register, invokeChatModel };

@@ -174,7 +174,7 @@ app.whenReady().then(async () => {
   // ── Register all IPC handlers ───────────────────────────
   credentialsIPC.register(ipcMain, ctx);
   settingsIPC.register(ipcMain, ctx);
-  conversationsIPC.register(ipcMain, ctx, { invokeBedrockNoKB: (model, prompt) => bedrockIPC.invokeBedrockNoKB(ctx, model, prompt) });
+  conversationsIPC.register(ipcMain, ctx, { invokeChatModel: (model, prompt) => bedrockIPC.invokeChatModel(ctx, model, prompt) });
   memoryIPC.register(ipcMain, ctx);
   workHistoryIPC.register(ipcMain, ctx);
   skillsIPC.register(ipcMain, ctx);

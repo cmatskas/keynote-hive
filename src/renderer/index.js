@@ -106,8 +106,6 @@ if (typeof window !== 'undefined') {
     window.downloadAnalysis = downloadAnalysis;
     window.copyAnalysis = copyAnalysis;
     window.uploadFile = uploadFile;
-    window.loadKnowledgeBases = loadKnowledgeBases;
-    window.simpleCitationParser = simpleCitationParser;
     window.formatText = formatText;
     window.cleanupAnalysisText = cleanupAnalysisText;
     window.downloadTranscript = downloadTranscript;
@@ -257,11 +255,6 @@ templateSelect.addEventListener('change', () => {
     promptInput.value = selectedPrompt;
 });
 
-// Add this to handle the checkbox toggle
-document.getElementById('useKnowledgeBase').addEventListener('change', async () => {
-    await loadKnowledgeBases();
-});
-
 // Handle the use existing transcript checkbox
 document.getElementById('useExistingTranscript').addEventListener('change', () => {
     const isChecked = document.getElementById('useExistingTranscript').checked;
@@ -276,13 +269,6 @@ document.getElementById('useExistingTranscript').addEventListener('change', () =
         }
         showInfoToast('Transcript will be included with your prompt');
     }
-});
-
-// Store the knowledge base selection
-document.getElementById('knowledgeBaseSelect').addEventListener('change', function () {
-    const selectedKnowledgeBaseId = this.value;
-    localStorage.setItem('selectedKnowledgeBaseId', selectedKnowledgeBaseId);
-    localStorage.setItem('useKnowledgeBase', 'true');
 });
 
 fileInput.addEventListener('change', (e) => {
@@ -377,7 +363,6 @@ promptEditor.addEventListener('keydown', (e) => {
 async function sendMessage() {
     const model = document.getElementById('modelSelect').value;
     let prompt = document.getElementById('promptEditor').value.trim();
-    const useKnowledgeBase = document.getElementById('useKnowledgeBase').checked;
     const useExistingTranscript = document.getElementById('useExistingTranscript').checked;
 
     if (!prompt) {
@@ -397,13 +382,8 @@ async function sendMessage() {
 
     // Validate file count
     if (selectedFiles.length > 5) {
-        showErrorToast('Maximum 5 files allowed for Bedrock Converse API');
+        showErrorToast('Maximum 5 files allowed per message');
         return;
-    }
-
-    // Knowledge Base doesn't support file attachments
-    if (useKnowledgeBase && selectedFiles.length > 0) {
-        showWarningToast('File attachments are not supported with Knowledge Base. Files will be ignored.');
     }
 
     // Append transcript if requested
@@ -414,17 +394,6 @@ async function sendMessage() {
             return;
         }
         prompt = `${prompt}\n\n--- TRANSCRIPT ---\n${transcriptText.trim()}\n--- END TRANSCRIPT ---`;
-    }
-
-    // Validate KB selection
-    let knowledgeBaseId = null;
-    if (useKnowledgeBase) {
-        const kbSelect = document.getElementById('knowledgeBaseSelect');
-        knowledgeBaseId = kbSelect.selectedIndex > 0 ? kbSelect.value : null;
-        if (!knowledgeBaseId) {
-            showErrorToast('Please select a knowledge base or uncheck "Knowledge Base"');
-            return;
-        }
     }
 
     // Create conversation if none active
@@ -449,9 +418,6 @@ async function sendMessage() {
         .map(m => ({ role: m.role, content: [{ text: m.content }] }));
 
     try {
-        // Pass files only if not using knowledge base
-        const filesToSend = useKnowledgeBase ? [] : selectedFiles;
-
         // Create streaming message bubble
         let streamingText = '';
         const assistantMsg = { role: 'assistant', content: '', timestamp: new Date().toISOString() };
@@ -487,7 +453,7 @@ async function sendMessage() {
             document.getElementById('copyAnalysis').classList.remove('d-none');
             
             // Clear files after successful send
-            if (selectedFiles.length > 0 && !useKnowledgeBase) {
+            if (selectedFiles.length > 0) {
                 selectedFiles = [];
                 document.getElementById('fileUpload').value = '';
                 updateFileList();
@@ -501,28 +467,15 @@ async function sendMessage() {
         
         thinkingEl.remove();
 
-        const response = await window.electronAPI.invoke('send-to-bedrock', {
+        await window.electronAPI.invoke('send-to-bedrock', {
             model,
             prompt,
-            knowledgeBaseId,
             conversationHistory: history,
-            files: filesToSend
+            files: selectedFiles
         });
 
-        // For KB responses (non-streaming)
-        if (useKnowledgeBase) {
-            const responseText = extractKBText(response);
-            assistantMsg.content = responseText;
-            const copyBtnHTML = copyBtn ? copyBtn.outerHTML : '';
-            bubbleEl.innerHTML = copyBtnHTML + formatText(responseText);
-            currentConversation.messages.push(assistantMsg);
-            currentAnalysis = responseText;
-            document.getElementById('downloadAnalysis').classList.remove('d-none');
-            document.getElementById('copyAnalysis').classList.remove('d-none');
-        }
-
         // Clear files after successful send
-        if (selectedFiles.length > 0 && !useKnowledgeBase) {
+        if (selectedFiles.length > 0) {
             selectedFiles = [];
             document.getElementById('fileUpload').value = '';
             updateFileList();
@@ -718,56 +671,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 });
 
-// Function to load knowledge bases
-async function loadKnowledgeBases() {
-    try {
-        const KB_TTL_MS = 30 * 60 * 1000; // 30 minutes
-        let knowledgeBases = null;
-        const cached = localStorage.getItem('knowledgeBases');
-        const cachedAt = parseInt(localStorage.getItem('knowledgeBases_ts') || '0', 10);
-        if (cached && (Date.now() - cachedAt) < KB_TTL_MS) {
-            knowledgeBases = JSON.parse(cached);
-        } else {
-            knowledgeBases = await window.electronAPI.invoke('get-knowledge-bases');
-            localStorage.setItem('knowledgeBases', JSON.stringify(knowledgeBases));
-            localStorage.setItem('knowledgeBases_ts', String(Date.now()));
-        }
-
-        const knowledgeBaseSelect = document.getElementById('knowledgeBaseSelect');
-
-        // Clear existing options except the first one (placeholder)
-        while (knowledgeBaseSelect.options.length > 1) {
-            knowledgeBaseSelect.remove(1);
-        }
-
-        // Add knowledge bases to the dropdown
-        knowledgeBases.forEach(kb => {
-            const option = document.createElement('option');
-            option.value = kb.id;
-            option.textContent = kb.name;
-            option.title = kb.description || '';
-            knowledgeBaseSelect.appendChild(option);
-        });
-
-        const useKnowledgeBaseCheckbox = document.getElementById('useKnowledgeBase');
-        if (useKnowledgeBaseCheckbox.checked) {
-            document.getElementById('useKnowledgeBase').checked = true;
-            document.getElementById('knowledgeBaseSection').style.display = 'block';
-            showSuccessToast('Knowledge bases loaded successfully');
-        }
-        else {
-            document.getElementById('useKnowledgeBase').checked = false;
-            document.getElementById('knowledgeBaseSection').style.display = 'none';
-            showInfoToast('Removed knowledge bases from Bedrock query');
-        }
-
-
-    } catch (error) {
-        console.error('Error loading knowledge bases:', error);
-        showErrorToast('Failed to load knowledge bases: ' + error.message);
-    }
-}
-
 // ── Conversation management ──────────────────────────────────────────────
 
 async function renderConversationList(filter = '') {
@@ -894,71 +797,6 @@ function appendCompressionNotice() {
     el.textContent = '— Earlier messages were summarized to save context —';
     history.appendChild(el);
     history.scrollTop = history.scrollHeight;
-}
-
-// Extract plain text from KB citation response for chat display
-function extractKBText(response) {
-    if (!response || !response.citations) return String(response);
-    return response.citations
-        .map(c => c.generatedResponsePart?.textResponsePart?.text || '')
-        .filter(Boolean)
-        .join('\n\n');
-}
-
-function simpleCitationParser(responseData) {
-    // Check if we have valid data
-    if (!responseData || !responseData.citations || !Array.isArray(responseData.citations)) {
-        return '<div class="error">No citation data found</div>';
-    }
-
-    let htmlOutput = '';
-
-    // Loop through each citation
-    responseData.citations.forEach((citation, index) => {
-        // Extract the text content if available
-        let citationText = '';
-        if (citation.generatedResponsePart &&
-            citation.generatedResponsePart.textResponsePart &&
-            citation.generatedResponsePart.textResponsePart.text) {
-            citationText = citation.generatedResponsePart.textResponsePart.text;
-        }
-
-        // Skip if no text content
-        if (!citationText) return;
-
-        // Start building the citation block
-        htmlOutput += `<div class="citation-item">`;
-
-        // Add the citation text
-        htmlOutput += `<div class="citation-content">${formatText(citationText)}</div>`;
-
-        // Add citation sources if available
-        if (citation.retrievedReferences && Array.isArray(citation.retrievedReferences)) {
-            htmlOutput += `<div class="citation-sources">`;
-
-            citation.retrievedReferences.forEach(reference => {
-                if (reference.location && reference.location.s3Location) {
-                    const sourceUrl = reference.location.s3Location;
-                    const fileName = sourceUrl.uri.split('/').pop();
-
-                    htmlOutput += `<a href="${sourceUrl}" class="source-link" title="${sourceUrl}">`;
-                    htmlOutput += `[Source: ${fileName}]`;
-                    htmlOutput += `</a>`;
-                }
-            });
-
-            htmlOutput += `</div>`;
-        }
-
-        htmlOutput += `</div>`;
-    });
-
-    // If no content was processed, show a message
-    if (!htmlOutput) {
-        return '<div class="no-data">No citation content found in the data</div>';
-    }
-
-    return htmlOutput;
 }
 
 function formatText(text) {
@@ -1289,7 +1127,7 @@ function setupFileUpload() {
         const files = Array.from(e.target.files);
 
         if (files.length > 5) {
-            showErrorToast('Maximum 5 files allowed for Bedrock Converse API');
+            showErrorToast('Maximum 5 files allowed per message');
             e.target.value = '';
             return;
         }

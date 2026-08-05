@@ -7,7 +7,7 @@ function register(ipcMain, ctx) {
     if (ctrl) { ctrl.abort(); ctx.agentAbortControllers.delete(sessionId); }
   });
 
-  ipcMain.handle('invoke-agent', async (event, { model, prompt, conversationHistory, files = [], sessionId }) => {
+  ipcMain.handle('invoke-agent', async (event, { model, prompt, conversationHistory, files = [], sessionId, enableThinking = false }) => {
     if (!ctx.awsClients.bedrock) {
       throw new Error('AWS credentials not configured');
     }
@@ -41,9 +41,13 @@ function register(ipcMain, ctx) {
 
     ctx.skillsManager.resetActivations();
     try {
-      return await executor.run(model, prompt, conversationHistory, files);
+      return await executor.run(model, prompt, conversationHistory, files, enableThinking);
     } finally {
       ctx.agentAbortControllers.delete(sessionId);
+      // Fired unconditionally (success, abort, or thrown error) so the
+      // renderer's activity log always closes out rather than being left
+      // stuck in "Working..." if the run fails.
+      event.sender.send('agent-status', { sessionId, status: { tool: 'run', state: 'done' } });
     }
   });
 

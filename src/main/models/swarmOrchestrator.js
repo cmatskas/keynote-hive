@@ -7,7 +7,6 @@ const { createAgent } = require('./strandsAgentFactory');
 const { z } = require('zod');
 const { createSwarmTools } = require('./swarmTools');
 const { evaluate, decide, buildRubricPrompt, parseJudgeResponse } = require('./rubricEvaluator');
-const { BedrockRuntimeClient, ConverseStreamCommand } = require('@aws-sdk/client-bedrock-runtime');
 const fs = require('fs').promises;
 const path = require('path');
 const { app } = require('electron');
@@ -80,19 +79,7 @@ class SwarmOrchestrator {
         } catch { /* no checkpoint, run agent */ }
 
         try {
-          // Route video-capable agents through the multimodal path
-          const videoFiles = (files || []).filter(f => /\.(mp4|mov|mkv|webm|avi|flv|mpeg|mpg|wmv|3gp)$/i.test(f.name || f.path));
-          const useVideoPath = agentConfig.supportsVideo && videoFiles.length > 0;
-
-          let output = useVideoPath
-            ? await this._runVideoAnalysisAgent(swarmId, agentConfig, previousOutput, brief, i, videoFiles)
-            : await this._runAgent(swarmId, agentConfig, previousOutput, brief, i, adaptedRubric || template.rubric, historicalFeedback);
-
-          // Extract keyframes after video analysis
-          if (useVideoPath && output) {
-            const frameManifest = await this._extractVideoFrames(swarmId, i, videoFiles);
-            if (frameManifest) output += '\n\n' + frameManifest;
-          }
+          let output = await this._runAgent(swarmId, agentConfig, previousOutput, brief, i, adaptedRubric || template.rubric, historicalFeedback);
 
           // Quality gate loop
           if (agentConfig.isQualityGate) {
@@ -308,7 +295,7 @@ class SwarmOrchestrator {
     const { agent, dispose } = createAgent({
       modelId: agentConfig.model,
       region: this.awsConfig.region,
-      credentials: this.awsConfig.credentials,
+      mantleApiKey: this.settings?.mantleApiKey,
       systemPrompt,
       tools,
       id: agentConfig.id,
@@ -409,104 +396,6 @@ class SwarmOrchestrator {
 
   // ── Adaptive Learning ─────────────────────────────────
 
-  async _runVideoAnalysisAgent(swarmId, agentConfig, input, brief, agentIndex, videoFiles) {
-    const fsLocal = require('fs').promises;
-    const MODELS = require('./pipelineTemplates').MODELS;
-    const modelId = MODELS[agentConfig.model] || agentConfig.model;
-
-    // Load skills
-    const skillBodies = [];
-    for (const skillName of (agentConfig.skills || [])) {
-      const body = await this.skills.getSkillBody(skillName);
-      if (body) skillBodies.push({ name: skillName, body });
-    }
-    const skillBlock = skillBodies.length > 0
-      ? `\n\n<active_skills>\n${skillBodies.map(s => `<skill name="${s.name}">\n${s.body}\n</skill>`).join('\n')}\n</active_skills>`
-      : '';
-
-    const systemPrompt = `${agentConfig.prompt}\n\n<user_brief>\n${brief}\n</user_brief>${skillBlock}`;
-
-    // Build content blocks: video(s) + text
-    const content = [];
-    for (const vf of videoFiles) {
-      try {
-        const stat = await fsLocal.stat(vf.path);
-        const ext = vf.path.split('.').pop().toLowerCase();
-        const formatMap = { mp4: 'mp4', mov: 'mov', mkv: 'mkv', webm: 'webm', avi: 'avi', flv: 'flv', mpeg: 'mpeg', mpg: 'mpg', wmv: 'wmv', '3gp': 'three_gp' };
-        const format = formatMap[ext] || 'mp4';
-
-        if (stat.size <= 25 * 1024 * 1024) {
-          // Direct upload (≤25MB)
-          const bytes = await fsLocal.readFile(vf.path);
-          content.push({ video: { format, source: { bytes } } });
-          this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n🎬 Analyzing video: ${vf.name} (${(stat.size / 1024 / 1024).toFixed(1)}MB direct)\n` });
-        } else {
-          // S3 upload for large videos
-          const s3Uri = await this._uploadVideoToS3(vf.path, swarmId);
-          if (s3Uri) {
-            content.push({ video: { format, source: { s3Location: { uri: s3Uri } } } });
-            this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n🎬 Analyzing video: ${vf.name} (${(stat.size / 1024 / 1024).toFixed(1)}MB via S3)\n` });
-          }
-        }
-      } catch (err) {
-        this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n⚠️ Failed to load video ${vf.name}: ${err.message}\n` });
-      }
-    }
-
-    content.push({ text: input === brief
-      ? 'Analyze the attached video and produce a structured analysis brief based on your system prompt.'
-      : `<previous_agent_output>\n${input}\n</previous_agent_output>\n\nAnalyze the attached video in context of the above.`
-    });
-
-    // Call Bedrock Converse API directly (Strands doesn't support video content blocks)
-    const client = new BedrockRuntimeClient({
-      region: this.awsConfig.region,
-      credentials: this.awsConfig.credentials,
-    });
-
-    let fullText = '';
-    try {
-      const response = await client.send(new ConverseStreamCommand({
-        modelId,
-        system: [{ text: systemPrompt }],
-        messages: [{ role: 'user', content }],
-        inferenceConfig: { maxTokens: 4096 },
-      }));
-
-      for await (const event of response.stream) {
-        if (this.runs.get(swarmId)?.aborted) throw new Error('Pipeline cancelled');
-        if (event.contentBlockDelta?.delta?.text) {
-          fullText += event.contentBlockDelta.delta.text;
-          this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: event.contentBlockDelta.delta.text });
-        }
-      }
-    } catch (err) {
-      this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n⚠️ Video analysis error: ${err.message}\n` });
-    }
-
-    return fullText;
-  }
-
-  async _uploadVideoToS3(filePath, swarmId) {
-    try {
-      const fsLocal = require('fs').promises;
-      const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-      const s3 = new S3Client({ region: this.awsConfig.region, credentials: this.awsConfig.credentials });
-      const bucket = this.settings?.bucketName;
-      if (!bucket) {
-        this.onEvent('swarm-agent-chunk', { swarmId, agentIndex: 0, chunk: '\n⚠️ No S3 bucket configured for large video upload. Configure in Settings → Configuration.\n' });
-        return null;
-      }
-      const key = `swarm-temp/${swarmId}/${require('path').basename(filePath)}`;
-      const body = await fsLocal.readFile(filePath);
-      await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body }));
-      return `s3://${bucket}/${key}`;
-    } catch (err) {
-      this.onEvent('swarm-agent-chunk', { swarmId, agentIndex: 0, chunk: `\n⚠️ S3 upload failed: ${err.message}\n` });
-      return null;
-    }
-  }
-
   async _verifyLocalSave(swarmId, agentIndex, output) {
     try {
       const fsLocal = require('fs').promises;
@@ -525,85 +414,6 @@ class SwarmOrchestrator {
       return filePath;
     } catch {
       this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: '\n❌ File was NOT saved to local machine. The formatter agent may have failed silently.\n' });
-      return null;
-    }
-  }
-
-  async _extractVideoFrames(swarmId, agentIndex, videoFiles) {
-    try {
-      if (!this.codeInterpreter.sessionId) {
-        await this.codeInterpreter.startSession(7200);
-      }
-      this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: '\n🎞️ Extracting keyframes from video...\n' });
-
-      const videoName = videoFiles[0].name;
-      const code = `
-import subprocess, os, json
-
-os.makedirs('/tmp/frames', exist_ok=True)
-
-# Install opencv if needed
-try:
-    import cv2
-except ImportError:
-    subprocess.check_call(['pip', 'install', '-q', 'opencv-python-headless'])
-    import cv2
-
-video_path = '/tmp/${videoName}'
-cap = cv2.VideoCapture(video_path)
-fps = cap.get(cv2.CAP_PROP_FPS) or 30
-total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-duration = total_frames / fps if fps > 0 else 0
-
-# Extract 1 frame every 2 seconds (balance between coverage and count)
-interval = max(int(fps * 2), 1)
-frames = []
-frame_idx = 0
-saved = 0
-
-while cap.isOpened() and saved < 60:  # cap at 60 frames
-    ret, frame = cap.read()
-    if not ret:
-        break
-    if frame_idx % interval == 0:
-        timestamp = frame_idx / fps
-        ts_str = f"{int(timestamp//60):02d}:{int(timestamp%60):02d}"
-        filename = f"/tmp/frames/frame_{saved:04d}_{ts_str.replace(':','')}.jpg"
-        cv2.imwrite(filename, frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        frames.append({"path": filename, "timestamp": ts_str, "index": saved})
-        saved += 1
-    frame_idx += 1
-
-cap.release()
-print(json.dumps({"duration": f"{int(duration//60)}:{int(duration%60):02d}", "fps": round(fps,1), "total_frames": saved, "frames": frames}))
-`;
-
-      const result = await this.codeInterpreter.executeCode(code);
-      if (!result.success) {
-        this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n⚠️ Frame extraction failed: ${(result.errors || []).join(', ')}\n` });
-        return null;
-      }
-
-      // Parse the JSON output
-      try {
-        const data = JSON.parse(result.text.trim());
-        const manifest = [
-          `## Extracted Video Frames`,
-          `Duration: ${data.duration} | FPS: ${data.fps} | Frames extracted: ${data.total_frames}`,
-          ``,
-          `Available frames in sandbox (use these paths in scene cards):`,
-          ...data.frames.map(f => `- \`${f.path}\` — timestamp ${f.timestamp}`),
-          ``,
-          `**Scene Writer**: Reference these frame paths in your scene cards under "Visual:".`,
-          `**Formatter**: Embed these images in the PPTX slides using python-pptx add_picture().`,
-        ];
-        this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n🎞️ Extracted ${data.total_frames} keyframes\n` });
-        return manifest.join('\n');
-      } catch {
-        return null;
-      }
-    } catch (err) {
-      this.onEvent('swarm-agent-chunk', { swarmId, agentIndex, chunk: `\n⚠️ Frame extraction error: ${err.message}\n` });
       return null;
     }
   }
@@ -726,7 +536,7 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
       const { agent, dispose } = createAgent({
         modelId: require('./pipelineTemplates').DEFAULT_MODELS.formatter,
         region: this.awsConfig.region,
-        credentials: this.awsConfig.credentials,
+        mantleApiKey: this.settings?.mantleApiKey,
         systemPrompt: `You specialize in making evaluation criteria specific and concrete. Given generic rubric criteria and a user brief, rewrite each criterion to reference the specific content of the brief. Keep the same number of criteria, same weights, same meaning — just make the text specific. Output ONLY a JSON array of objects: [{"index": 0, "text": "specific criterion text"}, ...]`,
         tools: [],
         id: 'rubric-adapter',

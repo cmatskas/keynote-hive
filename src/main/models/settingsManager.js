@@ -18,14 +18,34 @@ class SettingsManager {
       userId: '',
       sagemakerImageEndpoint: '',
       sagemakerImageComponent: '',
+      // IAM role ARN the AgentCore Gateway assumes to run the Web Search
+      // Tool target. Required only for first-time Gateway creation in a
+      // given AWS account — once the 'hive-web-search' Gateway exists,
+      // WebSearchManager reuses it and this is no longer consulted. Must
+      // trust bedrock-agentcore.amazonaws.com in its trust policy.
+      webSearchGatewayRoleArn: '',
+      // One-off, long-term Bedrock API key used to authenticate against the
+      // bedrock-mantle endpoint (both the Anthropic Messages API branch and
+      // the OpenAI-compatible Responses API branch in strandsAgentFactory.js
+      // use this same key — Mantle is now Hive's only model-invocation path,
+      // Bedrock Converse/BedrockModel has been removed entirely). AWS docs
+      // note long-term Bedrock API keys are "recommended only for
+      // exploration" — short-term keys expire in <=12h and would require
+      // Hive to implement its own refresh loop, which this deliberately
+      // avoids for now.
+      mantleApiKey: '',
+      // Models reachable via bedrock-mantle now that Bedrock Converse/
+      // BedrockModel has been removed. Only two families are supported by
+      // the installed Strands SDK: Anthropic (via AnthropicModel, matched by
+      // "anthropic." in the model ID) and OpenAI-compatible (via
+      // OpenAIModel, every other model ID — GPT-5.x, gpt-oss, etc.). Models
+      // with no Strands provider that can reach Mantle at all (Nova,
+      // DeepSeek, Mistral, Llama, etc.) are no longer offered by default.
       bedrockModels: [
         { id: 'Claude Opus 4.6', inferenceProfileId: 'us.anthropic.claude-opus-4-6-v1', role: 'creator' },
         { id: 'Claude Sonnet 4.6', inferenceProfileId: 'us.anthropic.claude-sonnet-4-6', role: 'worker' },
         { id: 'Claude Haiku 4.5', inferenceProfileId: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', role: 'formatter' },
-        { id: 'DeepSeek V3.2', inferenceProfileId: 'deepseek.v3.2', role: '' },
-        { id: 'Mistral Large 3', inferenceProfileId: 'mistral.mistral-large-3-675b-instruct', role: '' },
-        { id: 'Llama 4 Maverick 17B', inferenceProfileId: 'us.meta.llama4-maverick-17b-instruct-v1:0', role: '' },
-        { id: 'Nova Premier', inferenceProfileId: 'us.amazon.nova-premier-v1:0', role: 'vision' },
+        { id: 'GPT-5.6 Sol', inferenceProfileId: 'openai.gpt-5.6-sol', role: '' },
       ],
     };
   }
@@ -133,6 +153,16 @@ class SettingsManager {
     }
     if (typeof settings.sagemakerImageComponent === 'string') {
       validated.sagemakerImageComponent = settings.sagemakerImageComponent.trim();
+    }
+
+    // Validate web search Gateway execution role ARN
+    if (typeof settings.webSearchGatewayRoleArn === 'string') {
+      validated.webSearchGatewayRoleArn = settings.webSearchGatewayRoleArn.trim();
+    }
+
+    // Validate Mantle API key
+    if (typeof settings.mantleApiKey === 'string') {
+      validated.mantleApiKey = settings.mantleApiKey.trim();
     }
 
     // Preserve bedrockModels array

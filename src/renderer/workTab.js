@@ -9,7 +9,7 @@
   const FM = window.FileManager;
 
   // ── Per-session state map ─────────────────────────────────
-  // Key: sessionId, Value: { container, messages, streamingEl, streamingText, activityLog, lastEntry, processing }
+  // Key: sessionId, Value: { container, messages, streamingEl, streamingText, activityLog, runningEntries, processing, enableThinking }
   const sessions = new Map();
 
   let activeSessionId = localStorage.getItem('workSessionId') || generateSessionId();
@@ -32,8 +32,9 @@
         streamingEl: null,
         streamingText: '',
         activityLog: null,
-        lastEntry: null,
+        runningEntries: new Map(),
         processing: false,
+        enableThinking: false,
       });
     }
     return sessions.get(id);
@@ -58,6 +59,13 @@
     host.appendChild(session.container);
     activeSessionId = id;
     localStorage.setItem('workSessionId', id);
+
+    // Reflect this session's extended-thinking toggle state in the toolbar button
+    const thinkingBtn = document.getElementById('workThinkingBtn');
+    if (thinkingBtn) {
+      thinkingBtn.classList.toggle('active', !!session.enableThinking);
+      thinkingBtn.title = session.enableThinking ? 'Extended thinking: on' : 'Extended thinking: off';
+    }
   }
 
   // File manager for the Work tab's own file input
@@ -164,6 +172,21 @@
       }
     });
 
+    // Extended thinking toggle — per-session state, default off. Silently a
+    // no-op server-side for models that don't support it (see
+    // strandsAgentFactory.supportsExtendedThinking()); the button itself
+    // stays clickable regardless of the selected model since Hive decides
+    // support at request time, not by inspecting the model list here.
+    const thinkingBtn = document.getElementById('workThinkingBtn');
+    if (thinkingBtn) {
+      thinkingBtn.addEventListener('click', () => {
+        const session = getActiveSession();
+        session.enableThinking = !session.enableThinking;
+        thinkingBtn.classList.toggle('active', session.enableThinking);
+        thinkingBtn.title = session.enableThinking ? 'Extended thinking: on' : 'Extended thinking: off';
+      });
+    }
+
     // New Chat button
     const newChatBtn = document.getElementById('workNewChatBtn');
     if (newChatBtn) {
@@ -224,14 +247,62 @@
       if (!s) return;
 
       if (typeof status === 'object' && status.tool) {
+        // {tool:'run', state:'done'} is a sentinel marking the whole run as
+        // finished (success, abort, or error) — not an actual activity-log
+        // entry — so it closes out the log instead of being rendered.
+        if (status.tool === 'run' && status.state === 'done') {
+          CR.finishActivityLog(s.activityLog);
+          CR.removeActivityNarrationLine(s.activityLog);
+          return;
+        }
+
         if (!s.activityLog) {
           s.activityLog = CR.createActivityLog(s.container);
         }
-        if (status.state === 'running') {
-          s.lastEntry = CR.addActivityEntry(s.activityLog, status);
-        } else if (status.state === 'done' && s.lastEntry) {
-          CR.completeActivityEntry(s.lastEntry);
-          s.lastEntry = null;
+        if (!s.runningEntries) s.runningEntries = new Map();
+
+        // "Thinking" narration renders as its own expandable box at the top
+        // of the timeline (accumulating every narration line rather than
+        // overwriting), plus the single most recent line mirrored as a
+        // standalone, always-visible line directly below the whole log —
+        // Quick Desktop's reference pattern. This does NOT also go through
+        // the generic addActivityEntry() path below (it would otherwise be
+        // double-rendered: once as a normal timeline row, once in the box).
+        if (status.tool === 'thinking') {
+          if (status.detail) {
+            CR.updateThinkingEntry(s.activityLog, status.detail);
+          }
+        } else if (status.state === 'running') {
+          const entry = CR.addActivityEntry(s.activityLog, status);
+          // Keyed by tool+detail rather than tool name alone — the model can
+          // (and does) issue two concurrent/back-to-back calls to the same
+          // tool (e.g. two different web searches) before the first one's
+          // 'done' event arrives. Keying by tool name alone let the second
+          // call's entry silently overwrite the first's in the map, so the
+          // first row's completion was never applied (permanently stuck
+          // "running", orphaned) once the map key got reused.
+          s.runningEntries.set(`${status.tool}:${status.detail || ''}`, entry);
+        } else if (status.state === 'done') {
+          const key = `${status.tool}:${status.detail || ''}`;
+          // AfterToolCallEvent only carries {tool, state:'done'} (no detail —
+          // see agentToolExecutor.js), so exact-detail keys never match here.
+          // Fall back to the oldest still-running entry for this tool name.
+          let entry = s.runningEntries.get(key);
+          let matchedKey = key;
+          if (!entry) {
+            for (const [k, v] of s.runningEntries) {
+              if (k.startsWith(`${status.tool}:`)) { entry = v; matchedKey = k; break; }
+            }
+          }
+          if (entry) {
+            CR.completeActivityEntry(entry);
+            s.runningEntries.delete(matchedKey);
+          } else if (status.detail) {
+            // No matching running entry (e.g. narration flushed only once
+            // the model turn ends, with no preceding 'running' state) — add
+            // it directly as a completed entry.
+            CR.addActivityEntry(s.activityLog, status);
+          }
         }
       } else {
         const prev = s.container.querySelector('.chat-status-message:last-child');
@@ -253,6 +324,12 @@
       s.streamingText += chunk;
 
       if (!s.streamingEl) {
+        // The real answer has started — remove only the standalone "most
+        // recent narration" line shown below the activity log (that line is
+        // meant to reflect activity *before* the answer). The Thinking box
+        // itself, inside the log, stays as part of the historical record.
+        CR.removeActivityNarrationLine(s.activityLog);
+
         const msg = { role: 'assistant', content: '', timestamp: new Date().toISOString() };
         s.streamingEl = CR.appendChatMessage(s.container, msg, {
           onCopy: () => navigator.clipboard.writeText(s.streamingText).then(
@@ -437,7 +514,7 @@
     session.streamingEl = null;
     session.streamingText = '';
     session.activityLog = null;
-    session.lastEntry = null;
+    session.runningEntries = new Map();
 
     const history = session.messages.slice(0, -1).map(m => ({
       role: m.role,
@@ -456,6 +533,7 @@
         conversationHistory: history,
         files,
         sessionId: sid,
+        enableThinking: !!session.enableThinking,
       });
 
       thinkingEl.remove();

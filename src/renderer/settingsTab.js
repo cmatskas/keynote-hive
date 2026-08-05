@@ -40,6 +40,9 @@
     // Config save
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
 
+    // Web Search retry/test
+    document.getElementById('webSearchRetryBtn').addEventListener('click', retryWebSearchInit);
+
     // Memory
     document.getElementById('memoryRefreshBtn').addEventListener('click', loadMemoryList);
     document.getElementById('memorySelect').addEventListener('change', () => {
@@ -167,11 +170,74 @@
         document.getElementById('defaultTheme').value = settings.defaultTheme || 'auto';
         document.getElementById('sagemakerImageEndpoint').value = settings.sagemakerImageEndpoint || '';
         document.getElementById('sagemakerImageComponent').value = settings.sagemakerImageComponent || '';
+        document.getElementById('webSearchGatewayRoleArn').value = settings.webSearchGatewayRoleArn || '';
+        document.getElementById('mantleApiKey').value = settings.mantleApiKey || '';
       }
     } catch { /* defaults */ }
 
+    refreshWebSearchStatus();
+
     // Memory status — read toggle state directly from settings (no AWS call needed)
     // (handled by loadMemoryList called from init)
+  }
+
+  /** Reflects webSearchManager's current readiness/error in the settings badge. */
+  async function refreshWebSearchStatus() {
+    const badge = document.getElementById('webSearchStatusBadge');
+    const detail = document.getElementById('webSearchStatusDetail');
+    if (!badge || !detail) return;
+
+    try {
+      const status = await window.electronAPI.invoke('get-web-search-status');
+      if (status.ready) {
+        badge.textContent = 'Connected';
+        badge.className = 'badge bg-success';
+        detail.textContent = '';
+      } else {
+        badge.textContent = 'Not connected';
+        badge.className = 'badge bg-warning text-dark';
+        detail.textContent = status.error || 'Web search has not been initialized yet.';
+      }
+    } catch (err) {
+      badge.textContent = 'Unknown';
+      badge.className = 'badge bg-secondary';
+      detail.textContent = err.message;
+    }
+  }
+
+  async function retryWebSearchInit() {
+    const btn = document.getElementById('webSearchRetryBtn');
+    const badge = document.getElementById('webSearchStatusBadge');
+    const detail = document.getElementById('webSearchStatusDetail');
+    if (btn) btn.disabled = true;
+    if (badge) { badge.textContent = 'Checking...'; badge.className = 'badge bg-secondary'; }
+
+    try {
+      // Persist the current field value first — retry-web-search-init reads
+      // roleArn from settings on disk, not from the live textbox, so without
+      // this a typed-but-unsaved ARN is silently ignored and the retry fails
+      // with the same "roleArn required" error as before any input at all.
+      const roleArn = document.getElementById('webSearchGatewayRoleArn').value.trim();
+      const existing = await window.electronAPI.invoke('load-settings');
+      await window.electronAPI.invoke('save-settings', { ...existing, webSearchGatewayRoleArn: roleArn });
+
+      const status = await window.electronAPI.invoke('retry-web-search-init');
+      if (status.ready) {
+        badge.textContent = 'Connected';
+        badge.className = 'badge bg-success';
+        detail.textContent = '';
+        window.electronAPI.showToast('Web search connected!', 'success');
+      } else {
+        badge.textContent = 'Not connected';
+        badge.className = 'badge bg-warning text-dark';
+        detail.textContent = status.error || 'Web search is still unavailable.';
+        window.electronAPI.showToast(`Web search unavailable: ${status.error || 'unknown error'}`, 'error');
+      }
+    } catch (err) {
+      window.electronAPI.showToast(`Failed: ${err.message}`, 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function loadMemoryList() {
@@ -261,6 +327,8 @@
         defaultTheme: document.getElementById('defaultTheme').value,
         sagemakerImageEndpoint: document.getElementById('sagemakerImageEndpoint').value.trim(),
         sagemakerImageComponent: document.getElementById('sagemakerImageComponent').value.trim(),
+        webSearchGatewayRoleArn: document.getElementById('webSearchGatewayRoleArn').value.trim(),
+        mantleApiKey: document.getElementById('mantleApiKey').value.trim(),
       };
 
       await window.electronAPI.invoke('save-settings', settings);
@@ -271,6 +339,7 @@
       }
 
       window.electronAPI.showToast('Configuration saved!', 'success');
+      refreshWebSearchStatus();
     } catch (err) {
       window.electronAPI.showToast(`Error: ${err.message}`, 'error');
     } finally {

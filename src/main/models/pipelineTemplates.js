@@ -19,14 +19,10 @@
 //               mostly code execution with minimal reasoning, so the cheapest capable
 //               model is fine. Used by: Formatter agents.
 //
-//   vision    — Multimodal model for video/image analysis. Must support video content
-//               blocks in the Converse API. Used by: Demo Analyst when video is attached.
-//
 const DEFAULT_MODELS = {
   creator: 'us.anthropic.claude-opus-4-6-v1',
   worker: 'us.anthropic.claude-sonnet-4-6',
   formatter: 'anthropic.claude-haiku-4-5-20251001-v1:0',
-  vision: 'us.amazon.nova-premier-v1:0',
 };
 
 let MODELS = { ...DEFAULT_MODELS };
@@ -242,16 +238,16 @@ CRITICAL: Do NOT describe what you would do. Do NOT skip the execute_code call. 
     icon: 'bi-camera-reels',
     rubric: RUBRICS.demo,
     agents: [
-      { id: 'analyst', label: 'Analyst', model: "vision", skills: ['analysis-framework', 'research-first'], tools: ['web', 'execute_code'], supportsVideo: true,
-        prompt: 'You are a product analyst with video analysis capabilities. If a video is provided, analyze it scene by scene: describe what is shown on screen, identify UI elements, click paths, transitions, key moments, and any text/data visible. Include timestamps. If no video, read the provided inputs (product brief, feature specs, screenshots, transcripts). Extract: key features to demo, user pain points addressed, "wow moments" worth highlighting, target audience, and any technical details needed for screen recordings. Use web to research the product/feature for additional context. Output a structured analysis brief.' },
+      { id: 'analyst', label: 'Analyst', model: "worker", skills: ['analysis-framework', 'research-first'], tools: ['web', 'execute_code'],
+        prompt: 'You are a product analyst. Read the provided inputs (product brief, feature specs, screenshots, transcripts). Extract: key features to demo, user pain points addressed, "wow moments" worth highlighting, target audience, and any technical details needed for screen recordings. If screenshots or images are attached, describe what they show (UI elements, layout, key visual details) and reference them by filename in your analysis. Use web to research the product/feature for additional context. Output a structured analysis brief.' },
       { id: 'planner', label: 'Story Architect', model: "worker", skills: ['task-planner', 'demo-storyboard', 'marketing-psychology'], tools: [], reviewPoint: true,
         prompt: 'You are a demo narrative designer. Using the analysis brief, create the scene-by-scene storyboard structure following the Demo Narrative Arc from your demo-storyboard skill (Hook → Context → Solution Reveal → Proof → CTA). For each scene, define: title, duration, what\'s on screen, and the key message. Include transition notes between scenes. Output the complete scene breakdown with timing.' },
       { id: 'quality-gate-1', label: 'Quality Check', model: "creator", tools: [], isQualityGate: true, maxRetries: 2, skills: ['copy-editing', 'demo-storyboard'],
         prompt: 'Evaluate the storyboard structure. Check: (1) opens with problem not feature, (2) every scene has one clear focus, (3) scenes are under 30 seconds, (4) logical flow from problem to proof, (5) ends with specific CTA. If ALL pass: "PASS" then storyboard unchanged. If ANY fail: "REVISE:" then feedback.' },
       { id: 'writer', label: 'Scene Writer', model: "creator", skills: ['demo-storyboard', 'copywriting', 'marketing-psychology'], tools: [],
-        prompt: 'You are a demo script writer. For each scene in the storyboard, write the complete scene card using the exact format from your demo-storyboard skill. Include: specific visual descriptions, exact callout annotations (arrows, zoom levels, blur regions), word-for-word narration in conversational tone, on-screen text overlays, transitions, and emotional beats. Mark pauses with [PAUSE Xs]. Insert [CUSTOMER REFERENCE NEEDED: description] where proof points are missing. IMPORTANT: If extracted video frames are listed in the analysis, reference the specific frame paths (e.g. /tmp/frames/frame_0005_0010.jpg) in each scene\'s Visual field. Choose the frame that best represents what should be on screen for that scene.' },
+        prompt: 'You are a demo script writer. For each scene in the storyboard, write the complete scene card using the exact format from your demo-storyboard skill. Include: specific visual descriptions, exact callout annotations (arrows, zoom levels, blur regions), word-for-word narration in conversational tone, on-screen text overlays, transitions, and emotional beats. Mark pauses with [PAUSE Xs]. Insert [CUSTOMER REFERENCE NEEDED: description] where proof points are missing. IMPORTANT: If images were attached to the brief (screenshots, mockups), reference the specific attached filenames in each scene\'s Visual field. Choose the image that best represents what should be on screen for that scene.' },
       { id: 'editor', label: 'Editor', model: "worker", skills: ['copy-editing', 'demo-storyboard', 'analysis-framework'], tools: [],
-        prompt: 'Apply the Eight Sweeps framework plus Sweep 9 (AWS Reference Audit). For demo storyboards specifically: verify all callouts are specific (not vague), narration sounds natural when spoken aloud, scene durations are realistic, click paths are explicit, and data shown is realistic. Check that no scene exceeds 30 seconds. Verify that frame references (if present) point to actual /tmp/frames/ paths from the analysis. Strip AI vocabulary. Output the complete polished storyboard.' },
+        prompt: 'Apply the Eight Sweeps framework plus Sweep 9 (AWS Reference Audit). For demo storyboards specifically: verify all callouts are specific (not vague), narration sounds natural when spoken aloud, scene durations are realistic, click paths are explicit, and data shown is realistic. Check that no scene exceeds 30 seconds. Verify that any referenced image filenames correspond to files actually attached to the brief. Strip AI vocabulary. Output the complete polished storyboard.' },
       { id: 'formatter', label: 'Deck Creator', model: "formatter", skills: ['pptx'], tools: ['execute_code', 'save_file_locally'], maxRetries: 2,
         prompt: `You are a storyboard deck formatter. Your ONLY job is to convert the final scene cards into a .pptx file and save it locally.
 
@@ -263,7 +259,7 @@ STEP 1: Call execute_code with a SINGLE Python script that:
 - Uses blank slide layouts and positions shapes manually
 - Dark background (RGB 20, 24, 34), white text, orange accents
 - One slide per scene card: scene number + title as heading, visual description, narration text, callout notes, duration + transition in footer area
-- If frame image paths are referenced (e.g. /tmp/frames/frame_0005_0010.jpg), check if the file exists with os.path.exists() before embedding with add_picture(). Skip missing images gracefully.
+- If image paths are referenced in the scene cards (e.g. attached screenshots uploaded to the sandbox), check if the file exists with os.path.exists() before embedding with add_picture(). Skip missing images gracefully.
 
 - Saves to /tmp/output.pptx
 - Prints "SAVED: /tmp/output.pptx" at the end

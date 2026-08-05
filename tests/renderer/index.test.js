@@ -97,11 +97,7 @@ describe('Renderer Index.js', () => {
                 <option value="">Select Template</option>
                 <option value="Test prompt template">Test Template</option>
             </select>
-            <input type="checkbox" id="useKnowledgeBase" />
             <input type="checkbox" id="useExistingTranscript" />
-            <select id="knowledgeBaseSelect">
-                <option value="">Select Knowledge Base</option>
-            </select>
             <select id="modelSelect">
                 <option value="test-model">Test Model</option>
             </select>
@@ -123,7 +119,6 @@ describe('Renderer Index.js', () => {
             <div id="nav-app-settings"></div>
             <div id="nav-credentials"></div>
             <div id="nav-connection-status"></div>
-            <div id="knowledgeBaseSection"></div>
             <div id="transcriptionStatus"></div>
             <div id="bedrockProcessingModal"></div>
             <div id="transcriptionProcessingModal"></div>
@@ -413,12 +408,10 @@ describe('Renderer Index.js', () => {
         test('Bedrock button click with valid prompt', async () => {
             const modelSelect = document.getElementById('modelSelect');
             const promptEditor = document.getElementById('promptEditor');
-            const useKnowledgeBase = document.getElementById('useKnowledgeBase');
             const invokeBtn = document.getElementById('invokeBedrockBtn');
 
             modelSelect.value = 'test-model';
             promptEditor.value = 'Test prompt';
-            useKnowledgeBase.checked = false;
 
             mockElectronAPI.invoke.mockResolvedValue('Test response');
 
@@ -436,14 +429,12 @@ describe('Renderer Index.js', () => {
                 await mockElectronAPI.invoke('send-to-bedrock', {
                     model: modelSelect.value,
                     prompt: promptEditor.value,
-                    knowledgeBaseId: useKnowledgeBase.checked ? null : null
                 });
             }
 
             expect(mockElectronAPI.invoke).toHaveBeenCalledWith('send-to-bedrock', {
                 model: 'test-model',
                 prompt: 'Test prompt',
-                knowledgeBaseId: null
             });
         }, 10000);
 
@@ -458,121 +449,11 @@ describe('Renderer Index.js', () => {
 
             expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Please enter a prompt', 'error');
         });
-
-        test.skip('Bedrock button click with knowledge base but no selection shows error', async () => {
-            const modelSelect = document.getElementById('modelSelect');
-            const promptEditor = document.getElementById('promptEditor');
-            const useKnowledgeBase = document.getElementById('useKnowledgeBase');
-            const knowledgeBaseSelect = document.getElementById('knowledgeBaseSelect');
-            const invokeBtn = document.getElementById('invokeBedrockBtn');
-
-            modelSelect.value = 'test-model';
-            promptEditor.value = 'Test prompt';
-            useKnowledgeBase.checked = true;
-            knowledgeBaseSelect.selectedIndex = 0; // Placeholder option
-
-            const event = new Event('click');
-            invokeBtn.dispatchEvent(event);
-
-            expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Please select a knowledge base or uncheck "Knowledge Base"', 'error');
-        });
-    });
-
-    describe('Knowledge Base Functions', () => {
-        beforeEach(() => {
-            require('../../src/renderer/index.js');
-        });
-
-        test.skip('loadKnowledgeBases loads from localStorage when available', async () => {
-            const mockKnowledgeBases = [
-                { id: 'kb1', name: 'Knowledge Base 1', description: 'Test KB 1' },
-                { id: 'kb2', name: 'Knowledge Base 2', description: 'Test KB 2' }
-            ];
-
-            // Mock the knowledge base select element and its appendChild method
-            const knowledgeBaseSelect = document.getElementById('knowledgeBaseSelect');
-            knowledgeBaseSelect.innerHTML = '<option value="">Select Knowledge Base</option>';
-            
-            // Add the knowledgeBaseSection div to the DOM
-            const knowledgeBaseSection = document.createElement('div');
-            knowledgeBaseSection.id = 'knowledgeBaseSection';
-            document.body.appendChild(knowledgeBaseSection);
-            
-            // Check the useKnowledgeBase checkbox to trigger success toast
-            const useKnowledgeBaseCheckbox = document.getElementById('useKnowledgeBase');
-            useKnowledgeBaseCheckbox.checked = true;
-            
-            localStorageMock.getItem.mockReturnValue(JSON.stringify(mockKnowledgeBases));
-
-            await window.loadKnowledgeBases();
-
-            expect(localStorageMock.getItem).toHaveBeenCalledWith('knowledgeBases');
-            expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Knowledge bases loaded successfully', 'success');
-            
-            // Check that options were added
-            expect(knowledgeBaseSelect.options.length).toBe(3); // 1 placeholder + 2 knowledge bases
-        });
-
-        test('loadKnowledgeBases fetches from API when not in localStorage', async () => {
-            const mockKnowledgeBases = [
-                { id: 'kb1', name: 'Knowledge Base 1', description: 'Test KB 1' }
-            ];
-
-            localStorageMock.getItem.mockReturnValue(null);
-            mockElectronAPI.invoke.mockResolvedValue(mockKnowledgeBases);
-
-            await window.loadKnowledgeBases();
-
-            expect(mockElectronAPI.invoke).toHaveBeenCalledWith('get-knowledge-bases');
-            expect(localStorageMock.setItem).toHaveBeenCalledWith('knowledgeBases', JSON.stringify(mockKnowledgeBases));
-        });
-
-        test('loadKnowledgeBases handles API error', async () => {
-            localStorageMock.getItem.mockReturnValue(null);
-            mockElectronAPI.invoke.mockRejectedValue(new Error('API Error'));
-
-            await window.loadKnowledgeBases();
-
-            expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Failed to load knowledge bases: API Error', 'error');
-        });
     });
 
     describe('Utility Functions', () => {
         beforeEach(() => {
             require('../../src/renderer/index.js');
-        });
-
-        test('simpleCitationParser handles valid citation data', () => {
-            const mockResponseData = {
-                citations: [
-                    {
-                        generatedResponsePart: {
-                            textResponsePart: {
-                                text: 'Test citation text'
-                            }
-                        },
-                        retrievedReferences: [
-                            {
-                                location: {
-                                    s3Location: {
-                                        uri: 'https://s3.amazonaws.com/bucket/test-file.pdf'
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                ]
-            };
-
-            const result = window.simpleCitationParser(mockResponseData);
-
-            expect(result).toContain('Test citation text');
-            expect(result).toContain('test-file.pdf');
-        });
-
-        test('simpleCitationParser handles invalid data', () => {
-            const result = window.simpleCitationParser(null);
-            expect(result).toBe('<div class="error">No citation data found</div>');
         });
 
         test('formatText handles markdown formatting', () => {
@@ -607,34 +488,6 @@ describe('Renderer Index.js', () => {
             templateSelect.dispatchEvent(event);
 
             expect(promptEditor.value).toBe('Test prompt template');
-        });
-
-        test('knowledge base checkbox change triggers loadKnowledgeBases', () => {
-            const useKnowledgeBase = document.getElementById('useKnowledgeBase');
-            
-            // Mock loadKnowledgeBases
-            const mockLoadKnowledgeBases = jest.fn();
-            window.loadKnowledgeBases = mockLoadKnowledgeBases;
-
-            // Manually trigger the event listener logic since the event might not be properly attached in test
-            // This simulates what the event listener should do
-            mockLoadKnowledgeBases();
-
-            expect(mockLoadKnowledgeBases).toHaveBeenCalled();
-        });
-
-        test('knowledge base select change updates localStorage', () => {
-            const knowledgeBaseSelect = document.getElementById('knowledgeBaseSelect');
-            
-            // Add an option to select
-            knowledgeBaseSelect.innerHTML = '<option value="">Select</option><option value="test-kb-id">Test KB</option>';
-            knowledgeBaseSelect.value = 'test-kb-id';
-
-            const event = new Event('change');
-            knowledgeBaseSelect.dispatchEvent(event);
-
-            expect(localStorageMock.setItem).toHaveBeenCalledWith('selectedKnowledgeBaseId', 'test-kb-id');
-            expect(localStorageMock.setItem).toHaveBeenCalledWith('useKnowledgeBase', 'true');
         });
     });
 

@@ -26,7 +26,6 @@ jest.mock('@strands-agents/sdk', () => {
   class AfterToolCallEvent {}
   return {
     Agent: jest.fn(),
-    BedrockModel: jest.fn(),
     tool: jest.fn(),
     DefaultModelRetryStrategy,
     ExponentialBackoff,
@@ -35,9 +34,24 @@ jest.mock('@strands-agents/sdk', () => {
   };
 });
 
-jest.mock('@aws-sdk/client-bedrock-runtime', () => ({
-  BedrockRuntimeClient: jest.fn(),
-  ConverseStreamCommand: jest.fn(),
+jest.mock('@strands-agents/sdk/models/openai', () => ({
+  OpenAIModel: jest.fn(),
+}));
+
+jest.mock('@strands-agents/sdk/models/anthropic', () => ({
+  AnthropicModel: jest.fn(),
+}));
+
+jest.mock('openai', () => ({
+  InternalServerError: class InternalServerError extends Error {},
+  APIConnectionError: class APIConnectionError extends Error {},
+  APIConnectionTimeoutError: class APIConnectionTimeoutError extends Error {},
+}));
+
+jest.mock('@anthropic-ai/sdk', () => ({
+  InternalServerError: class InternalServerError extends Error {},
+  APIConnectionError: class APIConnectionError extends Error {},
+  APIConnectionTimeoutError: class APIConnectionTimeoutError extends Error {},
 }));
 
 jest.mock('../../src/main/models/swarmTools', () => ({
