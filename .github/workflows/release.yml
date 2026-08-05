@@ -9,7 +9,31 @@ permissions:
   contents: write   # required to create GitHub releases
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Run live Mantle integration check
+        env:
+          MANTLE_API_KEY: ${{ secrets.MANTLE_API_KEY }}
+          AWS_REGION: us-east-1
+          REQUIRE_MANTLE_KEY: '1'
+        run: npm run test:integration
+
   build-mac:
+    needs: test
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -74,6 +98,7 @@ jobs:
         run: security delete-keychain $RUNNER_TEMP/build.keychain-db || true
 
   build-win:
+    needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6

@@ -1,0 +1,36 @@
+name: Scheduled Tests
+
+# Runs independently of pushes/releases so a Mantle routing change (or any
+# other regression) is caught within a day, rather than only when someone
+# happens to push a commit or cut a release. See README's "Live Mantle
+# integration tests" section for why this exists — unit tests mock the
+# Strands SDK entirely and structurally cannot detect an upstream API
+# change on Mantle's side.
+on:
+  schedule:
+    - cron: '0 7 * * *'  # 07:00 UTC daily
+  workflow_dispatch: {}   # allow manual runs from the Actions tab
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Run live Mantle integration check
+        env:
+          MANTLE_API_KEY: ${{ secrets.MANTLE_API_KEY }}
+          AWS_REGION: us-east-1
+          REQUIRE_MANTLE_KEY: '1'
+        run: npm run test:integration

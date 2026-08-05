@@ -1,5 +1,15 @@
 # Release Notes
 
+## Unreleased
+
+### New Features
+- **Live Mantle integration check** (`tests/integration/mantle-live.js`, run via `npm run test:integration`) — a plain Node script (not a Jest test, since `@strands-agents/sdk` ships as pure ESM with no CJS build) that calls the real Mantle endpoint through Hive's actual `createAgent()` routing logic, one minimal request per model family. Unlike the mocked unit test suite, it can catch upstream Mantle routing changes (like the two Anthropic 404 incidents in v3.0.1 and v3.1.2) that a mocked unit test structurally cannot detect. Locally, exits cleanly if `MANTLE_API_KEY` isn't set — never blocks a contributor without Mantle access.
+- **Wired into CI**: the release pipeline (`release.yml`) now runs unit tests + this live check as a gate before both the macOS and Windows build/publish jobs — a release cannot ship with broken Mantle routing. A new scheduled workflow (`scheduled-tests.yml`) runs the same checks daily, independent of any push or release, so a routing change is caught within a day even between releases. Both require a `MANTLE_API_KEY` repository secret.
+
+### Removed
+- Removed `config.js`, `tests/main/bedrock-llm.test.js`, and `tests/main/validate-setup.js` — all three were pre-Mantle Bedrock Converse-era dead infrastructure (Nova/DeepSeek model IDs, `ConverseCommand`, removed Knowledge Base APIs, a `.transcribely` credentials path predating the app's rename to Hive).
+- Fixed a real latent bug found during this cleanup: `ipc/bedrock.js`'s `get-bedrock-models` handler had a stale fallback to `config.js`'s pre-Mantle model list (`settings.bedrockModels || config.bedrockModels`) that would have served Nova/DeepSeek model data had `settings.bedrockModels` ever been falsy. Removed the fallback entirely — `settingsManager.loadSettings()` already merges in the correct, current default model list for any missing field.
+
 ## v3.1.2
 
 ### Fixes

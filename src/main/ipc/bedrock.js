@@ -5,7 +5,6 @@ const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const TranscriptMapper = require('../models/transcriptMapper');
 const { createAgent } = require('../models/strandsAgentFactory');
 const { buildFileContentBlocks } = require('../utils');
-const config = require('../../../config');
 const logger = require('electron-log/main');
 
 /**
@@ -117,7 +116,12 @@ function register(ipcMain, ctx) {
 
   ipcMain.handle('get-bedrock-models', async () => {
     const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
-    return settings.bedrockModels || config.bedrockModels;
+    // settingsManager.loadSettings() already merges in defaultSettings.bedrockModels
+    // (the current Claude/GPT-5 Mantle-era default list) for any missing field, so
+    // no separate fallback is needed here. This used to fall back to config.js's
+    // bedrockModels, which was pre-Mantle (Nova/DeepSeek, inference-profile IDs) and
+    // has since been removed as dead, stale test-only infrastructure.
+    return settings.bedrockModels;
   });
 
   ipcMain.handle('transcribe-media', async (event, { file }) => {

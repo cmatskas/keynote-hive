@@ -17,11 +17,9 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:bedrock": "jest tests/main/bedrock-llm.test.js --verbose --testMatch='**/bedrock-llm.test.js'",
-    "test:bedrock-quick": "jest tests/main/bedrock-llm.test.js --verbose --testMatch='**/bedrock-llm.test.js' --testNamePattern='Nova Pro.*Summarize Text'",
+    "test:integration": "node tests/integration/mantle-live.js",
     "test:code-interpreter": "node tests/diag-code-interpreter.js",
-    "test:memory": "node tests/diag-memory.js",
-    "test:validate": "node tests/main/validate-setup.js"
+    "test:memory": "node tests/diag-memory.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.109.1",
@@ -76,7 +74,7 @@
     ],
     "testMatch": [
       "**/tests/**/*.test.js",
-      "!**/tests/main/bedrock-llm.test.js"
+      "!**/tests/integration/**"
     ],
     "collectCoverageFrom": [
       "src/**/*.js",

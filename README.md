@@ -214,11 +214,21 @@ All models are invoked via Amazon Bedrock's Mantle endpoint — Claude models go
 ## Development
 
 ```bash
-npm test              # unit tests
-npm run test:watch    # watch mode
-npm run test:coverage # coverage report
-npm run test:bedrock  # integration tests (requires AWS credentials, incurs costs)
+npm test               # unit tests
+npm run test:watch     # watch mode
+npm run test:coverage  # coverage report
+npm run test:integration  # live Mantle integration tests (requires MANTLE_API_KEY, makes real API calls, incurs costs)
 ```
+
+### Live Mantle integration tests
+
+`tests/integration/mantle-live.js` calls the real Mantle endpoint through Hive's actual `createAgent()` routing logic — one minimal request per model family (Anthropic, `openai.gpt-5.*`, other OpenAI-compatible). It runs as a plain Node script rather than a Jest test, since `@strands-agents/sdk` ships as pure ESM with no CJS build — every other test file in this repo works around that by mocking the SDK entirely, but this script's whole purpose is to exercise the real, unmocked SDK against the real endpoint, so that workaround isn't available here. Unlike the rest of the test suite, it deliberately makes real HTTP calls: unit tests can only verify Hive's own routing logic, never whether Mantle's actual API still matches that logic *today*. That gap is exactly what let two Anthropic-routing incidents (v3.0.1 and v3.1.2) reach production before being caught by a user report instead of a test.
+
+Run it with `MANTLE_API_KEY=<your key> npm run test:integration`. It exits cleanly (code 0) with a clear message if `MANTLE_API_KEY` isn't set, so it never blocks normal development or `npm test`. Set `REQUIRE_MANTLE_KEY=1` to make a missing key a hard failure instead — this is what CI uses so a misconfigured secret can't silently skip the check.
+
+**In CI**, this runs in two places, both requiring the `MANTLE_API_KEY` repository secret to be configured in GitHub Settings → Secrets:
+- **Release pipeline** (`.github/workflows/release.yml`) — a `test` job (unit tests + this check) gates both the macOS and Windows build/publish jobs. A release cannot ship if Mantle routing is broken.
+- **Scheduled tests** (`.github/workflows/scheduled-tests.yml`) — runs daily (07:00 UTC) independently of any push or release, so a Mantle routing change is caught within a day even between releases. Also runnable on demand from the Actions tab.
 
 ### Project Structure
 
