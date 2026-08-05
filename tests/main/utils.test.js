@@ -39,6 +39,7 @@ const {
   buildFileContentBlocks,
   toStrandsContentBlocks,
   INLINE_DOCUMENT_LIMIT_BYTES,
+  INLINE_TEXT_CHAR_LIMIT,
   sanitizeFileName,
 } = require('../../src/main/utils');
 
@@ -168,6 +169,53 @@ describe('utils — oversized document handling (sandbox pointer, no pre-extract
   describe('sanitizeFileName (regression check — unchanged)', () => {
     test('strips extension and disallowed characters', () => {
       expect(sanitizeFileName('My Report (final)!!.docx')).toBe('My Report (final)__');
+    });
+  });
+
+  describe('buildFileContentBlocks — inline text truncation (txt/csv/html/md, e.g. Chat transcript attachments)', () => {
+    test('small text content is passed through unchanged', async () => {
+      const blocks = await buildFileContentBlocks([{ name: 'notes.txt', content: 'short content' }], {});
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].text).toContain('short content');
+      expect(blocks[0].text).not.toContain('truncated');
+    });
+
+    test('text content over INLINE_TEXT_CHAR_LIMIT is truncated with a visible marker', async () => {
+      const longText = 'q'.repeat(INLINE_TEXT_CHAR_LIMIT + 5000);
+      const blocks = await buildFileContentBlocks([{ name: 'Transcript.txt', content: longText }], {});
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].text).toContain('content truncated');
+      expect(blocks[0].text).toContain('Transcript.txt');
+      expect(blocks[0].text).toContain('Work tab');
+
+      // Only the first INLINE_TEXT_CHAR_LIMIT characters of the original
+      // content ('q', chosen to not collide with any character in the
+      // surrounding header/marker text) should appear before the marker.
+      const markerIndex = blocks[0].text.indexOf('[... content truncated');
+      const contentBeforeMarker = blocks[0].text.slice(0, markerIndex);
+      expect(contentBeforeMarker.match(/q/g).length).toBe(INLINE_TEXT_CHAR_LIMIT);
+    });
+
+    test('text content exactly at the limit is not truncated', async () => {
+      const exactText = 'y'.repeat(INLINE_TEXT_CHAR_LIMIT);
+      const blocks = await buildFileContentBlocks([{ name: 'exact.md', content: exactText }], {});
+      expect(blocks[0].text).not.toContain('truncated');
+    });
+
+    test('truncation applies independent of sandbox availability (no execute_code tool required for text)', async () => {
+      const longText = 'z'.repeat(INLINE_TEXT_CHAR_LIMIT + 1);
+      // No codeInterpreter passed at all — must not throw, unlike the
+      // oversized-document branch which requires a sandbox.
+      const blocks = await buildFileContentBlocks([{ name: 'big.csv', content: longText }], {});
+      expect(blocks[0].text).toContain('truncated');
+    });
+
+    test('does not affect the oversized-document branch (pdf/docx/xlsx sandbox pointer still works)', async () => {
+      const ci = makeFakeCodeInterpreter();
+      const largeBuffer = Buffer.alloc(INLINE_DOCUMENT_LIMIT_BYTES + 1024);
+      const blocks = await buildFileContentBlocks([{ name: 'large.docx', content: largeBuffer }], { codeInterpreter: ci });
+      expect(blocks[0].text).toContain('ALREADY been written');
+      expect(blocks[0].text).not.toContain('content truncated');
     });
   });
 });

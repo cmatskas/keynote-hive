@@ -50,7 +50,10 @@ async function invokeChatModel(ctx, model, prompt, conversationHistory, files = 
     systemPrompt: 'You are a helpful assistant. Answer questions clearly and concisely based on the conversation and any attached files.',
     tools: [],
     id: 'chat',
-    maxTokens: 4096,
+    // No maxTokens override — inherit createAgent()'s DEFAULT_MAX_OUTPUT_TOKENS
+    // (120,000), same as Work/Swarm. Previously hardcoded to 4096 here, which
+    // was ~30x smaller than every other tab and could contribute to
+    // MaxTokensError failures on longer responses.
   });
 
   const userInput = [

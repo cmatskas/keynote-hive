@@ -25,6 +25,39 @@ function sanitizeFileName(fileName) {
 // sources (see https://github.com/aws/aws-sdk-js-v3/issues/7732).
 const INLINE_DOCUMENT_LIMIT_BYTES = 4.5 * 1024 * 1024;
 
+// Plain-text-ish attachments (txt/csv/html/md, including the Chat tab's
+// transcript attachment) are always sent as an inline text block — there is
+// no sandbox-offload equivalent for them like the pdf/doc/xlsx branch above,
+// because that offload pattern relies on the agent having an execute_code
+// tool to go read the file itself. The Chat tab's agent is intentionally
+// toolless (tools: [] — see ipc/bedrock.js), so a large inline text block
+// has nowhere to go but directly into the prompt, where it can blow past the
+// model's input context window and surface as an opaque MaxTokensError from
+// the Bedrock/Mantle backend instead of a clear, actionable message.
+//
+// This cap truncates any inline text block before it's sent, independent of
+// sandbox availability, so oversized attachments fail predictably (visible
+// truncation marker) rather than unpredictably (backend token-limit crash).
+// 300,000 characters is a rough heuristic (~4 chars/token for English text,
+// so ~75K tokens) chosen to leave generous headroom for the user's prompt,
+// conversation history, and the model's own output budget within a typical
+// large-context model's total window — not derived from a specific measured
+// Mantle context-window number (none is published per-model on Mantle; see
+// the DEFAULT_MAX_OUTPUT_TOKENS comment in strandsAgentFactory.js for the
+// same caveat about Mantle not publishing per-model limits).
+const INLINE_TEXT_CHAR_LIMIT = 300000;
+
+function truncateInlineText(text, fileName) {
+  if (text.length <= INLINE_TEXT_CHAR_LIMIT) return text;
+  const truncated = text.slice(0, INLINE_TEXT_CHAR_LIMIT);
+  return `${truncated}\n\n[... content truncated — "${fileName}" is ` +
+    `${text.length.toLocaleString()} characters, exceeding the ` +
+    `${INLINE_TEXT_CHAR_LIMIT.toLocaleString()}-character limit for inline text ` +
+    `attachments. Only the first portion is shown above. For the full content, ` +
+    `use the Work tab instead — it can process large files with code execution ` +
+    `rather than requiring the whole file to fit in the prompt. ...]`;
+}
+
 /**
  * Convert an array of file objects into Bedrock Converse content blocks.
  *
@@ -114,7 +147,8 @@ print("\\n\\n".join(slides))`
       }
     } else {
       const label = ext === 'csv' ? 'CSV Data' : ext === 'html' ? 'HTML Content' : ext === 'md' ? 'Markdown Content' : 'Content';
-      blocks.push({ text: `\n--- ${label} from ${file.name} ---\n${file.content}\n--- End of ${file.name} ---\n` });
+      const content = truncateInlineText(String(file.content ?? ''), file.name);
+      blocks.push({ text: `\n--- ${label} from ${file.name} ---\n${content}\n--- End of ${file.name} ---\n` });
     }
   }
 
@@ -155,4 +189,6 @@ module.exports = {
   buildFileContentBlocks,
   toStrandsContentBlocks,
   INLINE_DOCUMENT_LIMIT_BYTES,
+  INLINE_TEXT_CHAR_LIMIT,
+  truncateInlineText,
 };

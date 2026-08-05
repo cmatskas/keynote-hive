@@ -1743,6 +1743,41 @@ body {
 }
 .file-chip .chip-remove:hover { color: var(--error); opacity: 1; }
 
+/* Transcript attachment gets a subtle accent so it reads as distinct from a
+   regular uploaded file, both in the pre-send composer chip list and in the
+   sent-message chip below. */
+.file-chip.transcript-chip { border-color: var(--accent-primary); }
+.file-chip.transcript-chip .chip-icon { color: var(--accent-primary); }
+
+/* Read-only attachment chips shown above a sent chat message bubble — same
+   visual language as .file-chip, minus the remove control. Rendered instead
+   of dumping raw attachment content (e.g. transcript text) into the bubble. */
+.chat-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 6px;
+    justify-content: flex-end;
+}
+
+.chat-message.assistant .chat-attachments { justify-content: flex-start; }
+
+.chat-attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg-accent);
+    border: 1px solid var(--border-primary);
+    border-radius: 14px;
+    padding: 3px 10px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    max-width: 220px;
+}
+
+.chat-attachment-chip i { color: var(--accent-primary); font-size: 0.75rem; flex-shrink: 0; }
+.chat-attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Badge on attach button */
 .work-tool-btn .file-badge {
     position: absolute; top: -4px; right: -4px;
