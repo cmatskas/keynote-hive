@@ -1,6 +1,6 @@
 {
   "name": "Hive",
-  "version": "2.20.0",
+  "version": "3.0.1",
   "description": "Electron app for Bedrock models and media transcription",
   "main": "main.js",
   "author": "Hive Team",
@@ -24,10 +24,9 @@
     "test:validate": "node tests/main/validate-setup.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.109.1",
     "@aws-crypto/sha256-js": "^5.2.0",
     "@aws-sdk/client-bedrock": "^3.1092.0",
-    "@aws-sdk/client-bedrock-agent": "^3.1092.0",
-    "@aws-sdk/client-bedrock-agent-runtime": "^3.1092.0",
     "@aws-sdk/client-bedrock-agentcore": "^3.1092.0",
     "@aws-sdk/client-bedrock-agentcore-control": "^3.1092.0",
     "@aws-sdk/client-bedrock-runtime": "^3.1092.0",
@@ -37,12 +36,13 @@
     "@aws-sdk/client-transcribe": "^3.1092.0",
     "@aws-sdk/credential-providers": "^3.1092.0",
     "@aws-sdk/lib-storage": "^3.1092.0",
+    "@aws/bedrock-token-generator": "^1.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
     "@popperjs/core": "^2.11.8",
     "@smithy/protocol-http": "^5.5.12",
     "@smithy/signature-v4": "^5.6.8",
-    "@strands-agents/sdk": "^1.10.0",
+    "@strands-agents/sdk": "^1.11.2",
     "bootstrap": "^5.3.0",
     "bootstrap-icons": "^1.11.1",
     "docx": "^9.7.1",
@@ -51,6 +51,7 @@
     "exceljs": "^4.4.0",
     "jszip": "^3.10.1",
     "marked": "^18.0.7",
+    "openai": "^6.49.0",
     "sortablejs": "^1.15.7",
     "toastify-js": "^1.12.0",
     "zod": "^4.4.3"

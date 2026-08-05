@@ -1,16 +1,16 @@
 # Hive
 
-An Electron desktop app that combines AWS Bedrock AI models with AWS Transcribe for intelligent media transcription, AI-powered content creation, and multi-agent collaborative pipelines.
+An Electron desktop app that combines AI models served via Amazon Bedrock's Mantle endpoint with AWS Transcribe for intelligent media transcription, AI-powered content creation, and multi-agent collaborative pipelines.
 
 ## Features
 
 - 🤖 **Work Tab** — AI agent with code execution, web browsing, file I/O, image generation, and persistent memory via AgentCore
 - 🐝 **Swarm Tab** — Multi-agent pipelines for articles, keynotes, speeches, and demo storyboards with quality rubric evaluation
-- 💬 **Chat Tab** — Conversational AI analysis with conversation history, knowledge base integration, and file attachments
+- 💬 **Chat Tab** — Conversational AI analysis with conversation history and file attachments
 - 🎵 **Transcribe Tab** — Audio/video transcription via AWS Transcribe with speaker labels and timestamps
 - 🧠 **17 Agent Skills** — Copy editing, copywriting, research, marketing psychology, document creation, generative art, and more
 - 🎯 **Quality Rubrics** — Weighted criteria with penalty scoring, brief-specific adaptation, and adaptive learning from past runs
-- ⚙️ **Model Management** — Configure Bedrock models and assign pipeline roles (creator/worker/formatter) from the UI
+- ⚙️ **Model Management** — Configure Mantle-served models and assign pipeline roles (creator/worker/formatter) from the UI
 - 📊 **Quality Analytics** — Dashboard showing pass rates, criteria heatmaps, and actionable insights across pipeline runs
 
 ## Quick Start
@@ -45,18 +45,55 @@ npm run build      # production (all platforms)
 ## AWS Permissions Required
 
 Your IAM user/role needs access to:
-- **Bedrock**: `InvokeModel`, `InvokeModelWithResponseStream`, `ListFoundationModels`
+- **Bedrock Mantle**: A long-term [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) configured in Settings → Mantle API Key. All model invocation (Work, Chat, Swarm) goes through Amazon Bedrock's Mantle endpoint via this key — no IAM-based `InvokeModel`/`Converse` permissions are needed for model calls themselves.
 - **Transcribe**: `StartTranscriptionJob`, `GetTranscriptionJob` (for Transcribe tab)
 - **S3**: `GetObject`, `PutObject`, `DeleteObject` on your bucket (for Transcribe tab)
 - **AgentCore**: `bedrock-agentcore:StartCodeInterpreterSession`, `bedrock-agentcore:InvokeCodeInterpreter`, `bedrock-agentcore:StopCodeInterpreterSession`, `bedrock-agentcore:StartBrowserSession`, `bedrock-agentcore:StopBrowserSession` (for Work/Swarm code execution and web browsing)
-- **AgentCore Gateway**: `bedrock-agentcore:CreateGateway`, `bedrock-agentcore:CreateGatewayTarget`, `bedrock-agentcore:ListGateways`, `bedrock-agentcore:GetGateway`, `bedrock-agentcore:ListGatewayTargets`, `bedrock-agentcore:GetGatewayTarget`, `bedrock-agentcore:InvokeGateway`, `bedrock-agentcore:InvokeWebSearch` (for web search via AgentCore Web Search Tool)
+- **AgentCore Gateway**: `bedrock-agentcore:CreateGateway`, `bedrock-agentcore:CreateGatewayTarget`, `bedrock-agentcore:ListGateways`, `bedrock-agentcore:GetGateway`, `bedrock-agentcore:ListGatewayTargets`, `bedrock-agentcore:GetGatewayTarget`, `bedrock-agentcore:InvokeGateway`, `bedrock-agentcore:InvokeWebSearch` (for web search via AgentCore Web Search Tool) — see [AgentCore Gateway Setup (Web Search)](#agentcore-gateway-setup-web-search) below for the one-time role Hive needs to create the Gateway itself.
 
 <details>
 <summary>Optional permissions</summary>
 
-- **Knowledge Base**: `ListKnowledgeBases`, `RetrieveAndGenerate`
 - **SageMaker**: `InvokeEndpoint` (for SDXL image generation)
 </details>
+
+## AgentCore Gateway Setup (Web Search)
+
+The Work and Swarm tabs' web search tool runs through an AgentCore Gateway (AWS's managed MCP tool endpoint) with a Web Search connector target. Hive creates and manages this Gateway automatically — there is no separate deployment script — but the **first time** it's created in a given AWS account/region, it needs an execution role that doesn't exist yet.
+
+**One-time setup:**
+
+1. Create an IAM role (e.g. `hive-web-search-gateway`) with this trust policy so AgentCore can assume it:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Principal": { "Service": "bedrock-agentcore.amazonaws.com" },
+       "Action": "sts:AssumeRole"
+     }]
+   }
+   ```
+2. Attach a permissions policy granting the role what it needs to run the Gateway and its Web Search target, e.g.:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Action": [
+         "bedrock-agentcore:InvokeGateway",
+         "bedrock-agentcore:InvokeWebSearch"
+       ],
+       "Resource": "*"
+     }]
+   }
+   ```
+3. Paste the role's ARN into Settings → Web Search → Gateway Execution Role ARN, then save. Hive creates the Gateway (`hive-web-search`) and its Web Search target on first use — this can take up to a minute or two.
+4. Once the Gateway is `READY`, the role ARN is no longer needed for subsequent app launches — Hive finds and reuses the existing Gateway by name in that account/region.
+
+Web search is currently only available in `us-east-1` — Hive always creates and calls the Gateway in that region regardless of your configured `region` setting.
+
+If Gateway creation or search calls fail, check Settings → Web Search for the current status and a retry button — the underlying error (permissions, throttling, region mismatch) is surfaced there.
 
 ## Which Tab Should I Use?
 
@@ -117,8 +154,6 @@ Multi-agent pipelines where teams of specialized AI agents collaborate to produc
 3. At review points, the pipeline pauses for your feedback (you'll get a system notification)
 4. The formatter generates the final document and saves it locally
 
-**Video analysis (Demo template):** Attach an `.mp4` video and the Analyst agent uses Amazon Nova Premier to analyze it frame-by-frame. Keyframes are extracted and embedded directly into the storyboard deck.
-
 <details>
 <summary>Quality system</summary>
 
@@ -130,12 +165,11 @@ Multi-agent pipelines where teams of specialized AI agents collaborate to produc
 
 ## Chat Tab
 
-Conversational AI for analysis and Q&A. Lighter than the Work tab — no code execution or file generation, but supports knowledge base integration for RAG.
+Conversational AI for analysis and Q&A. Lighter than the Work tab — no code execution or file generation, no tool loop, just a single model call.
 
 - Attach documents for the model to analyze inline
-- Connect a Bedrock Knowledge Base in Settings for retrieval-augmented generation
 - Full conversation history with save/load
-- Choose any configured model (including DeepSeek, Mistral, Llama)
+- Choose any configured model
 
 ## Transcribe Tab
 
@@ -172,14 +206,15 @@ Settings → Models lets you manage Bedrock models and assign pipeline roles:
 | Creator | Writing, quality evaluation — best model | Claude Opus 4.6 |
 | Worker | Research, planning, editing — balanced | Claude Sonnet 4.6 |
 | Formatter | Document generation — cheapest capable | Claude Haiku 4.5 |
-| Vision | Video analysis — multimodal | Amazon Nova Premier |
 
-Additional models (DeepSeek V3.2, Mistral Large 3, Llama 4 Maverick) available for the Chat tab. Add or remove models and reassign roles from the UI.
+All models are invoked via Amazon Bedrock's Mantle endpoint — Claude models go through Mantle's Anthropic Messages API, other models (e.g. GPT-5.x, Google Gemma) through Mantle's OpenAI-compatible API. Add or remove models and reassign roles from the UI.
+
+> **Known issue — xAI Grok models are not currently supported.** If you add a `xai.grok-*` model in Settings, calls to it will fail. Mantle lists these models as available (`GET /v1/models` returns them with `"status":"available"`), but every invocation route Hive tested (`/v1/chat/completions`, `/openai/v1/chat/completions`, `/openai/v1/responses`) returns either a "model isn't supported on this route" validation error or a 500 internal server error. This looks like a Mantle-side model registration/serving issue rather than something fixable from the client side — it's been reported to the Mantle team. Don't add Grok models until this is resolved upstream.
 
 ## Development
 
 ```bash
-npm test              # unit tests (8 suites, 124 tests)
+npm test              # unit tests
 npm run test:watch    # watch mode
 npm run test:coverage # coverage report
 npm run test:bedrock  # integration tests (requires AWS credentials, incurs costs)

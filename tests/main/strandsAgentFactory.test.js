@@ -1,22 +1,17 @@
 /**
- * Tests for strandsAgentFactory.js's retry classification.
+ * Tests for strandsAgentFactory.js — Mantle-only model routing.
  *
- * DefaultModelRetryStrategy (from the Strands SDK) only treats
- * ModelThrottledError as retryable out of the box. Bedrock also returns
- * several genuinely transient server-side error shapes on model calls —
- * InternalServerException, ServiceUnavailableException, ModelErrorException,
- * ModelTimeoutException, ModelStreamErrorException, ModelNotReadyException —
- * none of which were being retried, causing turns to fail outright on a
- * single transient blip. HiveModelRetryStrategy extends the base strategy to
- * also retry these, matched by error.name (stable across SDK versions).
+ * Bedrock Converse (BedrockModel) has been removed entirely. Every model
+ * call now goes through Amazon Bedrock's Mantle endpoint via one of two
+ * Strands model providers, chosen purely by model identity:
+ *   - AnthropicModel for any model ID containing "anthropic." (Claude)
+ *   - OpenAIModel for every other model ID (GPT-5.x, gpt-oss, xAI Grok,
+ *     Google Gemma, etc. — all of these speak Mantle's OpenAI-compatible
+ *     wire protocol regardless of which company makes the underlying model)
+ * Both branches authenticate with the same one-off, long-term mantleApiKey
+ * from Settings — no bearer-token minting/refresh.
  */
 
-// Minimal stand-in matching the real DefaultModelRetryStrategy's observable
-// shape (constructor stores opts, isRetryable() checks instanceof a marker
-// "throttled" class) closely enough to verify the subclass's override logic
-// without depending on the real SDK. Defined inside the mock factory (jest
-// hoists jest.mock() calls above other statements, so factories can't close
-// over module-scope variables — only over other `mock`-prefixed bindings).
 jest.mock('@strands-agents/sdk', () => {
   class MockModelThrottledError extends Error {}
   class DefaultModelRetryStrategy {
@@ -38,7 +33,6 @@ jest.mock('@strands-agents/sdk', () => {
   }));
   return {
     Agent,
-    BedrockModel: jest.fn(),
     tool: jest.fn(),
     DefaultModelRetryStrategy,
     ExponentialBackoff,
@@ -54,12 +48,50 @@ jest.mock('electron-log/main', () => ({
   error: jest.fn(),
 }));
 
+jest.mock('@strands-agents/sdk/models/openai', () => ({
+  OpenAIModel: jest.fn().mockImplementation(() => ({})),
+}));
+
+jest.mock('@strands-agents/sdk/models/anthropic', () => ({
+  AnthropicModel: jest.fn().mockImplementation(() => ({})),
+}));
+
+// Minimal stand-ins matching the real openai SDK's error classes closely
+// enough to verify instanceof-based retry classification, without depending
+// on the real package (which uses ESM syntax Jest can't parse directly).
+jest.mock('openai', () => {
+  class InternalServerError extends Error {}
+  class APIConnectionError extends Error {}
+  class APIConnectionTimeoutError extends APIConnectionError {}
+  return { InternalServerError, APIConnectionError, APIConnectionTimeoutError };
+});
+
+// Same reasoning for @anthropic-ai/sdk, which also uses ESM syntax.
+jest.mock('@anthropic-ai/sdk', () => {
+  class InternalServerError extends Error {}
+  class APIConnectionError extends Error {}
+  class APIConnectionTimeoutError extends APIConnectionError {}
+  class RateLimitError extends Error {}
+  return { InternalServerError, APIConnectionError, APIConnectionTimeoutError, RateLimitError };
+});
+
+function baseArgs(overrides = {}) {
+  return {
+    modelId: 'us.anthropic.claude-sonnet-4-6',
+    region: 'us-east-1',
+    mantleApiKey: 'test-key',
+    systemPrompt: 'test',
+    tools: [],
+    id: 'test-agent',
+    ...overrides,
+  };
+}
+
 describe('strandsAgentFactory', () => {
   let createAgent, isRetryableToolError, HiveModelRetryStrategy, MockModelThrottledError;
 
   beforeEach(() => {
     jest.resetModules();
-    // Re-require after resetModules so the module-level class picks up fresh mocks.
     const mod = require('../../src/main/models/strandsAgentFactory');
     createAgent = mod.createAgent;
     isRetryableToolError = mod.isRetryableToolError;
@@ -69,14 +101,7 @@ describe('strandsAgentFactory', () => {
     // capture the instance via the mocked Agent constructor's call args.
     const sdkMock = require('@strands-agents/sdk');
     MockModelThrottledError = sdkMock.MockModelThrottledError;
-    createAgent({
-      modelId: 'test-model',
-      region: 'us-east-1',
-      credentials: {},
-      systemPrompt: 'test',
-      tools: [],
-      id: 'test-agent',
-    });
+    createAgent(baseArgs());
     const agentCallArgs = sdkMock.Agent.mock.calls[0][0];
     HiveModelRetryStrategy = agentCallArgs.retryStrategy;
   });
@@ -86,32 +111,42 @@ describe('strandsAgentFactory', () => {
       expect(HiveModelRetryStrategy.isRetryable(new MockModelThrottledError('throttled'))).toBe(true);
     });
 
-    test.each([
-      'InternalServerException',
-      'ServiceUnavailableException',
-      'ModelErrorException',
-      'ModelTimeoutException',
-      'ModelStreamErrorException',
-      'ModelNotReadyException',
-    ])('retries transient Bedrock error: %s', (name) => {
-      const err = new Error('The system encountered an unexpected error during processing. Try your request again.');
-      err.name = name;
-      expect(HiveModelRetryStrategy.isRetryable(err)).toBe(true);
-    });
-
-    test('does not retry non-transient errors (e.g. invalid model id)', () => {
-      const err = new Error('The provided model identifier is invalid.');
-      err.name = 'ValidationException';
-      expect(HiveModelRetryStrategy.isRetryable(err)).toBe(false);
-    });
-
-    test('does not retry a plain Error with no matching name', () => {
+    test('does not retry a plain Error with no matching class', () => {
       expect(HiveModelRetryStrategy.isRetryable(new Error('some other failure'))).toBe(false);
     });
 
     test('handles undefined/null error gracefully', () => {
       expect(HiveModelRetryStrategy.isRetryable(undefined)).toBe(false);
       expect(HiveModelRetryStrategy.isRetryable(null)).toBe(false);
+    });
+
+    test.each([
+      ['InternalServerError', () => new (require('openai').InternalServerError)('server error')],
+      ['APIConnectionError', () => new (require('openai').APIConnectionError)('connection failed')],
+      ['APIConnectionTimeoutError', () => new (require('openai').APIConnectionTimeoutError)('timed out')],
+    ])('retries transient OpenAI SDK error via instanceof: %s', (_name, buildErr) => {
+      expect(HiveModelRetryStrategy.isRetryable(buildErr())).toBe(true);
+    });
+
+    test.each([
+      ['InternalServerError', () => new (require('@anthropic-ai/sdk').InternalServerError)('server error')],
+      ['APIConnectionError', () => new (require('@anthropic-ai/sdk').APIConnectionError)('connection failed')],
+      ['APIConnectionTimeoutError', () => new (require('@anthropic-ai/sdk').APIConnectionTimeoutError)('timed out')],
+    ])('retries transient Anthropic SDK error via instanceof: %s', (_name, buildErr) => {
+      expect(HiveModelRetryStrategy.isRetryable(buildErr())).toBe(true);
+    });
+
+    test('does not retry Anthropic RateLimitError directly (already normalized to ModelThrottledError upstream)', () => {
+      // Confirmed via the installed Strands SDK's anthropic.js source: HTTP
+      // 429 responses are converted to ModelThrottledError before Hive's
+      // retry strategy ever sees them, so RateLimitError itself is
+      // deliberately NOT in RETRYABLE_ANTHROPIC_ERROR_CLASSES.
+      const err = new (require('@anthropic-ai/sdk').RateLimitError)('rate limited');
+      expect(HiveModelRetryStrategy.isRetryable(err)).toBe(false);
+    });
+
+    test('does not retry a plain Error even though provider error classes are also Error subclasses', () => {
+      expect(HiveModelRetryStrategy.isRetryable(new Error('unrelated failure'))).toBe(false);
     });
   });
 
@@ -123,6 +158,274 @@ describe('strandsAgentFactory', () => {
 
     test('does not retry unrelated errors', () => {
       expect(isRetryableToolError({ name: 'Error', message: 'invalid input' })).toBe(false);
+    });
+  });
+
+  describe('region validation', () => {
+    test('throws for a malformed region rather than constructing a request', () => {
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+      AnthropicModel.mockClear();
+      expect(() => createAgent(baseArgs({ region: 'not-a-region!' }))).toThrow(/[Ii]nvalid.*region/);
+      expect(AnthropicModel).not.toHaveBeenCalled();
+    });
+
+    test('throws for a region containing URL control characters (security guard)', () => {
+      expect(() => createAgent(baseArgs({ region: 'us-east-1@evil.com' }))).toThrow();
+    });
+
+    test('accepts a well-formed region', () => {
+      expect(() => createAgent(baseArgs({ region: 'ap-southeast-2' }))).not.toThrow();
+    });
+  });
+
+  describe('model family routing (Anthropic vs OpenAI-compatible)', () => {
+    test.each([
+      'us.anthropic.claude-sonnet-4-6',
+      'global.anthropic.claude-opus-4-6-v1',
+      'anthropic.claude-haiku-4-5-20251001-v1:0',
+    ])('routes Anthropic model IDs through AnthropicModel: %s', (modelId) => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+      const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
+
+      mod.createAgent(baseArgs({ modelId, id: 'claude-agent' }));
+
+      expect(AnthropicModel).toHaveBeenCalledTimes(1);
+      expect(AnthropicModel.mock.calls[0][0].modelId).toBe(modelId);
+      expect(OpenAIModel).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      'openai.gpt-5.6-sol',
+      'openai.gpt-oss-120b',
+      'xai.grok-4.3',
+      'google.gemma-3-27b',
+      'deepseek.v3.2',
+    ])('routes every non-Anthropic model ID through OpenAIModel: %s', (modelId) => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+      const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
+
+      mod.createAgent(baseArgs({ modelId, id: 'other-agent' }));
+
+      expect(OpenAIModel).toHaveBeenCalledTimes(1);
+      expect(OpenAIModel.mock.calls[0][0].modelId).toBe(modelId);
+      expect(AnthropicModel).not.toHaveBeenCalled();
+    });
+
+    test('both branches authenticate with the same mantleApiKey, no credentials/token-minting object', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+
+      mod.createAgent(baseArgs({ mantleApiKey: 'super-secret-key' }));
+
+      expect(AnthropicModel.mock.calls[0][0].apiKey).toBe('super-secret-key');
+      expect(AnthropicModel.mock.calls[0][0].bedrockMantleConfig).toBeUndefined();
+    });
+  });
+
+  describe('Mantle base URL / path construction', () => {
+    test.each(['openai.gpt-5.6-sol', 'google.gemma-4-31b', 'google.gemma-3-27b-it'])('openai.gpt-5.* and google.* models use the /openai/v1 base path: %s', (modelId) => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
+
+      mod.createAgent(baseArgs({ modelId, region: 'us-east-1' }));
+
+      expect(OpenAIModel.mock.calls[0][0].clientConfig.baseURL).toBe('https://bedrock-mantle.us-east-1.api.aws/openai/v1');
+    });
+
+    test.each(['openai.gpt-oss-120b', 'xai.grok-4.3'])('other OpenAI-compatible models use the /v1 base path: %s', (modelId) => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
+
+      mod.createAgent(baseArgs({ modelId, region: 'us-east-1' }));
+
+      expect(OpenAIModel.mock.calls[0][0].clientConfig.baseURL).toBe('https://bedrock-mantle.us-east-1.api.aws/v1');
+    });
+
+    test('Anthropic models use the bare Mantle host with no /v1 suffix (the @anthropic-ai/sdk client itself always prepends /v1/messages)', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+
+      mod.createAgent(baseArgs({ modelId: 'us.anthropic.claude-sonnet-4-6', region: 'eu-west-1' }));
+
+      expect(AnthropicModel.mock.calls[0][0].clientConfig.baseURL).toBe('https://bedrock-mantle.eu-west-1.api.aws');
+    });
+  });
+
+  describe('maxTokens (output token ceiling)', () => {
+    test('defaults to 120000 when not specified by the caller', () => {
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+      const modelCallArgs = AnthropicModel.mock.calls[0][0];
+      expect(modelCallArgs.maxTokens).toBe(120000);
+    });
+
+    test('caller can override the default', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+      mod.createAgent(baseArgs({ id: 'test-agent-2', maxTokens: 50000 }));
+      const modelCallArgs = AnthropicModel.mock.calls[0][0];
+      expect(modelCallArgs.maxTokens).toBe(50000);
+    });
+  });
+
+  describe('supportsExtendedThinking (allowlist)', () => {
+    test.each([
+      'us.anthropic.claude-sonnet-4-6',
+      'global.anthropic.claude-opus-4-6-v1',
+      'anthropic.claude-3-7-sonnet-20250219-v1:0',
+    ])('returns "anthropic" for Claude 3.7+/opus-4/sonnet-4 model IDs: %s', (modelId) => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      expect(mod.supportsExtendedThinking(modelId)).toBe('anthropic');
+    });
+
+    test.each([
+      'openai.gpt-5.6-sol',
+      'openai.gpt-5.4',
+    ])('returns "openai" for GPT-5-class Mantle model IDs: %s', (modelId) => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      expect(mod.supportsExtendedThinking(modelId)).toBe('openai');
+    });
+
+    test.each([
+      'deepseek.v3.2',
+      'mistral.mistral-large-3-675b-instruct',
+      'anthropic.claude-3-5-sonnet-20241022-v2:0', // pre-3.7, not in allowlist
+      'openai.gpt-4o', // non-reasoning OpenAI model
+    ])('returns null for models not in the allowlist: %s', (modelId) => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      expect(mod.supportsExtendedThinking(modelId)).toBeNull();
+    });
+
+    test('returns null for falsy/missing modelId', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      expect(mod.supportsExtendedThinking(undefined)).toBeNull();
+      expect(mod.supportsExtendedThinking('')).toBeNull();
+    });
+  });
+
+  describe('isAnthropicModel', () => {
+    test.each([
+      'us.anthropic.claude-sonnet-4-6',
+      'global.anthropic.claude-opus-4-6-v1',
+    ])('returns true for Anthropic model IDs: %s', (modelId) => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      expect(mod.isAnthropicModel(modelId)).toBe(true);
+    });
+
+    test.each([
+      'openai.gpt-5.6-sol',
+      'xai.grok-4.3',
+      'deepseek.v3.2',
+      '',
+      undefined,
+    ])('returns false for non-Anthropic model IDs: %s', (modelId) => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      expect(mod.isAnthropicModel(modelId)).toBe(false);
+    });
+  });
+
+  describe('createAgent({ enableThinking })', () => {
+    test('attaches params.thinking to AnthropicModel for an allowlisted Anthropic model', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+
+      mod.createAgent(baseArgs({ id: 'thinking-agent', enableThinking: true }));
+
+      const modelCallArgs = AnthropicModel.mock.calls[0][0];
+      expect(modelCallArgs.params).toEqual({
+        thinking: { type: 'enabled', budget_tokens: 4096 },
+      });
+    });
+
+    test('does NOT attach thinking fields when enableThinking is false', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+
+      mod.createAgent(baseArgs({ id: 'no-thinking-agent', enableThinking: false }));
+
+      const modelCallArgs = AnthropicModel.mock.calls[0][0];
+      expect(modelCallArgs.params).toBeUndefined();
+    });
+
+    test('silently ignores enableThinking for a model not in the allowlist (no fields attached, no error)', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
+
+      expect(() => mod.createAgent(baseArgs({
+        modelId: 'deepseek.v3.2',
+        id: 'unsupported-thinking-agent',
+        enableThinking: true,
+      }))).not.toThrow();
+
+      const modelCallArgs = OpenAIModel.mock.calls[0][0];
+      expect(modelCallArgs.params).toBeUndefined();
+    });
+
+    test('attaches params.reasoning.effort to OpenAIModel for an allowlisted GPT-5 Mantle model', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
+
+      mod.createAgent(baseArgs({
+        modelId: 'openai.gpt-5.6-sol',
+        id: 'thinking-openai-agent',
+        enableThinking: true,
+      }));
+
+      const openAiCallArgs = OpenAIModel.mock.calls[0][0];
+      expect(openAiCallArgs.params).toEqual({ reasoning: { effort: 'medium' } });
+    });
+
+    test('does NOT attach reasoning params to OpenAIModel for a non-reasoning Mantle model', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
+
+      mod.createAgent(baseArgs({
+        modelId: 'openai.gpt-4o',
+        id: 'non-reasoning-openai-agent',
+        enableThinking: true,
+      }));
+
+      const openAiCallArgs = OpenAIModel.mock.calls[0][0];
+      expect(openAiCallArgs.params).toBeUndefined();
+    });
+
+    test('an Anthropic model never gets OpenAI reasoning params, and vice versa (branches are family-exclusive)', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+      const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
+
+      mod.createAgent(baseArgs({
+        modelId: 'us.anthropic.claude-sonnet-4-6',
+        id: 'family-exclusive-agent',
+        enableThinking: true,
+      }));
+
+      // AnthropicModel was constructed, and OpenAIModel was never touched at all.
+      expect(AnthropicModel).toHaveBeenCalledTimes(1);
+      expect(OpenAIModel).not.toHaveBeenCalled();
+      expect(AnthropicModel.mock.calls[0][0].params).toEqual({
+        thinking: { type: 'enabled', budget_tokens: 4096 },
+      });
     });
   });
 });

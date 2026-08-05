@@ -1,5 +1,37 @@
 # Release Notes
 
+## v3.0.1
+
+### Fixes
+- **Anthropic models (Claude) failed with a 404 on every call.** The v3.0.0 Mantle migration set the Anthropic branch's `baseURL` to `https://bedrock-mantle.{region}.api.aws/v1`, but `@anthropic-ai/sdk`'s `Messages.create()` always POSTs to the literal path `/v1/messages` relative to `baseURL` — the SDK supplies its own `/v1` prefix. The result was a request to `.../v1/v1/messages`, which Mantle correctly 404'd. The Anthropic branch now uses the bare Mantle host with no path suffix.
+- **Google Gemma models failed with a "model isn't supported on this route" error.** The Mantle base-path rule only special-cased `openai.gpt-5.*` for `/openai/v1`, routing everything else (including `google.gemma-*`) to `/v1`. Verified by testing directly against the live Mantle endpoint: Gemma models are only served from `/openai/v1`. The routing rule now includes `google.*` models alongside `openai.gpt-5.*`.
+
+### Known Issues
+- **xAI Grok models (`xai.grok-*`) are not currently functional on Mantle.** Confirmed via direct testing against the live endpoint: the model is listed as available (`GET /v1/models` returns `"status":"available"`), but every invocation route (`/v1/chat/completions`, `/openai/v1/chat/completions`, `/openai/v1/responses`) fails — either a validation error ("isn't supported on this route") or a 500 internal server error, consistently and repeatedly. This looks like a Mantle-side model registration/serving gap rather than a client-side routing bug (Gemma, tested identically, works correctly on `/openai/v1`). Reported to the Mantle team; do not add Grok models to Settings until this is resolved upstream. See README's Model Configuration section for the user-facing note.
+
+### Documentation
+- Expanded the AgentCore Gateway section in README.md with full one-time setup instructions (trust policy, permissions policy, and the Settings field to configure) — previously only the in-app Settings hint mentioned the required IAM trust relationship, with no guidance on the actual permissions policy needed.
+
+### Tests
+- Added test coverage in `tests/main/strandsAgentFactory.test.js` for the Anthropic bare-host baseURL and the `google.*` → `/openai/v1` routing rule (56 tests total, up from 54).
+
+## v3.0.0
+
+### Breaking Changes
+- **All model invocation now goes through Amazon Bedrock's Mantle endpoint — Bedrock Converse (BedrockModel) has been removed entirely.** Every model call in Work, Chat, and Swarm is routed to one of two Strands model providers based purely on model identity: Claude models go through Mantle's native Anthropic Messages API, every other model (GPT-5.x, gpt-oss, and any future Mantle-only model) goes through Mantle's OpenAI-compatible Responses API. The previous per-model "Mantle" checkbox in Settings → Models has been removed — routing is now automatic and no longer configurable per model.
+- **New required setting: Mantle API Key.** A one-off, long-term Bedrock API key (Settings → Mantle API Key) is now required for all model calls. Generate one from the AWS Bedrock console. AWS documents long-term keys as recommended for exploration/development use — see the AWS Bedrock API keys documentation for details before relying on this in a production deployment.
+- **Removed support for models with no Mantle-reachable Strands provider**: Amazon Nova (all variants), DeepSeek, Mistral, and Llama models are no longer offered in the default model list and cannot be added back, since the Strands SDK has no dedicated provider for these families that can reach Mantle. If you need these models, they are not currently supported by this version of Hive.
+- **Chat tab no longer supports Knowledge Base / RAG.** The "Use Knowledge Base" toggle, Knowledge Base selector, and all associated retrieval-augmented-generation functionality have been removed. Chat is now a simple, non-agentic back-and-forth with any configured model — no tools, no retrieval. If you were relying on Knowledge Base integration in Chat, there is currently no replacement.
+- **Removed video analysis from the Swarm Demo/Storyboard template.** The Analyst agent previously used Amazon Nova Premier to analyze an attached `.mp4` video frame-by-frame and embed extracted keyframes into the storyboard deck. This relied on Bedrock Converse's video content blocks directly and had no Mantle equivalent, so it has been removed along with Nova Premier support. The Demo template now starts from a plain text brief or attached screenshots/images instead of video.
+
+### Improvements
+- **Simplified retry error classification.** Bedrock Converse-specific error names (`InternalServerException`, `ServiceUnavailableException`, etc.) have been replaced with `@anthropic-ai/sdk`'s own exported error classes for the Anthropic branch, mirroring the existing OpenAI SDK error-class handling for the OpenAI-compatible branch. Both providers' throttling errors are already normalized to a common `ModelThrottledError` upstream by the Strands SDK, so retry behavior is unchanged for rate limiting.
+- **Removed unused AWS SDK dependencies**: `@aws-sdk/client-bedrock-agent` and `@aws-sdk/client-bedrock-agent-runtime` (Knowledge Base-only) are no longer installed.
+
+### Tests
+- Full rewrite of `tests/main/strandsAgentFactory.test.js` (54 tests) covering Mantle-only model-family routing, region validation, and base-URL/path construction for both provider branches.
+- Removed Knowledge Base-specific tests from `tests/renderer/index.test.js` and `tests/main/swarmOrchestrator.test.js`; fixed stale mocks referencing removed Bedrock Converse imports.
+
 ## v2.20.0
 
 ### Fixes
