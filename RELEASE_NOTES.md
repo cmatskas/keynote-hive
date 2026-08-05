@@ -1,5 +1,10 @@
 # Release Notes
 
+## v3.1.1
+
+### Fixes
+- **Resolved all 9 npm audit vulnerabilities (4 high, 5 moderate).** 7 were fixed automatically via `npm audit fix` (Hono, brace-expansion, fast-uri, ip-address, undici). The remaining 2 moderate vulnerabilities were both caused by `exceljs@4.4.0` bundling a vulnerable nested `uuid@8.3.2` (missing buffer bounds check, GHSA-w5hq-g745-h8pq) — rather than downgrading `exceljs` (the fix `npm audit fix --force` suggested, which is a real regression), added a `package.json` `overrides` entry forcing `exceljs`'s nested `uuid` dependency to the patched `^11.1.1` without touching `exceljs` itself. Verified with a direct smoke test that `exceljs` still generates valid `.xlsx` workbooks. `npm audit` now reports 0 vulnerabilities.
+
 ## v3.1.0
 
 ### New Features

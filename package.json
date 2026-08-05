@@ -1,6 +1,6 @@
 {
   "name": "Hive",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "Electron app for Bedrock models and media transcription",
   "main": "main.js",
   "author": "Hive Team",
@@ -93,6 +93,11 @@
       "url": "http://localhost"
     },
     "testTimeout": 30000
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   },
   "build": {
     "appId": "com.hive.app",
