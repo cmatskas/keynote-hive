@@ -292,13 +292,23 @@ function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, o
   // @anthropic-ai/sdk is different: Messages.create() always POSTs to the
   // literal path `/v1/messages` relative to `baseURL` (confirmed by reading
   // node_modules/@anthropic-ai/sdk/resources/messages/messages.mjs) — the
-  // SDK itself supplies the `/v1` prefix. Passing a `baseURL` that already
-  // ends in `/v1` therefore produces `/v1/v1/messages`, which 404s. The
-  // Anthropic branch's baseURL must be the bare Mantle host with no path
-  // suffix at all.
+  // SDK itself supplies the `/v1` prefix.
+  //
+  // UPDATE (re-verified live against the real Mantle endpoint after a user
+  // report): Mantle's Anthropic routing changed since this was first
+  // fixed. Bare host + /v1/messages (the original fix) now 404s; Mantle
+  // requires an /anthropic prefix, i.e. baseURL must be
+  // `https://bedrock-mantle.{region}.api.aws/anthropic`, producing a final
+  // request to `/anthropic/v1/messages` — confirmed with a direct curl
+  // test returning a real completion, vs 404 on bare-host and on
+  // /openai/v1/messages. This mirrors the /openai/v1 prefix Mantle already
+  // uses for gpt-5.*/google.* models — Anthropic now gets the same
+  // provider-prefix treatment. If Mantle changes this again, re-verify
+  // with a direct curl call before trusting either this comment or the
+  // SDK's own (non-exported, and evidently sometimes stale) helper.
   const basePath = /^(openai\.gpt-5(\.|-)|google\.)/i.test(modelId || '') ? '/openai/v1' : '/v1';
   const mantleHost = `https://bedrock-mantle.${region}.api.aws`;
-  const baseURL = isAnthropicModel(modelId) ? mantleHost : `${mantleHost}${basePath}`;
+  const baseURL = isAnthropicModel(modelId) ? `${mantleHost}/anthropic` : `${mantleHost}${basePath}`;
 
   const model = isAnthropicModel(modelId)
     ? new AnthropicModel({

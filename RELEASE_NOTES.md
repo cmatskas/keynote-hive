@@ -1,5 +1,10 @@
 # Release Notes
 
+## v3.1.2
+
+### Fixes
+- **Anthropic models (Claude) failed again with a 404 on every call in Chat and Work.** This is a different cause from the earlier v3.0.1 fix: Mantle changed its own routing since then — the bare-host `/v1/messages` path that was previously correct now 404s. Confirmed via direct testing against the live Mantle endpoint: Anthropic models now require an `/anthropic` provider prefix (`/anthropic/v1/messages`), mirroring the `/openai/v1` prefix Mantle already uses for `openai.gpt-5.*`/`google.*` models. The Anthropic branch's `baseURL` is now `https://bedrock-mantle.{region}.api.aws/anthropic`.
+
 ## v3.1.1
 
 ### Fixes

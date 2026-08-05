@@ -248,14 +248,14 @@ describe('strandsAgentFactory', () => {
       expect(OpenAIModel.mock.calls[0][0].clientConfig.baseURL).toBe('https://bedrock-mantle.us-east-1.api.aws/v1');
     });
 
-    test('Anthropic models use the bare Mantle host with no /v1 suffix (the @anthropic-ai/sdk client itself always prepends /v1/messages)', () => {
+    test('Anthropic models use the /anthropic base path (confirmed via live testing against Mantle — bare host alone now 404s, Mantle added a provider-prefix requirement for Anthropic same as it already had for openai.gpt-5.*/google.*)', () => {
       jest.resetModules();
       const mod = require('../../src/main/models/strandsAgentFactory');
       const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
 
       mod.createAgent(baseArgs({ modelId: 'us.anthropic.claude-sonnet-4-6', region: 'eu-west-1' }));
 
-      expect(AnthropicModel.mock.calls[0][0].clientConfig.baseURL).toBe('https://bedrock-mantle.eu-west-1.api.aws');
+      expect(AnthropicModel.mock.calls[0][0].clientConfig.baseURL).toBe('https://bedrock-mantle.eu-west-1.api.aws/anthropic');
     });
   });
 
