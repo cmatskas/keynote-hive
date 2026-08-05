@@ -17,13 +17,8 @@ An Electron desktop app that combines AI models served via Amazon Bedrock's Mant
 
 ### Download Pre-built Binaries (Recommended)
 
-Download: [Box folder](https://amazoncorporate.box.com/s/rwc0pbifx50uf7g2xi8mxanahq5qnljn)
-
-| Platform | File |
-|---|---|
-| macOS (Intel & Apple Silicon) | `Hive-2.10.0-universal.dmg` |
-| Windows x64 | `Hive-Setup-x64.exe` |
-| Windows ARM64 | `Hive-Setup-arm64.exe` |
+Download: [GitHub Release](https://github.com/cmatskas/keynote-hive/releases).
+Subsequent updates will be pushed automatically for in place updates
 
 ### Build from Source
 
@@ -35,21 +30,25 @@ npm start          # development
 npm run build      # production (all platforms)
 ```
 
-### First Launch
+### Getting Started
 
-1. Open Settings → Credentials
-2. Paste your AWS credentials (auto-detected from any format)
-3. Click "Save & Test Credentials"
-4. Start using the Work tab
+1. **Launch Hive.** On first run it opens straight to Settings → Credentials since nothing is configured yet.
+2. **Configure AWS credentials.** Most users authenticate with their own personal AWS account's Admin-role credentials (e.g. via Isengard/Merlon) — paste them into Settings → Credentials (auto-detected from any format) and click "Save & Test Credentials." Hive works with any valid AWS credentials; an Admin-level role simply means every permission below is already covered without needing to configure anything IAM-related by hand.
+3. **Setup Check runs automatically.** The first time credentials resolve successfully, Hive checks your account for a few things it needs (Web Search Gateway role, transcription S3 bucket, AgentCore Memory) and shows a checklist for anything missing — see [Setup Check](#setup-check) below. Create what you need, skip what you don't, right from the app.
+4. **Add your Mantle API key.** Generate a long-term [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) in the AWS console and paste it into Settings → Configuration → Mantle API Key — this is the one thing that can't be automated, since it's a secret tied to your own account.
+5. **Start using the Work tab.**
+
+If your credentials happen to resolve to Hive's shared admin AWS account, an **Admin** tab also appears automatically in Settings — see [Admin Tab](#admin-tab-aws-keynote-only) below. Regular users never see this tab and don't need to do anything with it.
 
 ## AWS Permissions Required
 
-Your IAM user/role needs access to:
+The list below documents what Hive actually calls, for anyone auditing or scoping a dedicated IAM role. In practice, most Hive users authenticate with an Admin-level role (via Isengard/Merlon) that already covers all of it — this list isn't a manual grant checklist to walk through, just a reference for what each feature needs under the hood:
 - **Bedrock Mantle**: A long-term [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) configured in Settings → Mantle API Key. All model invocation (Work, Chat, Swarm) goes through Amazon Bedrock's Mantle endpoint via this key — no IAM-based `InvokeModel`/`Converse` permissions are needed for model calls themselves.
 - **Transcribe**: `StartTranscriptionJob`, `GetTranscriptionJob` (for Transcribe tab)
 - **S3**: `GetObject`, `PutObject`, `DeleteObject` on your bucket (for Transcribe tab)
 - **AgentCore**: `bedrock-agentcore:StartCodeInterpreterSession`, `bedrock-agentcore:InvokeCodeInterpreter`, `bedrock-agentcore:StopCodeInterpreterSession`, `bedrock-agentcore:StartBrowserSession`, `bedrock-agentcore:StopBrowserSession` (for Work/Swarm code execution and web browsing)
-- **AgentCore Gateway**: `bedrock-agentcore:CreateGateway`, `bedrock-agentcore:CreateGatewayTarget`, `bedrock-agentcore:ListGateways`, `bedrock-agentcore:GetGateway`, `bedrock-agentcore:ListGatewayTargets`, `bedrock-agentcore:GetGatewayTarget`, `bedrock-agentcore:InvokeGateway`, `bedrock-agentcore:InvokeWebSearch` (for web search via AgentCore Web Search Tool) — see [AgentCore Gateway Setup (Web Search)](#agentcore-gateway-setup-web-search) below for the one-time role Hive needs to create the Gateway itself.
+- **AgentCore Gateway**: `bedrock-agentcore:CreateGateway`, `bedrock-agentcore:CreateGatewayTarget`, `bedrock-agentcore:ListGateways`, `bedrock-agentcore:GetGateway`, `bedrock-agentcore:ListGatewayTargets`, `bedrock-agentcore:GetGatewayTarget`, `bedrock-agentcore:InvokeGateway`, `bedrock-agentcore:InvokeWebSearch` (for web search via AgentCore Web Search Tool)
+- **Setup Check** (see below): `iam:CreateRole`, `iam:PutRolePolicy`, `iam:GetRole`, `s3:CreateBucket`, `bedrock-agentcore:GetMemory`, `bedrock-agentcore:CreateMemory` — only used by the in-app Setup Check to provision the items above on your behalf; not needed for Hive's normal runtime operation
 
 <details>
 <summary>Optional permissions</summary>
@@ -57,43 +56,42 @@ Your IAM user/role needs access to:
 - **SageMaker**: `InvokeEndpoint` (for SDXL image generation)
 </details>
 
-## AgentCore Gateway Setup (Web Search)
+## Setup Check
 
-The Work and Swarm tabs' web search tool runs through an AgentCore Gateway (AWS's managed MCP tool endpoint) with a Web Search connector target. Hive creates and manages this Gateway automatically — there is no separate deployment script — but the **first time** it's created in a given AWS account/region, it needs an execution role that doesn't exist yet.
+The first time you launch Hive after saving AWS credentials, it checks your account for a few things it needs — a Web Search Gateway execution role, a transcription S3 bucket, and an AgentCore Memory resource — and shows a checklist for anything missing. Each item is independent: create only what you need, in any order, from directly inside the app. No AWS console required.
 
-**One-time setup:**
+- **Web Search Gateway**: creates the IAM role (`hive-web-search-gateway`) that lets AgentCore Gateway run the Web Search Tool target. The Gateway itself is still created on first web search use, exactly as before — this just removes the manual "open the console and create a role" step.
+- **Transcription Storage Bucket**: creates the S3 bucket configured in Settings → Configuration, if it doesn't already exist.
+- **AgentCore Memory**: creates a Memory resource with semantic + summarization strategies for Work tab conversation memory.
 
-1. Create an IAM role (e.g. `hive-web-search-gateway`) with this trust policy so AgentCore can assume it:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Principal": { "Service": "bedrock-agentcore.amazonaws.com" },
-       "Action": "sts:AssumeRole"
-     }]
-   }
-   ```
-2. Attach a permissions policy granting the role what it needs to run the Gateway and its Web Search target, e.g.:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Action": [
-         "bedrock-agentcore:InvokeGateway",
-         "bedrock-agentcore:InvokeWebSearch"
-       ],
-       "Resource": "*"
-     }]
-   }
-   ```
-3. Paste the role's ARN into Settings → Web Search → Gateway Execution Role ARN, then save. Hive creates the Gateway (`hive-web-search`) and its Web Search target on first use — this can take up to a minute or two.
-4. Once the Gateway is `READY`, the role ARN is no longer needed for subsequent app launches — Hive finds and reuses the existing Gateway by name in that account/region.
+Re-run it anytime via Settings → Configuration → **Run Setup Check**. It's safe to run repeatedly — every item is checked before anything is created, so re-running never duplicates existing resources.
 
-Web search is currently only available in `us-east-1` — Hive always creates and calls the Gateway in that region regardless of your configured `region` setting.
+Web search is currently only available in `us-east-1` — Hive always creates and calls the Gateway in that region regardless of your configured `region` setting. If Gateway creation or search calls fail after Setup Check reports it as ready, check Settings → Web Search for the current status and a retry button — the underlying error (permissions, throttling, region mismatch) is surfaced there.
 
-If Gateway creation or search calls fail, check Settings → Web Search for the current status and a retry button — the underlying error (permissions, throttling, region mismatch) is surfaced there.
+## Admin Tab (`aws-keynote` only)
+
+Hive has a second, separate setup tier for managing resources shared across the whole team rather than per-user — currently a shared Managed Knowledge Base and its AgentCore Gateway access list. This lives in a distinct **Admin** tab in Settings, visually marked (amber "ADMIN" badge) and hidden by default.
+
+> **Known limitation — not yet usable.** Amazon Bedrock Managed Knowledge Base is not currently available in the `aws-keynote` account/region. The Admin tab's Knowledge Base and Gateway status checks will report "missing" until AWS enables Managed Knowledge Base for that account — there is nothing to fix on Hive's side. This feature is tabled until that changes; no shared Gateway or Knowledge Base has been created yet.
+
+**Visibility is gated by AWS account ID, not a setting.** The Admin tab only appears when the AWS credentials currently loaded in Hive resolve (via `sts:GetCallerIdentity`) to the specific shared admin account Hive's shared resources live in. Regular users authenticating with their own personal account never see this tab. This is a UX convenience, not the actual security boundary — every action inside the tab still requires real AWS permissions in that account, so even if the tab were somehow force-shown, nothing in it would succeed without genuinely being signed in as that account.
+
+**To use it:** temporarily swap your personal credentials in Settings → Credentials for the shared admin account's credentials, click "Save & Test Credentials," and the Admin tab appears. Swap back to your own credentials afterward for normal day-to-day use.
+
+**What it does (once Managed Knowledge Base is available):**
+- Shows the shared Knowledge Base's status and whether its dedicated Gateway (`hive-shared-gateway` — intentionally a separate Gateway from each user's own per-account `hive-web-search` Gateway used for web search; the two are unrelated and never share a name, account, or target) has a Knowledge Base target attached. Read-only checks — the KB itself is not created from here; that's a deliberate one-time console action given the real decisions involved — connectors, embedding model, storage — that shouldn't be automated.
+- **Manage Access** — a 3-step wizard for granting or revoking an individual IAM role's access to the shared Gateway:
+  1. Choose grant or revoke
+  2. Enter the requesting role's ARN
+  3. Review the exact resulting resource-policy JSON before applying — nothing is changed until this step's explicit **Apply** click
+
+Every policy change is scoped to a single named statement Hive manages (`HiveAdminGrantedPrincipals`) and leaves any other pre-existing statements on the policy untouched. Revoking the last granted principal removes the statement entirely rather than leaving an empty grant behind.
+
+**Configuration constants** (hardcoded in source, not settings — a regular user should never be able to change these from the UI, and they only ever need updating by whoever maintains the `aws-keynote` account):
+- **Admin account ID** (`AWS_KEYNOTE_ACCOUNT_ID` in `src/main/models/awsValidator.js`): the account ID the visibility gate above checks against.
+- **Shared Gateway URL/ARN**: not yet set — will be added once the Gateway is created (blocked on Managed Knowledge Base availability, see above). Once set, it will be surfaced read-only in the Admin tab itself, not just in source, so it's discoverable without reading code.
+
+If either constant ever needs to change (e.g. the admin account changes, or the shared Gateway is recreated), that requires a source change and a new Hive release — there is no way to update them from the UI by design.
 
 ## Which Tab Should I Use?
 
@@ -199,17 +197,19 @@ Create custom skills in Settings → Skills → New Skill. Each skill is a `SKIL
 
 ## Model Configuration
 
-Settings → Models lets you manage Bedrock models and assign pipeline roles:
+Settings → Models lets you manage Bedrock (Mantle) models, define the order they appear in the drop downs, and assign swarm pipeline roles:
 
 | Role | Purpose | Default |
 |---|---|---|
-| Creator | Writing, quality evaluation — best model | Claude Opus 4.6 |
-| Worker | Research, planning, editing — balanced | Claude Sonnet 4.6 |
-| Formatter | Document generation — cheapest capable | Claude Haiku 4.5 |
+| Creator | Writing, quality evaluation — best model | User defined |
+| Worker | Research, planning, editing — balanced | User defined |
+| Formatter | Document generation — cheapest capable | User defined |
 
 All models are invoked via Amazon Bedrock's Mantle endpoint — Claude models go through Mantle's Anthropic Messages API, other models (e.g. GPT-5.x, Google Gemma) through Mantle's OpenAI-compatible API. Add or remove models and reassign roles from the UI.
 
-> **Known issue — xAI Grok models are not currently supported.** If you add a `xai.grok-*` model in Settings, calls to it will fail. Mantle lists these models as available (`GET /v1/models` returns them with `"status":"available"`), but every invocation route Hive tested (`/v1/chat/completions`, `/openai/v1/chat/completions`, `/openai/v1/responses`) returns either a "model isn't supported on this route" validation error or a 500 internal server error. This looks like a Mantle-side model registration/serving issue rather than something fixable from the client side — it's been reported to the Mantle team. Don't add Grok models until this is resolved upstream.
+> **Note:** You'll need to reconfigure all your models using the Mantle Model ID. Inference profiles are no longer needed!
+
+**Known issue — xAI Grok models are not currently supported.** If you add a `xai.grok-*` model in Settings, calls to it will fail. Mantle lists these models as available (`GET /v1/models` returns them with `"status":"available"`), but every invocation route Hive tested (`/v1/chat/completions`, `/openai/v1/chat/completions`, `/openai/v1/responses`) returns either a "model isn't supported on this route" validation error or a 500 internal server error. This looks like a Mantle-side model registration/serving issue rather than something fixable from the client side — it's been reported to the Mantle team. Don't add Grok models until this is resolved upstream.
 
 ## Development
 

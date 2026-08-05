@@ -1,5 +1,25 @@
 # Release Notes
 
+## v3.1.0
+
+### New Features
+- **Setup Check** — Hive now checks your AWS account on first launch (and on demand via Settings → Configuration → Run Setup Check) for a few things it needs — a Web Search Gateway execution role, a transcription S3 bucket, and an AgentCore Memory resource — and creates anything missing directly from the app. No more manually creating an IAM role in the AWS console.
+- **Admin Tab** (`aws-keynote` account only) — a new, visually distinct tab in Settings for managing resources shared across the whole team. Includes a 3-step wizard for granting/revoking individual IAM roles' access to the shared Gateway, with a mandatory review-the-exact-policy-diff step before any change is applied.
+
+### Known Issues
+- **The Admin tab's Knowledge Base features are not yet usable.** Amazon Bedrock Managed Knowledge Base is not currently available in the `aws-keynote` account/region, so no shared Gateway or Knowledge Base has been created yet — the Admin tab's status checks will report "missing" until AWS enables this for that account. This is an AWS availability constraint, not a bug; tabled until it's resolved. See README's Admin Tab section for details.
+
+## v3.0.2
+
+### Fixes
+- **Chat tab crashed with an opaque `MaxTokensError` on longer responses.** The Chat tab's model call hardcoded `maxTokens: 4096` (max output tokens), ~30x smaller than the `120,000` default every other tab (Work, Swarm) already uses via `createAgent()`. Chat now inherits the same default.
+- **Attaching a transcript in the Chat tab dumped the entire raw transcript text into the chat bubble.** Checking "Transcript" used to splice the full transcript directly into the prompt string, which then rendered as a wall of text in the conversation. It's now attached the same way a regular file upload is — sent as a proper attachment and shown as a small chip above the message instead of inline text.
+- **Transcript attachments included timestamp and speaker-label markup instead of clean text.** The transcript attachment now reuses the same sanitization already used by "Download Transcript" / "Copy Transcript" (`getTranscriptForExport()`), so it respects the existing "Include speaker/timestamps" preference instead of pulling raw, markup-containing text from the DOM.
+- **Large text attachments (transcripts or otherwise) had no size limit before being sent to the model, risking the same `MaxTokensError` crash regardless of the output-token fix above.** The Chat tab's agent has no code-execution tool, so it can't be pointed at a sandboxed file the way large Word/Excel/PDF attachments already are for Work and Swarm. Inline text attachments (`.txt`, `.csv`, `.html`, `.md` — including transcripts) are now capped at 300,000 characters; anything longer is truncated with a visible marker directing the user to the Work tab for full-file processing. The Chat UI also warns before sending if the attached transcript is large enough to be truncated.
+
+### Tests
+- Added test coverage in `tests/main/utils.test.js` for inline-text truncation behavior (5 new tests: unaffected below the limit, truncated with a visible marker above it, exact-boundary behavior, sandbox-independence, and non-interference with the existing oversized-document sandbox-pointer path). 280 tests total, up from 275.
+
 ## v3.0.1
 
 ### Fixes
