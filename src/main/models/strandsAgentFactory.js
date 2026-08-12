@@ -268,45 +268,40 @@ function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, o
   // Both branches point at the same Mantle host and use the same API key —
   // no bearer-token minting/refresh, unlike the old OpenAIModel-only
   // bedrockMantleConfig helper. The base *path* differs by model family
-  // though. Mantle's own internal (non-exported) bedrockMantleBaseUrl()
-  // helper only special-cases openai.gpt-5.* for /openai/v1, but that rule
-  // was verified WRONG for Google's Gemma models by live-testing directly
-  // against the real Mantle endpoint: google.gemma-4-31b returns a 400
-  // "isn't supported on this route" on /v1/chat/completions and only
-  // succeeds on /openai/v1 (both /chat/completions and /responses). So
-  // google.* models are included in the /openai/v1 branch here too — this
-  // is confirmed-by-testing, not inferred from the SDK helper.
+  // and, within OpenAI-compatible models, by individual model LINE (not
+  // vendor prefix — a vendor can straddle both paths, e.g. google.gemma-4-*
+  // is on /openai/v1 while google.gemma-3-* is on /v1).
   //
-  // xai.grok-4.3 was also tested and currently fails with a 500 on every
-  // route (/v1/chat/completions, /openai/v1/chat/completions,
-  // /openai/v1/responses) — that looks like a Mantle-side issue with that
-  // specific model, not a routing problem Hive can fix client-side. Left
-  // on /v1 (unchanged) since no route actually works for it right now; see
-  // README's "Known Issues" section.
+  // This table is maintained independently of @strands-agents/sdk's own
+  // internal bedrockMantleBaseUrl() helper (mantle.js), which is
+  // `@internal` and not exported — so it can't be imported directly, only
+  // read for reference. As of SDK 1.12.0 (which shipped a real upstream
+  // fix, github.com/strands-agents/harness-sdk#3691, after xai.grok-4.3
+  // was found mis-routed to /v1 despite Mantle serving it from
+  // /openai/v1), the SDK's own table is: ['openai.gpt-5.', 'xai.grok-4.',
+  // 'google.gemma-4-']. Our regex below mirrors that exactly, confirmed by
+  // reading the installed SDK's mantle.js directly — re-check that file
+  // after any future SDK upgrade in case the table changes again.
   //
-  // OpenAI's SDK posts to bare resource paths (`/responses`,
-  // `/chat/completions` — confirmed by reading node_modules/openai/
-  // resources/**), so its `baseURL` must already include the `/v1` (or
-  // `/openai/v1`) segment.
+  // Everything not matched by the regex (including google.gemma-3-* and
+  // every other OpenAI-compatible model) falls to /v1 — this is the
+  // correct default, not a fallback for "unverified" models.
   //
-  // @anthropic-ai/sdk is different: Messages.create() always POSTs to the
-  // literal path `/v1/messages` relative to `baseURL` (confirmed by reading
-  // node_modules/@anthropic-ai/sdk/resources/messages/messages.mjs) — the
-  // SDK itself supplies the `/v1` prefix.
-  //
-  // UPDATE (re-verified live against the real Mantle endpoint after a user
-  // report): Mantle's Anthropic routing changed since this was first
-  // fixed. Bare host + /v1/messages (the original fix) now 404s; Mantle
-  // requires an /anthropic prefix, i.e. baseURL must be
-  // `https://bedrock-mantle.{region}.api.aws/anthropic`, producing a final
-  // request to `/anthropic/v1/messages` — confirmed with a direct curl
-  // test returning a real completion, vs 404 on bare-host and on
-  // /openai/v1/messages. This mirrors the /openai/v1 prefix Mantle already
-  // uses for gpt-5.*/google.* models — Anthropic now gets the same
-  // provider-prefix treatment. If Mantle changes this again, re-verify
-  // with a direct curl call before trusting either this comment or the
-  // SDK's own (non-exported, and evidently sometimes stale) helper.
-  const basePath = /^(openai\.gpt-5(\.|-)|google\.)/i.test(modelId || '') ? '/openai/v1' : '/v1';
+  // Anthropic is a separate protocol entirely (AnthropicModel, not
+  // OpenAIModel) and is handled by the ternary below, not this table.
+  // @anthropic-ai/sdk's Messages.create() always POSTs to the literal path
+  // `/v1/messages` relative to `baseURL`, and Mantle serves Anthropic
+  // models from an /anthropic prefix on top of that
+  // (`https://bedrock-mantle.{region}.api.aws/anthropic` ->
+  // `/anthropic/v1/messages`) — confirmed via direct curl testing against
+  // the live endpoint after Mantle changed this routing once already
+  // (bare host without the /anthropic prefix worked initially, then
+  // started 404ing). If either the OpenAI-compatible table or the
+  // Anthropic prefix breaks again, re-verify with a direct curl call
+  // against the real endpoint before trusting this comment, the SDK's
+  // internal helper, or any prior fix — Mantle's routing has changed
+  // twice already without notice.
+  const basePath = /^(openai\.gpt-5(\.|-)|xai\.grok-4\.|google\.gemma-4-)/i.test(modelId || '') ? '/openai/v1' : '/v1';
   const mantleHost = `https://bedrock-mantle.${region}.api.aws`;
   const baseURL = isAnthropicModel(modelId) ? `${mantleHost}/anthropic` : `${mantleHost}${basePath}`;
 

@@ -85,7 +85,7 @@ if (!MANTLE_API_KEY) {
  * One minimal real completion through createAgent(). Throws on any
  * routing/HTTP error — that's the signal this script exists to surface.
  */
-async function runMinimalCompletion(modelId) {
+async function runMinimalCompletion(modelId, maxTokens = 64) {
   const { agent, dispose } = createAgent({
     modelId,
     region: REGION,
@@ -103,8 +103,11 @@ async function runMinimalCompletion(modelId) {
     // failed only some runs rather than every run). 16 was enough for
     // Anthropic/Gemma (non-reasoning) but not reliably enough for GPT-5.
     // 64 gives real headroom without meaningfully increasing cost for a
-    // one-word-response check.
-    maxTokens: 64,
+    // one-word-response check. xai.grok-4.3 needs substantially more:
+    // empirically, 200 was still insufficient and 500 succeeded, so it
+    // gets its own higher budget below (1000, for margin) rather than
+    // sharing this default.
+    maxTokens,
   });
 
   let fullText = '';
@@ -127,10 +130,23 @@ async function runMinimalCompletion(modelId) {
 // basePath logic:
 //   - Anthropic family -> /anthropic
 //   - openai.gpt-5.* -> /openai/v1
-//   - other OpenAI-compatible (here: google.*) -> /v1
+//   - xai.grok-4.* -> /openai/v1 (added after @strands-agents/sdk 1.12.0's
+//     upstream fix, github.com/strands-agents/harness-sdk#3691 — this was
+//     genuinely broken on Mantle's side before that fix, confirmed via
+//     direct curl testing: 500s on every route. The upstream PR's own
+//     testing notes residual intermittent flakiness on Mantle's side for
+//     this specific model even with correct routing, so a transient
+//     failure here may be a real Mantle-side blip rather than a Hive
+//     routing regression — re-run before assuming the fix regressed.)
+//   - other OpenAI-compatible, e.g. google.gemma-3-* -> /v1
 const CHECKS = [
   { label: 'Anthropic family (/anthropic branch)', modelId: 'anthropic.claude-haiku-4-5' },
   { label: 'openai.gpt-5.* (/openai/v1 branch)', modelId: 'openai.gpt-5.6-sol' },
+  // xai.grok-4.3 empirically needs a much larger reasoning-token budget
+  // than openai.gpt-5.6-sol before any visible output token is produced —
+  // 200 was insufficient, 500 succeeded; 1000 gives real margin. See the
+  // maxTokens comment on runMinimalCompletion() above.
+  { label: 'xai.grok-4.* (/openai/v1 branch — fixed in @strands-agents/sdk 1.12.0)', modelId: 'xai.grok-4.3', maxTokens: 1000 },
   { label: 'other OpenAI-compatible, e.g. google.* (/v1 branch)', modelId: 'google.gemma-4-31b' },
 ];
 
@@ -138,10 +154,10 @@ async function main() {
   console.log('\n=== Live Mantle integration check ===\n');
   let failures = 0;
 
-  for (const { label, modelId } of CHECKS) {
+  for (const { label, modelId, maxTokens } of CHECKS) {
     process.stdout.write(`${label} [${modelId}] ... `);
     try {
-      const text = await runMinimalCompletion(modelId);
+      const text = maxTokens ? await runMinimalCompletion(modelId, maxTokens) : await runMinimalCompletion(modelId);
       if (typeof text === 'string' && text.length > 0) {
         console.log(`OK ("${text.trim()}")`);
       } else {

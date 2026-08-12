@@ -228,7 +228,13 @@ describe('strandsAgentFactory', () => {
   });
 
   describe('Mantle base URL / path construction', () => {
-    test.each(['openai.gpt-5.6-sol', 'google.gemma-4-31b', 'google.gemma-3-27b-it'])('openai.gpt-5.* and google.* models use the /openai/v1 base path: %s', (modelId) => {
+    // Table verified against the real Mantle endpoint and against
+    // @strands-agents/sdk 1.12.0's own internal routing fix
+    // (github.com/strands-agents/harness-sdk#3691) — prefixes are scoped to
+    // a specific model LINE, not a vendor, since a vendor can straddle both
+    // base paths (google.gemma-4-* is on /openai/v1, google.gemma-3-* is on
+    // /v1 — a vendor-wide `google.` match would mis-route the latter).
+    test.each(['openai.gpt-5.6-sol', 'google.gemma-4-31b', 'xai.grok-4.3'])('models on verified /openai/v1 lines use that base path: %s', (modelId) => {
       jest.resetModules();
       const mod = require('../../src/main/models/strandsAgentFactory');
       const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
@@ -238,7 +244,7 @@ describe('strandsAgentFactory', () => {
       expect(OpenAIModel.mock.calls[0][0].clientConfig.baseURL).toBe('https://bedrock-mantle.us-east-1.api.aws/openai/v1');
     });
 
-    test.each(['openai.gpt-oss-120b', 'xai.grok-4.3'])('other OpenAI-compatible models use the /v1 base path: %s', (modelId) => {
+    test.each(['openai.gpt-oss-120b', 'google.gemma-3-27b-it'])('other OpenAI-compatible models use the /v1 base path: %s', (modelId) => {
       jest.resetModules();
       const mod = require('../../src/main/models/strandsAgentFactory');
       const { OpenAIModel } = require('@strands-agents/sdk/models/openai');

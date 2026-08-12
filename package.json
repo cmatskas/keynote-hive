@@ -42,7 +42,7 @@
     "@popperjs/core": "^2.11.8",
     "@smithy/protocol-http": "^5.5.12",
     "@smithy/signature-v4": "^5.6.8",
-    "@strands-agents/sdk": "^1.11.2",
+    "@strands-agents/sdk": "^1.12.0",
     "bootstrap": "^5.3.0",
     "bootstrap-icons": "^1.11.1",
     "docx": "^9.7.1",
