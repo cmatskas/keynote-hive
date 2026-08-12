@@ -1,7 +1,7 @@
 const { tool, AfterToolCallEvent, BeforeToolCallEvent } = require('@strands-agents/sdk');
 const { z } = require('zod');
 const { createSwarmTools } = require('./swarmTools');
-const { createAgent } = require('./strandsAgentFactory');
+const { createAgent, isAnthropicModel } = require('./strandsAgentFactory');
 const fs = require('fs').promises;
 const path = require('path');
 const log = require('electron-log/main');
@@ -248,6 +248,7 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
     if (files.length > 0) {
       const fileBlocks = await buildFileContentBlocks(files, {
         codeInterpreter: this.codeInterpreter,
+        isAnthropicModel: isAnthropicModel(model),
       });
       newTurnBlocks = [...newTurnBlocks, ...fileBlocks];
     }

@@ -131,6 +131,114 @@ describe('utils — oversized document handling (sandbox pointer, no pre-extract
     });
   });
 
+  describe('buildFileContentBlocks — Anthropic-model routing for docx/xls/xlsx (regression test for silent-drop bug)', () => {
+    // @strands-agents/sdk's AnthropicModel provider only natively supports
+    // `pdf` and a fixed plain-text format list for DocumentBlock — docx/xls/
+    // xlsx fall through to a silent logger.warn() + `undefined` return,
+    // meaning the attachment vanishes with no error anywhere in Hive. This
+    // reproduces the exact bug: a docx under the inline size limit, with
+    // isAnthropicModel unset (the old, only-ever-existing behavior), still
+    // produces a native `document` block — which is what gets silently
+    // dropped downstream. The isAnthropicModel:true branch is the fix.
+    test('without isAnthropicModel, a small docx still produces a native document block (the shape Anthropic silently drops)', async () => {
+      const ci = makeFakeCodeInterpreter();
+      const smallBuffer = Buffer.alloc(1024);
+      const blocks = await buildFileContentBlocks([{ name: 'small.docx', content: smallBuffer }], { codeInterpreter: ci });
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].document).toBeDefined();
+      expect(blocks[0].document.format).toBe('docx');
+      expect(ci.writeFiles).not.toHaveBeenCalled();
+      expect(ci.executeCode).not.toHaveBeenCalled();
+    });
+
+    test('with isAnthropicModel, a small docx is routed through the sandbox and extracted via python-docx, not sent as a document block', async () => {
+      const ci = makeFakeCodeInterpreter();
+      ci.executeCode = jest.fn().mockResolvedValue({ success: true, text: 'Extracted paragraph text' });
+      const smallBuffer = Buffer.alloc(1024);
+      const blocks = await buildFileContentBlocks(
+        [{ name: 'small.docx', content: smallBuffer }],
+        { codeInterpreter: ci, isAnthropicModel: true }
+      );
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].document).toBeUndefined();
+      expect(blocks[0].text).toContain('Extracted paragraph text');
+      expect(blocks[0].text).toContain('small.docx');
+      expect(blocks[0].text).toContain("isn't natively supported by Anthropic's document API");
+      expect(ci.writeFiles).toHaveBeenCalledWith([{ path: 'small.docx', blob: smallBuffer }]);
+      expect(ci.executeCode).toHaveBeenCalledWith(expect.stringContaining('from docx import Document'));
+    });
+
+    test('with isAnthropicModel, this applies regardless of size — unlike the OpenAI-compatible size threshold', async () => {
+      const ci = makeFakeCodeInterpreter();
+      ci.executeCode = jest.fn().mockResolvedValue({ success: true, text: 'Sheet data' });
+      // Well under INLINE_DOCUMENT_LIMIT_BYTES — would be inline for OpenAI.
+      const smallBuffer = Buffer.alloc(512);
+      const blocks = await buildFileContentBlocks(
+        [{ name: 'small.xlsx', content: smallBuffer }],
+        { codeInterpreter: ci, isAnthropicModel: true }
+      );
+      expect(blocks[0].document).toBeUndefined();
+      expect(ci.executeCode).toHaveBeenCalledWith(expect.stringContaining('import openpyxl'));
+    });
+
+    test('with isAnthropicModel, pdf is unaffected — still sent as a native inline document block', async () => {
+      const ci = makeFakeCodeInterpreter();
+      const smallBuffer = Buffer.alloc(1024);
+      const blocks = await buildFileContentBlocks(
+        [{ name: 'small.pdf', content: smallBuffer }],
+        { codeInterpreter: ci, isAnthropicModel: true }
+      );
+      expect(blocks[0].document).toBeDefined();
+      expect(blocks[0].document.format).toBe('pdf');
+      expect(ci.writeFiles).not.toHaveBeenCalled();
+    });
+
+    test('with isAnthropicModel and no sandbox available, throws a clear error instead of silently dropping the file', async () => {
+      const smallBuffer = Buffer.alloc(1024);
+      await expect(
+        buildFileContentBlocks([{ name: 'small.docx', content: smallBuffer }], { isAnthropicModel: true })
+      ).rejects.toThrow(/Anthropic \(Claude\) models cannot read directly/i);
+    });
+
+    test('with isAnthropicModel, mixed docx + pdf + oversized xlsx in one call all route through extraction/native-inline correctly', async () => {
+      const ci = makeFakeCodeInterpreter();
+      ci.executeCode = jest.fn().mockResolvedValue({ success: true, text: 'extracted' });
+      const smallBuffer = Buffer.alloc(1024);
+      const oversizedBuffer = Buffer.alloc(INLINE_DOCUMENT_LIMIT_BYTES + 1024);
+      const blocks = await buildFileContentBlocks(
+        [
+          { name: 'notes.docx', content: smallBuffer },
+          { name: 'chart.pdf', content: smallBuffer },
+          { name: 'huge.xlsx', content: oversizedBuffer },
+        ],
+        { codeInterpreter: ci, isAnthropicModel: true }
+      );
+      expect(blocks).toHaveLength(3);
+      // Note: office-extraction blocks (docx/xlsx, for Anthropic) are
+      // produced in their own loop before the main per-file loop runs, so
+      // block order is [notes.docx, huge.xlsx, chart.pdf] — not input order.
+      const docxBlock = blocks.find(b => b.text?.includes('notes.docx'));
+      const xlsxBlock = blocks.find(b => b.text?.includes('huge.xlsx'));
+      const pdfBlock = blocks.find(b => b.document);
+
+      // docx: extracted via sandbox, text block
+      expect(docxBlock).toBeDefined();
+      expect(docxBlock.document).toBeUndefined();
+      // pdf: native inline document block, unaffected (Anthropic supports pdf natively)
+      expect(pdfBlock).toBeDefined();
+      expect(pdfBlock.document.format).toBe('pdf');
+      // oversized xlsx: for Anthropic, ALSO goes through the extraction
+      // branch (unconditional on size) rather than the size-based
+      // sandbox-pointer branch — extraction is unconditional for Anthropic
+      // regardless of file size, since the underlying problem is format
+      // support, not size.
+      expect(xlsxBlock).toBeDefined();
+      expect(xlsxBlock.text).toContain("isn't natively supported by Anthropic's document API");
+      expect(xlsxBlock.document).toBeUndefined();
+      expect(ci.executeCode).toHaveBeenCalledWith(expect.stringContaining('import openpyxl'));
+    });
+  });
+
   describe('toStrandsContentBlocks — adapter from raw Bedrock shape to Strands SDK classes', () => {
     test('converts a text block into a TextBlock instance', () => {
       const [result] = toStrandsContentBlocks([{ text: 'hello world' }]);

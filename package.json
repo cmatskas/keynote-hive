@@ -1,6 +1,6 @@
 {
   "name": "Hive",
-  "version": "3.1.2",
+  "version": "3.2.1",
   "description": "Electron app for Bedrock models and media transcription",
   "main": "main.js",
   "author": "Hive Team",

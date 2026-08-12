@@ -3,7 +3,7 @@ const { Upload } = require('@aws-sdk/lib-storage');
 const { StartTranscriptionJobCommand, GetTranscriptionJobCommand } = require('@aws-sdk/client-transcribe');
 const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const TranscriptMapper = require('../models/transcriptMapper');
-const { createAgent } = require('../models/strandsAgentFactory');
+const { createAgent, isAnthropicModel } = require('../models/strandsAgentFactory');
 const { buildFileContentBlocks } = require('../utils');
 const logger = require('electron-log/main');
 
@@ -38,6 +38,7 @@ async function invokeChatModel(ctx, model, prompt, conversationHistory, files = 
     const fileBlocks = await buildFileContentBlocks(files, {
       codeInterpreter: ci,
       stopSession: true,
+      isAnthropicModel: isAnthropicModel(model),
     });
     messageContent.push(...fileBlocks);
   }

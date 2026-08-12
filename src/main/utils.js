@@ -59,21 +59,44 @@ function truncateInlineText(text, fileName) {
 }
 
 /**
- * Convert an array of file objects into Bedrock Converse content blocks.
+ * Convert an array of file objects into Bedrock Converse-shaped content
+ * blocks (consumed either directly by ipc/bedrock.js, or converted to real
+ * Strands SDK class instances via toStrandsContentBlocks() for
+ * agentToolExecutor.js).
  *
- * - pdf/doc/docx/xls/xlsx at or under the inline limit: native document
- *   block (source.bytes), processed directly by Bedrock.
- * - pdf/doc/docx/xls/xlsx over the inline limit: uploaded into the sandbox;
- *   the agent gets a text block pointing at the sandbox path and is expected
- *   to use execute_code to read whatever it needs.
- * - pptx/ppt: always extracted via the sandbox (Bedrock has no native pptx
- *   document format, independent of size).
+ * - pdf at or under the inline limit: native document block (source.bytes).
+ *   AnthropicModel supports pdf natively; OpenAIModel supports any format
+ *   generically (see below), so pdf is inline-safe for both families.
+ * - doc/docx/xls/xlsx:
+ *     - For Anthropic-family models: ALWAYS extracted via the sandbox,
+ *       regardless of size. @strands-agents/sdk's AnthropicModel provider
+ *       only natively supports `pdf` and a fixed plain-text format list for
+ *       DocumentBlock — anything else (docx/xls/xlsx) is SILENTLY DROPPED
+ *       with no error, just an internal logger.warn() Hive never sees (see
+ *       node_modules/@strands-agents/sdk/dist/src/models/anthropic.js,
+ *       confirmed by reproducing the exact drop against a real .docx file).
+ *       The model then correctly (from its own perspective) reports no file
+ *       was attached, since none was — Hive's own logs never show the SDK
+ *       dropping it. Reported upstream to the strands-agents/harness-sdk
+ *       maintainers.
+ *     - For OpenAI-compatible models: at or under the inline limit, sent as
+ *       a native document block (source.bytes) — OpenAIModel's adapter
+ *       base64-encodes ANY byte-source document generically as a `file`
+ *       content part, with no format allowlist, so this is safe.
+ *     - Over the inline limit (OpenAI-compatible models only — Anthropic's
+ *       docx/xls/xlsx is always fully handled by the extraction branch
+ *       above, regardless of size): uploaded into the sandbox; the agent
+ *       gets a text block pointing at the sandbox path and is expected to
+ *       use execute_code to read whatever it needs.
+ * - pptx/ppt: always extracted via the sandbox (no native pptx document
+ *   format on either provider, independent of size or model family).
  * - csv/html/md/other text: sent inline as a text block, unchanged.
  *
  * @param {Array} files - [{name, content}] where content is array/buffer for binary, string for text
  * @param {object} [options]
  * @param {object} [options.codeInterpreter] - CodeInterpreterManager instance (must have sessionId or will start one)
  * @param {boolean} [options.stopSession] - stop the code interpreter after processing (default false)
+ * @param {boolean} [options.isAnthropicModel] - whether the target model is Anthropic-family (see isAnthropicModel() in strandsAgentFactory.js). Defaults false — callers that don't pass this get the OpenAI-compatible (native document block) behavior, which is safe for non-Anthropic models and was the only behavior that existed before this parameter was added.
  * @returns {Promise<Array>} Converse content blocks
  */
 async function buildFileContentBlocks(files, options = {}) {
@@ -81,7 +104,14 @@ async function buildFileContentBlocks(files, options = {}) {
 
   const blocks = [];
   const ci = options.codeInterpreter || null;
+  const isAnthropicModel = !!options.isAnthropicModel;
   const pptxFiles = files.filter(f => ['pptx', 'ppt'].includes(f.name.toLowerCase().split('.').pop()));
+  // docx/doc/xls/xlsx for Anthropic models — see the function doc comment
+  // above for why this is unconditional on size, unlike the OpenAI-compat
+  // branch below.
+  const officeFilesForAnthropic = isAnthropicModel
+    ? files.filter(f => ['doc', 'docx', 'xls', 'xlsx'].includes(f.name.toLowerCase().split('.').pop()))
+    : [];
 
   if (pptxFiles.length > 0 && ci) {
     if (!ci.sessionId) await ci.startSession(300);
@@ -105,9 +135,49 @@ print("\\n\\n".join(slides))`
     }
   }
 
+  if (officeFilesForAnthropic.length > 0) {
+    if (!ci) {
+      throw new Error(
+        `File "${officeFilesForAnthropic[0].name}" is a Word/Excel document, which Anthropic (Claude) models cannot read directly on Mantle — ` +
+        'it needs to be processed through a Code Interpreter sandbox first, and none is available here. ' +
+        '(This attachment path requires a Code Interpreter session; the Chat tab creates one automatically for file processing, so if you see ' +
+        'this error, something else prevented that setup — check AWS credentials/permissions.)'
+      );
+    }
+    if (!ci.sessionId) await ci.startSession(300);
+    await ci.writeFiles(officeFilesForAnthropic.map(f => ({
+      path: f.name,
+      blob: Buffer.from(Array.isArray(f.content) ? f.content : f.content),
+    })));
+    for (const file of officeFilesForAnthropic) {
+      const ext = file.name.toLowerCase().split('.').pop();
+      const safeName = file.name.replace(/"/g, '\\"');
+      const extractCode = ['doc', 'docx'].includes(ext)
+        ? `from docx import Document
+doc = Document("${safeName}")
+paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+tables = []
+for t_idx, table in enumerate(doc.tables):
+    rows = [" | ".join(cell.text for cell in row.cells) for row in table.rows]
+    tables.append(f"Table {t_idx+1}:\\n" + "\\n".join(rows))
+print("\\n\\n".join(paragraphs + tables))`
+        : `import openpyxl
+wb = openpyxl.load_workbook("${safeName}", data_only=True)
+sheets = []
+for name in wb.sheetnames:
+    ws = wb[name]
+    rows = [" | ".join(str(c) if c is not None else "" for c in row) for row in ws.iter_rows(values_only=True)]
+    sheets.append(f"Sheet '{name}':\\n" + "\\n".join(rows))
+print("\\n\\n".join(sheets))`;
+      const result = await ci.executeCode(extractCode);
+      blocks.push({ text: `\n--- Content from ${file.name} (extracted for Claude — this format isn't natively supported by Anthropic's document API) ---\n${result.text}\n--- End of ${file.name} ---\n` });
+    }
+  }
+
   for (const file of files) {
     const ext = file.name.toLowerCase().split('.').pop();
     if (['pptx', 'ppt'].includes(ext)) continue;
+    if (isAnthropicModel && ['doc', 'docx', 'xls', 'xlsx'].includes(ext)) continue; // already handled above
 
     if (['pdf', 'doc', 'docx', 'xls', 'xlsx'].includes(ext)) {
       const bytes = Buffer.from(Array.isArray(file.content) ? file.content : file.content);
