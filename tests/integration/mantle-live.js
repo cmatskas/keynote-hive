@@ -93,7 +93,18 @@ async function runMinimalCompletion(modelId) {
     systemPrompt: 'You are a helpful assistant. Respond in one short word.',
     tools: [],
     id: 'integration-check',
-    maxTokens: 16, // Mantle's OpenAI-compatible route rejects values below 16
+    // GPT-5-class models are reasoning models: internal reasoning tokens
+    // count against this budget even without explicitly requesting
+    // reasoning effort (well-documented OpenAI/Mantle behavior, and
+    // confirmed by an intermittent MaxTokensError failure on
+    // openai.gpt-5.6-sol in a real scheduled run — a too-small budget
+    // sometimes gets entirely consumed by invisible reasoning tokens
+    // before any visible output token is produced, which is why this
+    // failed only some runs rather than every run). 16 was enough for
+    // Anthropic/Gemma (non-reasoning) but not reliably enough for GPT-5.
+    // 64 gives real headroom without meaningfully increasing cost for a
+    // one-word-response check.
+    maxTokens: 64,
   });
 
   let fullText = '';

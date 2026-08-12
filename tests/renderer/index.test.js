@@ -196,9 +196,16 @@ describe('Renderer Index.js', () => {
             require('../../src/renderer/index.js');
         });
 
-        // These tests require setting module-internal currentConversation which
-        // can't be done from outside the closure. They test UI flows that need
-        // integration testing with the actual Bedrock response handler.
+        // TODO: downloadAnalysis/copyAnalysis happy-path tests are skipped —
+        // these functions read a module-private `currentConversation`
+        // variable inside index.js's closure, which can't be set from
+        // outside (setting window.currentConversation has no effect on it).
+        // Only the "no conversation" negative-path siblings below are
+        // actually covered. Fix: either export currentConversation getter/
+        // setter on window for real, or refactor downloadAnalysis/
+        // copyAnalysis to accept the conversation as a parameter instead of
+        // reading closure state, so these can be tested without a full
+        // integration harness.
         test.skip('downloadAnalysis creates download link when conversation exists', () => {
             const mockLink = {
                 href: '',
