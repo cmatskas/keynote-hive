@@ -91,6 +91,18 @@ class AppContext {
     }
   }
 
+  /**
+   * Returns the CodeInterpreterManager for a session, creating one if none
+   * exists yet. Deliberately synchronous with no `await` in the body — the
+   * check-then-set on `this.workSandboxes` is a single, uninterrupted tick
+   * of the event loop, so it cannot race even if invoke-agent fires more
+   * than once for the same sessionId in close succession. If this function
+   * ever needs to become async (e.g. to validate something before
+   * creating the manager), it MUST gain the same in-flight-promise-lock
+   * pattern used in CodeInterpreterManager.startSession() — see that
+   * function's comment for why: an `if (!has) { await ...; set(...) }`
+   * shape reintroduces exactly the race this comment is warning against.
+   */
   getOrCreateSandbox(sessionId) {
     if (!this.workSandboxes.has(sessionId)) {
       this.workSandboxes.set(sessionId, new CodeInterpreterManager(this.awsClients.agentCoreConfig));
