@@ -1149,6 +1149,36 @@ Instructions for the agent go here.
         </div>
     </div>
 
+    <!-- Setup Check: Code Interpreter permission instructions modal (this
+         item can't be auto-created like the others — the fix is a script
+         the user or their account admin runs against their own IAM role) -->
+    <div class="modal fade" id="setupCheckInstructionsModal" tabindex="-1" aria-labelledby="setupCheckInstructionsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="setupCheckInstructionsModalLabel">
+                        <i class="bi bi-shield-lock me-2"></i>Grant Code Interpreter Permissions
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="small">Your current AWS credentials can't start an AgentCore Code Interpreter session — this is needed for the Work and Swarm tabs to run code and process file attachments (Word, PDF, Excel, PowerPoint). This is a permission on your own AWS role, so Hive can't grant it for you automatically.</p>
+                    <p class="small mb-2">Run this script from a terminal to grant your role the exact permissions Hive needs (it only attaches a new, separate policy — nothing already on your role is changed):</p>
+                    <div class="position-relative">
+                        <pre class="bg-dark text-light p-3 rounded small mb-2" id="grantScriptCommand" style="white-space: pre-wrap; word-break: break-all;">./scripts/grant-hive-permissions.sh --bucket &lt;your-transcription-bucket-name&gt;</pre>
+                        <button type="button" class="btn btn-sm btn-outline-light position-absolute top-0 end-0 m-2" id="copyGrantScriptBtn" title="Copy command">
+                            <i class="bi bi-clipboard"></i>
+                        </button>
+                    </div>
+                    <p class="small text-muted mb-0">The script lives at <code>scripts/grant-hive-permissions.sh</code> in the Hive repository. If your current session doesn't have permission to modify its own IAM role, ask your account admin to run it for you. See the README's "AWS Permissions Required" section for the full permission list and what the script grants.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="clearTranscriptionModal" tabindex="-1" aria-labelledby="clearTranscriptionModalLabel"
         aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">

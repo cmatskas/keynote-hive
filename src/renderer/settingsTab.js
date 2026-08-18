@@ -42,6 +42,12 @@
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
     document.getElementById('runSetupCheckBtn').addEventListener('click', () => showSetupCheckModal());
     document.getElementById('setupCheckRefreshBtn').addEventListener('click', () => refreshSetupCheckList());
+    document.getElementById('copyGrantScriptBtn').addEventListener('click', () => {
+      const text = document.getElementById('grantScriptCommand').textContent;
+      navigator.clipboard.writeText(text)
+        .then(() => window.electronAPI.showToast('Command copied to clipboard', 'success'))
+        .catch(() => window.electronAPI.showToast('Failed to copy to clipboard', 'error'));
+    });
 
     // Web Search retry/test
     document.getElementById('webSearchRetryBtn').addEventListener('click', retryWebSearchInit);
@@ -224,6 +230,7 @@
     webSearchGateway: { title: 'Web Search Gateway', help: 'Needed for Work/Swarm web search' },
     transcriptionBucket: { title: 'Transcription Storage Bucket', help: 'Needed for the Transcribe tab' },
     memory: { title: 'AgentCore Memory', help: 'Needed for Work tab conversation memory' },
+    codeInterpreterPermission: { title: 'Code Interpreter Permission', help: 'Needed for Work/Swarm code execution and document attachments' },
   };
 
   let _setupCheckModalInstance = null;
@@ -244,7 +251,7 @@
     try {
       const status = await window.electronAPI.invoke('setup-wizard-check-status');
       if (status.error) return; // no credentials yet — nothing to check
-      const anyMissing = Object.values(status).some(item => item.status === 'missing');
+      const anyMissing = Object.values(status).some(item => item.status === 'missing' || item.status === 'action_required');
       if (anyMissing) showSetupCheckModal();
     } catch (err) {
       console.warn('Setup Check auto-detection failed:', err.message);
@@ -278,8 +285,12 @@
 
     const badgeClass = item.status === 'ready' ? 'bg-success'
       : item.status === 'missing' ? 'bg-warning text-dark'
+      : item.status === 'action_required' ? 'bg-warning text-dark'
       : 'bg-secondary';
-    const badgeText = item.status === 'ready' ? 'Ready' : item.status === 'missing' ? 'Missing' : 'Unknown';
+    const badgeText = item.status === 'ready' ? 'Ready'
+      : item.status === 'missing' ? 'Missing'
+      : item.status === 'action_required' ? 'Action Required'
+      : 'Unknown';
 
     row.innerHTML = `
       <div>
@@ -295,9 +306,30 @@
       btn.textContent = 'Create';
       btn.addEventListener('click', () => _createSetupItem(itemId, btn, row));
       row.appendChild(btn);
+    } else if (item.status === 'action_required') {
+      // This item has no in-app "Create" — Hive can't grant permissions on
+      // a role it doesn't own (see setupWizard.js's
+      // _checkCodeInterpreterPermission doc comment). The fix is a script
+      // the user (or their account admin) runs themselves.
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-outline-warning align-self-center';
+      btn.textContent = 'View Instructions';
+      btn.addEventListener('click', () => _showSetupItemInstructions(itemId));
+      row.appendChild(btn);
     }
 
     return row;
+  }
+
+  function _showSetupItemInstructions(itemId) {
+    // Currently only one item uses this path — codeInterpreterPermission —
+    // but switching on itemId keeps this extensible if a future
+    // action-required item needs different instructions/modal content.
+    if (itemId === 'codeInterpreterPermission') {
+      const el = document.getElementById('setupCheckInstructionsModal');
+      const modal = bootstrap.Modal.getOrCreateInstance(el);
+      modal.show();
+    }
   }
 
   async function _createSetupItem(itemId, btn, row) {

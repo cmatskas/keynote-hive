@@ -36,6 +36,13 @@ jest.mock('@aws-sdk/client-bedrock-agentcore-control', () => ({
   CreateMemoryCommand: jest.fn((input) => ({ __type: 'CreateMemoryCommand', input })),
 }));
 
+const mockAgentCoreDataSend = jest.fn();
+jest.mock('@aws-sdk/client-bedrock-agentcore', () => ({
+  BedrockAgentCoreClient: jest.fn().mockImplementation(() => ({ send: mockAgentCoreDataSend })),
+  StartCodeInterpreterSessionCommand: jest.fn((input) => ({ __type: 'StartCodeInterpreterSessionCommand', input })),
+  StopCodeInterpreterSessionCommand: jest.fn((input) => ({ __type: 'StopCodeInterpreterSessionCommand', input })),
+}));
+
 const setupWizard = require('../../src/main/models/setupWizard');
 
 function credentials(overrides = {}) {
@@ -50,6 +57,16 @@ function notFoundError(name) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Default: Code Interpreter permission check succeeds (start + stop both
+  // resolve) — existing tests above don't care about this item's status,
+  // so this keeps them from needing per-test stubs of a client they never
+  // intended to exercise. Tests that specifically care about this item
+  // override the implementation themselves.
+  mockAgentCoreDataSend.mockImplementation((cmd) => {
+    if (cmd.__type === 'StartCodeInterpreterSessionCommand') return Promise.resolve({ sessionId: 'session-abc' });
+    if (cmd.__type === 'StopCodeInterpreterSessionCommand') return Promise.resolve({});
+    return Promise.resolve({});
+  });
 });
 
 describe('checkStatus()', () => {
@@ -181,6 +198,97 @@ describe('checkStatus()', () => {
       mockFn.mock.calls.forEach(([cmd]) => {
         expect(mutatingTypes).not.toContain(cmd.__type);
       });
+    });
+  });
+
+  describe('codeInterpreterPermission item', () => {
+    test('reports ready when a Code Interpreter session can be started (and is immediately stopped)', async () => {
+      mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+      mockIamSend.mockRejectedValue(notFoundError('NoSuchEntityException'));
+      mockS3Send.mockRejectedValue(notFoundError('NotFound'));
+      mockAgentCoreDataSend.mockImplementation((cmd) => {
+        if (cmd.__type === 'StartCodeInterpreterSessionCommand') return Promise.resolve({ sessionId: 'session-xyz' });
+        if (cmd.__type === 'StopCodeInterpreterSessionCommand') return Promise.resolve({});
+      });
+
+      const status = await setupWizard.checkStatus(credentials(), { bucketName: '', memoryId: '' });
+
+      expect(status.codeInterpreterPermission.status).toBe('ready');
+      // Must actually attempt a real start — this can't be verified any
+      // other way (no IAM policy simulation call exists for this check).
+      const startCall = mockAgentCoreDataSend.mock.calls.find(([cmd]) => cmd.__type === 'StartCodeInterpreterSessionCommand');
+      expect(startCall).toBeDefined();
+      expect(startCall[0].input.codeInterpreterIdentifier).toBe('aws.codeinterpreter.v1');
+      // And must clean up the session it started rather than leaking it.
+      const stopCall = mockAgentCoreDataSend.mock.calls.find(([cmd]) => cmd.__type === 'StopCodeInterpreterSessionCommand');
+      expect(stopCall).toBeDefined();
+      expect(stopCall[0].input.sessionId).toBe('session-xyz');
+    });
+
+    test('reports action_required (not missing) when starting a session is denied', async () => {
+      mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+      mockIamSend.mockRejectedValue(notFoundError('NoSuchEntityException'));
+      mockS3Send.mockRejectedValue(notFoundError('NotFound'));
+      mockAgentCoreDataSend.mockImplementation((cmd) => {
+        if (cmd.__type === 'StartCodeInterpreterSessionCommand') {
+          const err = new Error('User is not authorized to perform: bedrock-agentcore:StartCodeInterpreterSession');
+          err.name = 'AccessDeniedException';
+          return Promise.reject(err);
+        }
+      });
+
+      const status = await setupWizard.checkStatus(credentials(), { bucketName: '', memoryId: '' });
+
+      expect(status.codeInterpreterPermission.status).toBe('action_required');
+      expect(status.codeInterpreterPermission.detail).toMatch(/StartCodeInterpreterSession/);
+      // A denied Start should never attempt a Stop — there's no session to stop.
+      expect(mockAgentCoreDataSend.mock.calls.some(([cmd]) => cmd.__type === 'StopCodeInterpreterSessionCommand')).toBe(false);
+    });
+
+    test('reports action_required when denied via a 403 status code instead of AccessDeniedException name', async () => {
+      mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+      mockIamSend.mockRejectedValue(notFoundError('NoSuchEntityException'));
+      mockS3Send.mockRejectedValue(notFoundError('NotFound'));
+      mockAgentCoreDataSend.mockImplementation((cmd) => {
+        if (cmd.__type === 'StartCodeInterpreterSessionCommand') {
+          const err = new Error('Forbidden');
+          err.$metadata = { httpStatusCode: 403 };
+          return Promise.reject(err);
+        }
+      });
+
+      const status = await setupWizard.checkStatus(credentials(), { bucketName: '', memoryId: '' });
+
+      expect(status.codeInterpreterPermission.status).toBe('action_required');
+    });
+
+    test('reports unknown for unrelated errors (not mistaken for a permission gap)', async () => {
+      mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+      mockIamSend.mockRejectedValue(notFoundError('NoSuchEntityException'));
+      mockS3Send.mockRejectedValue(notFoundError('NotFound'));
+      mockAgentCoreDataSend.mockImplementation((cmd) => {
+        if (cmd.__type === 'StartCodeInterpreterSessionCommand') {
+          return Promise.reject(new Error('ServiceUnavailable: try again later'));
+        }
+      });
+
+      const status = await setupWizard.checkStatus(credentials(), { bucketName: '', memoryId: '' });
+
+      expect(status.codeInterpreterPermission.status).toBe('unknown');
+    });
+
+    test('still reports ready even if cleanup (Stop) fails — the permission itself was proven by Start succeeding', async () => {
+      mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+      mockIamSend.mockRejectedValue(notFoundError('NoSuchEntityException'));
+      mockS3Send.mockRejectedValue(notFoundError('NotFound'));
+      mockAgentCoreDataSend.mockImplementation((cmd) => {
+        if (cmd.__type === 'StartCodeInterpreterSessionCommand') return Promise.resolve({ sessionId: 'session-leaky' });
+        if (cmd.__type === 'StopCodeInterpreterSessionCommand') return Promise.reject(new Error('stop failed'));
+      });
+
+      const status = await setupWizard.checkStatus(credentials(), { bucketName: '', memoryId: '' });
+
+      expect(status.codeInterpreterPermission.status).toBe('ready');
     });
   });
 });

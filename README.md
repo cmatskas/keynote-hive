@@ -34,7 +34,7 @@ npm run build      # production (all platforms)
 
 1. **Launch Hive.** On first run it opens straight to Settings → Credentials since nothing is configured yet.
 2. **Configure AWS credentials.** Most users authenticate with their own personal AWS account's Admin-role credentials (e.g. via Isengard/Merlon) — paste them into Settings → Credentials (auto-detected from any format) and click "Save & Test Credentials." Hive works with any valid AWS credentials; an Admin-level role simply means every permission below is already covered without needing to configure anything IAM-related by hand.
-3. **Setup Check runs automatically.** The first time credentials resolve successfully, Hive checks your account for a few things it needs (Web Search Gateway role, transcription S3 bucket, AgentCore Memory) and shows a checklist for anything missing — see [Setup Check](#setup-check) below. Create what you need, skip what you don't, right from the app.
+3. **Setup Check runs automatically.** The first time credentials resolve successfully, Hive checks your account for a few things it needs (Web Search Gateway role, transcription S3 bucket, AgentCore Memory, Code Interpreter permissions) and shows a checklist for anything missing — see [Setup Check](#setup-check) below. Create what you need, skip what you don't, right from the app.
 4. **Add your Mantle API key.** Generate a long-term [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) in the AWS console and paste it into Settings → Configuration → Mantle API Key — this is the one thing that can't be automated, since it's a secret tied to your own account.
 5. **Start using the Work tab.**
 
@@ -56,13 +56,16 @@ The list below documents what Hive actually calls, for anyone auditing or scopin
 - **SageMaker**: `InvokeEndpoint` (for SDXL image generation)
 </details>
 
+If you're on a scoped-down role rather than Admin and Setup Check reports "Action Required" for **Code Interpreter Permission**, run [`scripts/grant-hive-permissions.sh`](scripts/grant-hive-permissions.sh) against your AWS account — it grants exactly the runtime permissions listed above (not the Setup Check-only ones) by attaching a new, standalone IAM policy to your role. It never modifies anything already on your role, and can be fully undone (instructions printed at the end of the script). See the script's own header comment for full usage, or Settings → Configuration → Run Setup Check → **View Instructions** for the exact command copied to your situation.
+
 ## Setup Check
 
-The first time you launch Hive after saving AWS credentials, it checks your account for a few things it needs — a Web Search Gateway execution role, a transcription S3 bucket, and an AgentCore Memory resource — and shows a checklist for anything missing. Each item is independent: create only what you need, in any order, from directly inside the app. No AWS console required.
+The first time you launch Hive after saving AWS credentials, it checks your account for a few things it needs — a Web Search Gateway execution role, a transcription S3 bucket, an AgentCore Memory resource, and Code Interpreter permissions — and shows a checklist for anything missing. Most items are independent and created directly from the app; one (Code Interpreter Permission) is check-only, since it's a permission gap Hive can't grant on your behalf — see below.
 
 - **Web Search Gateway**: creates the IAM role (`hive-web-search-gateway`) that lets AgentCore Gateway run the Web Search Tool target. The Gateway itself is still created on first web search use, exactly as before — this just removes the manual "open the console and create a role" step.
 - **Transcription Storage Bucket**: creates the S3 bucket configured in Settings → Configuration, if it doesn't already exist.
 - **AgentCore Memory**: creates a Memory resource with semantic + summarization strategies for Work tab conversation memory.
+- **Code Interpreter Permission**: verifies your current AWS credentials can start an AgentCore Code Interpreter session (needed for Work/Swarm code execution and document attachments), by attempting a real, immediately-stopped session. Unlike the other three items, there's nothing for Hive to *create* here — a failure means your own IAM role/user is missing a permission, not that a resource doesn't exist yet. If this reports "Action Required," click **View Instructions** for a ready-to-copy command that runs [`scripts/grant-hive-permissions.sh`](scripts/grant-hive-permissions.sh) — see [AWS Permissions Required](#aws-permissions-required) above for what it grants and why Hive doesn't attempt this automatically.
 
 Re-run it anytime via Settings → Configuration → **Run Setup Check**. It's safe to run repeatedly — every item is checked before anything is created, so re-running never duplicates existing resources.
 

@@ -31,6 +31,11 @@ const {
   GetMemoryCommand,
   CreateMemoryCommand,
 } = require('@aws-sdk/client-bedrock-agentcore-control');
+const {
+  BedrockAgentCoreClient,
+  StartCodeInterpreterSessionCommand,
+  StopCodeInterpreterSessionCommand,
+} = require('@aws-sdk/client-bedrock-agentcore');
 const log = require('electron-log/main');
 
 const WEB_SEARCH_GATEWAY_NAME = 'hive-web-search';
@@ -74,6 +79,7 @@ function buildClients(credentials, region) {
     iam: new IAMClient(clientConfig),
     s3: new S3Client(clientConfig),
     agentCoreControl: new BedrockAgentCoreControlClient(clientConfig),
+    agentCoreData: new BedrockAgentCoreClient(clientConfig),
   };
 }
 
@@ -88,15 +94,16 @@ function buildClients(credentials, region) {
  */
 async function checkStatus(credentials, settings) {
   const region = credentials.region || settings.region || 'us-east-1';
-  const { iam, s3, agentCoreControl } = buildClients(credentials, region);
+  const { iam, s3, agentCoreControl, agentCoreData } = buildClients(credentials, region);
 
-  const [webSearchGateway, transcriptionBucket, memory] = await Promise.all([
+  const [webSearchGateway, transcriptionBucket, memory, codeInterpreterPermission] = await Promise.all([
     _checkWebSearchGateway(agentCoreControl, iam),
     _checkTranscriptionBucket(s3, settings.bucketName),
     _checkMemory(agentCoreControl, settings.memoryId),
+    _checkCodeInterpreterPermission(agentCoreData),
   ]);
 
-  return { webSearchGateway, transcriptionBucket, memory };
+  return { webSearchGateway, transcriptionBucket, memory, codeInterpreterPermission };
 }
 
 async function _checkWebSearchGateway(agentCoreControl, iam) {
@@ -155,6 +162,62 @@ async function _checkMemory(agentCoreControl, memoryId) {
       return { status: 'missing', detail: `Memory '${memoryId}' not found` };
     }
     return { status: 'unknown', detail: `Could not check: ${err.message}` };
+  }
+}
+
+/**
+ * Checks whether the current credentials can use AgentCore Code
+ * Interpreter — required for Work/Swarm document attachments and general
+ * code execution. Unlike the other three checks, this can NEVER be
+ * 'missing' in the sense of "Hive can create it for you" — there is no
+ * resource to create; the gap (if any) is a permission the user's own IAM
+ * role/user lacks. Hive deliberately does not attempt to modify a role it
+ * doesn't own to grant itself more access (see grant-hive-permissions.sh
+ * and README's "AWS Permissions Required" section) — so a failure here
+ * reports status 'action_required' rather than 'missing', to signal to the
+ * UI that the fix is "run a script / ask your admin", not an in-app
+ * "Create" button.
+ *
+ * Actually starts and immediately stops a real (free) Code Interpreter
+ * session rather than using IAM policy simulation — this is the same
+ * "attempt the real call and read the error" pattern already used
+ * elsewhere in this app (e.g. webSearchManager's Gateway readiness check)
+ * and is the only way to be certain the permission actually works end to
+ * end (a policy simulation can't account for SCPs, permission boundaries,
+ * or resource-based policies).
+ */
+async function _checkCodeInterpreterPermission(agentCoreData) {
+  let sessionId = null;
+  try {
+    const response = await agentCoreData.send(new StartCodeInterpreterSessionCommand({
+      codeInterpreterIdentifier: 'aws.codeinterpreter.v1',
+      name: `hive-setup-check-${Date.now()}`,
+      sessionTimeoutSeconds: 60,
+    }));
+    sessionId = response.sessionId;
+    return { status: 'ready', detail: 'Can start AgentCore Code Interpreter sessions' };
+  } catch (err) {
+    if (err.name === 'AccessDeniedException' || err.$metadata?.httpStatusCode === 403) {
+      return {
+        status: 'action_required',
+        detail: 'Missing bedrock-agentcore:StartCodeInterpreterSession — needed for Work/Swarm document attachments and code execution',
+      };
+    }
+    return { status: 'unknown', detail: `Could not check: ${err.message}` };
+  } finally {
+    // Always attempt cleanup if a session actually started, even though
+    // the caller never uses it — leaving it running would just idle out
+    // and auto-terminate, but there's no reason to wait for that.
+    if (sessionId) {
+      try {
+        await agentCoreData.send(new StopCodeInterpreterSessionCommand({
+          codeInterpreterIdentifier: 'aws.codeinterpreter.v1',
+          sessionId,
+        }));
+      } catch (stopErr) {
+        log.warn(`[setupWizard] Failed to stop Setup Check's own Code Interpreter probe session: ${stopErr.message}`);
+      }
+    }
   }
 }
 

@@ -120,6 +120,18 @@
     });
     document.addEventListener('click', () => attachMenu.classList.remove('open'));
 
+    // Delegated listener for the "View instructions to fix this" link
+    // dynamically injected by describeAgentError() into a chat-error
+    // bubble — the link doesn't exist at init time, so a direct listener
+    // can't be attached to it up front.
+    document.addEventListener('click', (e) => {
+      if (e.target && e.target.id === 'workAgentErrorViewInstructions') {
+        e.preventDefault();
+        const el = document.getElementById('setupCheckInstructionsModal');
+        if (el) bootstrap.Modal.getOrCreateInstance(el).show();
+      }
+    });
+
     document.getElementById('workAttachFiles').addEventListener('click', () => {
       attachMenu.classList.remove('open');
     });
@@ -566,7 +578,8 @@
         session.messages.push({ role: 'assistant', content: session.streamingText, timestamp: new Date().toISOString() });
       }
 
-      CR.appendChatError(container, error.message);
+      const friendlyMessage = describeAgentError(error);
+      CR.appendChatError(container, friendlyMessage);
       showToast(`Agent error: ${error.message}`, 'error');
       saveSession(sid, session.messages);
     } finally {
@@ -574,6 +587,32 @@
       setSendBtnState(false);
       refreshSidebar();
     }
+  }
+
+  /**
+   * Rewrites a raw AWS SDK AccessDeniedException for AgentCore Code
+   * Interpreter/Browser actions into an actionable message pointing at
+   * the same fix Setup Check's "Code Interpreter Permission" item surfaces
+   * (grant-hive-permissions.sh). Most users never hit this — Setup Check's
+   * new item should catch the gap proactively before a message is even
+   * sent — but this covers anyone who skipped Setup Check, or whose
+   * permissions changed since it last ran. Falls back to the raw error
+   * message for anything else, unchanged.
+   */
+  function describeAgentError(error) {
+    const message = error?.message || String(error);
+    const isAccessDenied = /AccessDeniedException/i.test(message);
+    const isAgentCoreSandboxAction = /bedrock-agentcore:(StartCodeInterpreterSession|InvokeCodeInterpreter|StopCodeInterpreterSession|StartBrowserSession|StopBrowserSession)/i.test(message);
+
+    if (isAccessDenied && isAgentCoreSandboxAction) {
+      return (
+        '<i class="bi bi-shield-lock me-1"></i>Your AWS credentials don\'t have permission to run code or process file attachments ' +
+        '(missing an AgentCore Code Interpreter/Browser permission). ' +
+        '<a href="#" id="workAgentErrorViewInstructions" class="text-white text-decoration-underline">View instructions to fix this</a>.'
+      );
+    }
+
+    return message;
   }
 
   // ── Sidebar & History ─────────────────────────────────────
@@ -853,6 +892,6 @@
   });
 
   if (typeof window !== 'undefined') {
-    window.WorkTab = { init };
+    window.WorkTab = { init, describeAgentError };
   }
 })();
