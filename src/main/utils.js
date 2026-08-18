@@ -96,6 +96,7 @@ function truncateInlineText(text, fileName) {
  * @param {object} [options]
  * @param {object} [options.codeInterpreter] - CodeInterpreterManager instance (must have sessionId or will start one)
  * @param {boolean} [options.stopSession] - stop the code interpreter after processing (default false)
+ * @param {number} [options.sessionTimeout] - sessionTimeoutSeconds used if this function has to start the session itself (default 300). Callers passing a LONG-LIVED CodeInterpreterManager (e.g. the Work tab's per-conversation sandbox) MUST pass their own timeout here — otherwise a conversation whose first message has an attachment gets a 5-minute session, and every tool call after that window dies with "session is not active". Chat's throwaway manager (stopSession: true) is fine with the short default.
  * @param {boolean} [options.isAnthropicModel] - whether the target model is Anthropic-family (see isAnthropicModel() in strandsAgentFactory.js). Defaults false — callers that don't pass this get the OpenAI-compatible (native document block) behavior, which is safe for non-Anthropic models and was the only behavior that existed before this parameter was added.
  * @returns {Promise<Array>} Converse content blocks
  */
@@ -103,6 +104,7 @@ async function buildFileContentBlocks(files, options = {}) {
   if (!files || files.length === 0) return [];
 
   const blocks = [];
+  const sessionTimeout = options.sessionTimeout || 300;
   const ci = options.codeInterpreter || null;
   const isAnthropicModel = !!options.isAnthropicModel;
   const pptxFiles = files.filter(f => ['pptx', 'ppt'].includes(f.name.toLowerCase().split('.').pop()));
@@ -114,7 +116,7 @@ async function buildFileContentBlocks(files, options = {}) {
     : [];
 
   if (pptxFiles.length > 0 && ci) {
-    if (!ci.sessionId) await ci.startSession(300);
+    if (!ci.sessionId) await ci.startSession(sessionTimeout);
     await ci.writeFiles(pptxFiles.map(f => ({
       path: f.name,
       blob: Buffer.from(Array.isArray(f.content) ? f.content : f.content),
@@ -144,7 +146,7 @@ print("\\n\\n".join(slides))`
         'this error, something else prevented that setup — check AWS credentials/permissions.)'
       );
     }
-    if (!ci.sessionId) await ci.startSession(300);
+    if (!ci.sessionId) await ci.startSession(sessionTimeout);
     await ci.writeFiles(officeFilesForAnthropic.map(f => ({
       path: f.name,
       blob: Buffer.from(Array.isArray(f.content) ? f.content : f.content),
@@ -190,7 +192,7 @@ print("\\n\\n".join(sheets))`;
             'This attachment path requires a Code Interpreter session.'
           );
         }
-        if (!ci.sessionId) await ci.startSession(300);
+        if (!ci.sessionId) await ci.startSession(sessionTimeout);
         // writeFiles() places files in the sandbox's working directory using
         // the bare relative filename (matching AWS's own writeFiles example —
         // https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-file-operations.html —

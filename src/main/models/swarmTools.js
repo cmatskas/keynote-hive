@@ -26,14 +26,14 @@ function createSwarmTools({ codeInterpreterManager, webSearchManager, settings, 
   }
 
   /** Upload a local buffer to the sandbox via base64+executeCode (proven pattern from Work tab) */
-  async function uploadToSandbox(sandboxPath, buffer) {
-    if (!codeInterpreterManager.sessionId) await codeInterpreterManager.startSession(7200);
+  async function uploadToSandbox(sandboxPath, buffer, { signal } = {}) {
+    if (!codeInterpreterManager.sessionId) await codeInterpreterManager.startSession(7200, { signal });
     const b64 = buffer.toString('base64');
     // Split into chunks to avoid command-line length limits for large files
     const chunkSize = 500000;
     if (b64.length <= chunkSize) {
       const code = `import base64\ndata = base64.b64decode("${b64}")\nwith open("${sandboxPath}", "wb") as f:\n    f.write(data)\nprint(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
-      return codeInterpreterManager.executeCode(code);
+      return codeInterpreterManager.executeCode(code, { signal });
     }
     // Large file: write chunks
     const chunks = [];
@@ -44,7 +44,17 @@ data = base64.b64decode("".join(chunks))
 with open("${sandboxPath}", "wb") as f:
     f.write(data)
 print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
-    return codeInterpreterManager.executeCode(code);
+    return codeInterpreterManager.executeCode(code, { signal });
+  }
+
+  /**
+   * Extract the invocation's cancel signal from the Strands SDK ToolContext
+   * (second callback argument). Lets long-running tool work (sandbox code
+   * execution, web fetches, image generation) be interrupted when the user
+   * hits Stop, instead of only being noticed after the tool returns.
+   */
+  function cancelSignalOf(context) {
+    return context?.agent?.cancelSignal;
   }
 
   const registry = {
@@ -52,15 +62,26 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
       name: 'execute_code',
       description: 'Execute Python code in a secure sandbox. Use for computations, file generation, data processing.',
       inputSchema: z.object({ code: z.string().describe('Python code to execute') }),
-      callback: async (input) => {
+      callback: async (input, context) => {
+        const signal = cancelSignalOf(context);
         try {
           if (!codeInterpreterManager.sessionId) {
             onStatus?.({ tool: 'execute_code', detail: 'Starting sandbox...', state: 'running' });
-            await codeInterpreterManager.startSession(7200);
+            await codeInterpreterManager.startSession(7200, { signal });
           }
-          const result = await codeInterpreterManager.executeCode(input.code);
-          if (!result.success) return JSON.stringify({ error: result.errors.join('\n'), output: result.text });
-          return result.text || 'Code executed successfully (no output).';
+          const result = await codeInterpreterManager.executeCode(input.code, { signal });
+          // If the sandbox session expired mid-conversation and was
+          // transparently recreated, the new sandbox is EMPTY — tell the
+          // model explicitly so it re-uploads/regenerates files instead of
+          // silently referencing files that no longer exist.
+          const note = result.sessionRecreated
+            ? 'NOTE: the sandbox session had expired and was automatically recreated — all previously uploaded or generated files are gone from the sandbox. Re-upload local files with read_local_file or regenerate them before referencing them.'
+            : null;
+          if (!result.success) {
+            return JSON.stringify({ error: result.errors.join('\n'), output: result.text, ...(note ? { session_note: note } : {}) });
+          }
+          const text = result.text || 'Code executed successfully (no output).';
+          return note ? `[${note}]\n${text}` : text;
         } catch (err) {
           onStatus?.({ tool: 'execute_code', detail: `Code execution error: ${err.message}`, state: 'running' });
           return JSON.stringify({ error: err.message });
@@ -75,11 +96,11 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
         sandbox_path: z.string().describe('Path in sandbox (e.g. /tmp/output.docx)'),
         local_path: z.string().describe('Absolute path on user filesystem'),
       }),
-      callback: async (input) => {
+      callback: async (input, context) => {
         try {
           if (!codeInterpreterManager.sessionId) throw new Error('No sandbox session — run execute_code first');
           const localPath = resolveLocalPath(input.local_path);
-          const base64 = await codeInterpreterManager.readFileBase64(input.sandbox_path);
+          const base64 = await codeInterpreterManager.readFileBase64(input.sandbox_path, { signal: cancelSignalOf(context) });
           const buffer = Buffer.from(base64, 'base64');
           await fsPromises.mkdir(path.dirname(localPath), { recursive: true });
           await fsPromises.writeFile(localPath, buffer);
@@ -98,11 +119,11 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
         local_path: z.string().describe('Absolute path to local file'),
         sandbox_path: z.string().describe('Path in sandbox to write (e.g. /tmp/input.docx)'),
       }),
-      callback: async (input) => {
+      callback: async (input, context) => {
         try {
           const localPath = resolveLocalPath(input.local_path);
           const buffer = await fsPromises.readFile(localPath);
-          await uploadToSandbox(input.sandbox_path, buffer);
+          await uploadToSandbox(input.sandbox_path, buffer, { signal: cancelSignalOf(context) });
           return JSON.stringify({ success: true, local: localPath, sandbox: input.sandbox_path, size: buffer.length });
         } catch (err) {
           onStatus?.({ tool: 'read_local_file', detail: `Read error: ${err.message}`, state: 'running' });
@@ -118,13 +139,16 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
         url: z.string().optional().describe('URL to navigate to'),
         query: z.string().optional().describe('Search query'),
       }),
-      callback: async (input) => {
+      callback: async (input, context) => {
+        const signal = cancelSignalOf(context);
         try {
           if (input.url) {
             onStatus?.({ tool: 'web', detail: `Reading ${input.url}...`, state: 'running' });
             const res = await fetch(input.url, {
               headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HiveAgent/1.0)' },
-              signal: AbortSignal.timeout(15000),
+              // 15s timeout composed with the invocation's cancel signal, so
+              // a user Stop interrupts an in-flight fetch immediately.
+              signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
             });
             if (!res.ok) throw new Error(`Failed to read URL (${res.status})`);
             const html = await res.text();
@@ -166,7 +190,8 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
         width: z.number().optional().describe('Width in pixels (default 1024)'),
         height: z.number().optional().describe('Height in pixels (default 1024)'),
       }),
-      callback: async (input) => {
+      callback: async (input, context) => {
+        const signal = cancelSignalOf(context);
         try {
           const w = input.width || 1024;
           const h = input.height || 1024;
@@ -191,7 +216,7 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
                 EndpointName: smEndpoint, ContentType: 'application/json', Accept: 'application/json', Body: Buffer.from(payload),
               };
               if (settings.sagemakerImageComponent) params.InferenceComponentName = settings.sagemakerImageComponent;
-              const response = await smClient.send(new InvokeEndpointCommand(params));
+              const response = await smClient.send(new InvokeEndpointCommand(params), { abortSignal: signal });
               base64Image = JSON.parse(Buffer.from(response.Body).toString()).generated_image;
               modelUsed = 'sdxl-1.0-sagemaker';
             } catch (err) {
@@ -212,16 +237,16 @@ print(f"Wrote {len(data)} bytes to ${sandboxPath}")`;
             });
             const response = await client.send(new InvokeModelCommand({
               modelId: 'amazon.nova-canvas-v1:0', body, accept: 'application/json', contentType: 'application/json',
-            }));
+            }), { abortSignal: signal });
             base64Image = JSON.parse(new TextDecoder().decode(response.body)).images[0];
             modelUsed = 'amazon.nova-canvas-v1:0';
           }
 
           // Write to sandbox for document embedding
-          if (!codeInterpreterManager.sessionId) await codeInterpreterManager.startSession(7200);
+          if (!codeInterpreterManager.sessionId) await codeInterpreterManager.startSession(7200, { signal });
           const sandboxPath = `/tmp/generated_${Date.now()}.png`;
           const code = `import base64\ndata = base64.b64decode("""${base64Image}""")\nwith open("${sandboxPath}", "wb") as f:\n    f.write(data)\nprint(f"Image saved: ${sandboxPath} ({len(data)} bytes)")`;
-          await codeInterpreterManager.executeCode(code);
+          await codeInterpreterManager.executeCode(code, { signal });
 
           return JSON.stringify({ success: true, model: modelUsed, sandbox_path: sandboxPath, width: w, height: h });
         } catch (err) {

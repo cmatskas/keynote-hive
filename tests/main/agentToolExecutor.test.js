@@ -63,7 +63,7 @@ jest.mock('../../src/main/utils', () => ({
 const AgentToolExecutor = require('../../src/main/models/agentToolExecutor');
 const { BeforeToolCallEvent: FakeBeforeToolCallEvent, AfterToolCallEvent: FakeAfterToolCallEvent } = require('@strands-agents/sdk');
 
-function buildExecutor({ onStatus = jest.fn(), onChunk = jest.fn(), memory = null } = {}) {
+function buildExecutor({ onStatus = jest.fn(), onChunk = jest.fn(), memory = null, signal = null } = {}) {
   const skillsManager = {
     getCatalog: jest.fn(() => []),
     getAutoActivateSkills: jest.fn(async () => []),
@@ -78,7 +78,7 @@ function buildExecutor({ onStatus = jest.fn(), onChunk = jest.fn(), memory = nul
     webSearchManager: {},
     sessionId: 'sess-1',
     settings: {},
-    signal: null,
+    signal,
     onStatus,
     onChunk,
   });
@@ -410,6 +410,104 @@ describe('agentToolExecutor', () => {
 
       expect(onStatus).toHaveBeenCalledWith({ tool: 'memory', detail: 'Loading context...', state: 'running' });
       expect(onStatus).toHaveBeenCalledWith({ tool: 'memory', detail: 'Context loaded', state: 'done' });
+    });
+  });
+
+  describe('cancellation (cancelSignal)', () => {
+    test('passes the abort signal to agent.stream() as cancelSignal', async () => {
+      const mockAgent = createMockAgent();
+      mockAgent.stream.mockReturnValue(streamOf([{ type: 'modelMessageEvent', stopReason: 'endTurn' }]));
+      mockCreateAgent.mockReturnValue({ agent: mockAgent, dispose: jest.fn() });
+
+      const controller = new AbortController();
+      const executor = buildExecutor({ signal: controller.signal });
+      await executor.run('test-model', 'prompt', [], []);
+
+      expect(mockAgent.stream).toHaveBeenCalledWith(expect.anything(), { cancelSignal: controller.signal });
+    });
+
+    test('passes cancelSignal: undefined when no signal is configured', async () => {
+      const mockAgent = createMockAgent();
+      mockAgent.stream.mockReturnValue(streamOf([{ type: 'modelMessageEvent', stopReason: 'endTurn' }]));
+      mockCreateAgent.mockReturnValue({ agent: mockAgent, dispose: jest.fn() });
+
+      const executor = buildExecutor();
+      await executor.run('test-model', 'prompt', [], []);
+
+      expect(mockAgent.stream).toHaveBeenCalledWith(expect.anything(), { cancelSignal: undefined });
+    });
+
+    test('returns partial text gracefully when the signal aborts mid-stream', async () => {
+      const controller = new AbortController();
+      const mockAgent = createMockAgent();
+      // First turn completes and flushes text, then the user hits Stop; the
+      // executor must break out on the next event and return what it has.
+      mockAgent.stream.mockReturnValue((async function* () {
+        yield { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text: 'Partial answer.' } } };
+        yield { type: 'modelMessageEvent', stopReason: 'endTurn' };
+        controller.abort();
+        yield { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text: 'never seen' } } };
+      })());
+      mockCreateAgent.mockReturnValue({ agent: mockAgent, dispose: jest.fn() });
+
+      const onChunk = jest.fn();
+      const executor = buildExecutor({ onChunk, signal: controller.signal });
+      const result = await executor.run('test-model', 'prompt', [], []);
+
+      expect(result).toBe('Partial answer.');
+      expect(onChunk).not.toHaveBeenCalledWith('never seen');
+    });
+
+    test('treats a stream that ends on its own after cancellation as a graceful stop', async () => {
+      // With cancelSignal the SDK ends the stream itself (stopReason
+      // 'cancelled') — no further events, no throw. The executor must not
+      // hang or error, and must return the accumulated text.
+      const controller = new AbortController();
+      const mockAgent = createMockAgent();
+      mockAgent.stream.mockReturnValue((async function* () {
+        yield { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text: 'Some text.' } } };
+        yield { type: 'modelMessageEvent', stopReason: 'endTurn' };
+        controller.abort();
+        // Stream ends here, simulating the SDK noticing the signal.
+      })());
+      mockCreateAgent.mockReturnValue({ agent: mockAgent, dispose: jest.fn() });
+
+      const executor = buildExecutor({ signal: controller.signal });
+      const result = await executor.run('test-model', 'prompt', [], []);
+
+      expect(result).toBe('Some text.');
+    });
+
+    test('swallows an abort-shaped thrown error when the signal is aborted', async () => {
+      const controller = new AbortController();
+      const mockAgent = createMockAgent();
+      mockAgent.stream.mockReturnValue((async function* () {
+        yield { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text: 'Before abort.' } } };
+        yield { type: 'modelMessageEvent', stopReason: 'endTurn' };
+        controller.abort();
+        const err = new Error('Request aborted');
+        err.name = 'AbortError';
+        throw err;
+      })());
+      mockCreateAgent.mockReturnValue({ agent: mockAgent, dispose: jest.fn() });
+
+      const executor = buildExecutor({ signal: controller.signal });
+      const result = await executor.run('test-model', 'prompt', [], []);
+
+      expect(result).toBe('Before abort.');
+    });
+
+    test('still rethrows stream errors when the signal is NOT aborted', async () => {
+      const controller = new AbortController();
+      const mockAgent = createMockAgent();
+      mockAgent.stream.mockReturnValue((async function* () {
+        yield { type: 'modelMessageEvent', stopReason: 'endTurn' };
+        throw new Error('real model failure');
+      })());
+      mockCreateAgent.mockReturnValue({ agent: mockAgent, dispose: jest.fn() });
+
+      const executor = buildExecutor({ signal: controller.signal });
+      await expect(executor.run('test-model', 'prompt', [], [])).rejects.toThrow('real model failure');
     });
   });
 });

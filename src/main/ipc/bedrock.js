@@ -33,6 +33,9 @@ async function invokeChatModel(ctx, model, prompt, conversationHistory, files = 
   const messageContent = [{ text: prompt }];
 
   if (files && files.length > 0) {
+    // File extraction spins up a Code Interpreter session and can take a
+    // while — don't start it if the user already hit Stop.
+    if (signal?.aborted) return '';
     logger.info(`Processing ${files.length} files for Chat analysis`);
     const ci = new CodeInterpreterManager(ctx.awsClients.agentCoreConfig);
     const fileBlocks = await buildFileContentBlocks(files, {
@@ -63,7 +66,11 @@ async function invokeChatModel(ctx, model, prompt, conversationHistory, files = 
 
   let fullText = '';
   try {
-    for await (const streamEvent of agent.stream(userInput)) {
+    // cancelSignal gives the SDK real cancellation: it aborts the in-flight
+    // model HTTP request rather than waiting for the next stream event to
+    // arrive (which, for reasoning models, can be a long gap). The in-loop
+    // aborted check is kept as a cheap fallback.
+    for await (const streamEvent of agent.stream(userInput, { cancelSignal: signal ?? undefined })) {
       if (signal?.aborted) break;
       if (streamEvent.type === 'modelStreamUpdateEvent') {
         const inner = streamEvent.event;
@@ -73,6 +80,12 @@ async function invokeChatModel(ctx, model, prompt, conversationHistory, files = 
         }
       }
     }
+  } catch (err) {
+    // A user-requested stop can surface as a thrown AbortError on some
+    // paths — treat it as a graceful stop (partial text, stream-complete
+    // still fires below) rather than an error bubble in the UI.
+    if (!signal?.aborted) throw err;
+    logger.info(`Chat invocation cancelled by user (${err.name || err.message})`);
   } finally {
     dispose();
   }

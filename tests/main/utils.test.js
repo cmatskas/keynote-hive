@@ -92,6 +92,37 @@ describe('utils — oversized document handling (sandbox pointer, no pre-extract
       expect(ci.startSession).toHaveBeenCalled();
     });
 
+    test('a self-started session uses the short default timeout (300s) when none is specified', async () => {
+      const ci = makeFakeCodeInterpreter();
+      ci.sessionId = null;
+      const largeBuffer = Buffer.alloc(INLINE_DOCUMENT_LIMIT_BYTES + 1024);
+      await buildFileContentBlocks([{ name: 'large.xlsx', content: largeBuffer }], { codeInterpreter: ci });
+      expect(ci.startSession).toHaveBeenCalledWith(300);
+    });
+
+    test('a self-started session uses options.sessionTimeout when provided (Work tab passes 7200 for its persistent sandbox)', async () => {
+      // Regression test: the Work tab hands its PERSISTENT per-conversation
+      // sandbox to buildFileContentBlocks. When file prep was what started
+      // that session, the hardcoded 300s timeout meant the sandbox died 5
+      // minutes into the conversation and every later execute_code failed
+      // with "ValidationException: ... session is not active".
+      const ci = makeFakeCodeInterpreter();
+      ci.sessionId = null;
+      const largeBuffer = Buffer.alloc(INLINE_DOCUMENT_LIMIT_BYTES + 1024);
+      await buildFileContentBlocks([{ name: 'large.xlsx', content: largeBuffer }], { codeInterpreter: ci, sessionTimeout: 7200 });
+      expect(ci.startSession).toHaveBeenCalledWith(7200);
+    });
+
+    test('sessionTimeout is also honored on the Anthropic docx-extraction path', async () => {
+      const ci = makeFakeCodeInterpreter();
+      ci.sessionId = null;
+      await buildFileContentBlocks(
+        [{ name: 'small.docx', content: Buffer.alloc(100) }],
+        { codeInterpreter: ci, isAnthropicModel: true, sessionTimeout: 7200 },
+      );
+      expect(ci.startSession).toHaveBeenCalledWith(7200);
+    });
+
     test('throws a clear error for a large document when no sandbox is available', async () => {
       const largeBuffer = Buffer.alloc(INLINE_DOCUMENT_LIMIT_BYTES + 1);
       await expect(

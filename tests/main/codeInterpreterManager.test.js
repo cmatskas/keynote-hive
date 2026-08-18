@@ -236,3 +236,324 @@ describe('withRetry', () => {
     jest.useRealTimers();
   });
 });
+
+describe('cancellation (abort signal threading)', () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+  });
+
+  test('executeCode passes the signal to client.send() as abortSignal', async () => {
+    mockSend.mockResolvedValue({ stream: emptyStream() });
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-1';
+
+    const controller = new AbortController();
+    await manager.executeCode('print(1)', { signal: controller.signal });
+
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({ __type: 'Invoke' }),
+      { abortSignal: controller.signal },
+    );
+  });
+
+  test('writeFiles passes the signal to client.send() as abortSignal', async () => {
+    mockSend.mockResolvedValue({ stream: emptyStream() });
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-1';
+
+    const controller = new AbortController();
+    await manager.writeFiles([{ path: '/tmp/a.txt', text: 'hi' }], { signal: controller.signal });
+
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({ __type: 'Invoke' }),
+      { abortSignal: controller.signal },
+    );
+  });
+
+  test('startSession passes the signal through to the start command and bootstrap executeCode', async () => {
+    mockSend.mockImplementation((command) => {
+      if (command.__type === 'Start') return Promise.resolve({ sessionId: 'sess-abc' });
+      return Promise.resolve({ stream: emptyStream() });
+    });
+    const manager = new CodeInterpreterManager({});
+
+    const controller = new AbortController();
+    await manager.startSession(900, { signal: controller.signal });
+
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({ __type: 'Start' }),
+      { abortSignal: controller.signal },
+    );
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({ __type: 'Invoke' }),
+      { abortSignal: controller.signal },
+    );
+  });
+
+  test('executeCode without a signal still calls send with abortSignal: undefined (backward compatible)', async () => {
+    mockSend.mockResolvedValue({ stream: emptyStream() });
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-1';
+
+    await manager.executeCode('print(1)');
+
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({ __type: 'Invoke' }),
+      { abortSignal: undefined },
+    );
+  });
+
+  test('withRetry never retries after the signal has aborted, even for a retryable error', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const err = new Error('boom');
+    err.name = 'ThrottlingException'; // normally retryable
+    const fn = jest.fn(async () => { throw err; });
+
+    await expect(withRetry(fn, { signal: controller.signal })).rejects.toThrow('boom');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  test('withRetry still retries retryable errors when the signal is not aborted', async () => {
+    const controller = new AbortController();
+    const err = new Error('boom');
+    err.name = 'ThrottlingException';
+    const fn = jest.fn()
+      .mockRejectedValueOnce(err)
+      .mockResolvedValueOnce('ok');
+
+    const result = await withRetry(fn, { signal: controller.signal, baseDelayMs: 1 });
+    expect(result).toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('session-expiry recovery ("ValidationException: ... is not active")', () => {
+  const { isSessionExpiredError } = CodeInterpreterManager;
+
+  function sessionExpiredError(sid = 'sess-old') {
+    const err = new Error(`Code interpreter session ${sid} is not active`);
+    err.name = 'ValidationException';
+    return err;
+  }
+
+  /** A stream yielding the given content items, matching _collectStreamResults' shape. */
+  function streamWith(items) {
+    return {
+      async *[Symbol.asyncIterator]() {
+        yield { result: { content: items } };
+      },
+    };
+  }
+
+  beforeEach(() => {
+    mockSend.mockReset();
+  });
+
+  describe('isSessionExpiredError', () => {
+    test('matches the exact production error shape', () => {
+      expect(isSessionExpiredError(sessionExpiredError('01M0AEVN6ENN7RJ2EPQ65VKE9Z'))).toBe(true);
+    });
+
+    test('does not match a ValidationException with an unrelated message', () => {
+      const err = new Error('Invalid arguments: language must be python');
+      err.name = 'ValidationException';
+      expect(isSessionExpiredError(err)).toBe(false);
+    });
+
+    test('does not match other error types with a similar message, or null', () => {
+      const err = new Error('session x is not active');
+      err.name = 'ResourceNotFoundException';
+      expect(isSessionExpiredError(err)).toBe(false);
+      expect(isSessionExpiredError(null)).toBe(false);
+    });
+  });
+
+  test('executeCode transparently recreates the session and retries once on an expired session', async () => {
+    let invokeCount = 0;
+    mockSend.mockImplementation((command) => {
+      if (command.__type === 'Start') return Promise.resolve({ sessionId: 'sess-new' });
+      invokeCount += 1;
+      // 1st Invoke = the failing call against the dead session.
+      if (invokeCount === 1) return Promise.reject(sessionExpiredError('sess-old'));
+      // Later Invokes = the pip-install bootstrap in _doStartSession + the retried call.
+      return Promise.resolve({ stream: streamWith([{ type: 'text', text: 'ok' }]) });
+    });
+
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-old';
+
+    const result = await manager.executeCode('print(1)');
+
+    expect(result.success).toBe(true);
+    expect(result.text).toBe('ok');
+    expect(result.sessionRecreated).toBe(true);
+    expect(manager.sessionId).toBe('sess-new');
+    expect(mockSend.mock.calls.filter(([c]) => c.__type === 'Start')).toHaveLength(1);
+  });
+
+  test('the retried command is sent with the NEW session ID, not the stale one', async () => {
+    const invokeSessionIds = [];
+    mockSend.mockImplementation((command) => {
+      if (command.__type === 'Start') return Promise.resolve({ sessionId: 'sess-new' });
+      invokeSessionIds.push(command.input.sessionId);
+      if (invokeSessionIds.length === 1) return Promise.reject(sessionExpiredError());
+      return Promise.resolve({ stream: emptyStream() });
+    });
+
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-old';
+    await manager.executeCode('print(1)');
+
+    expect(invokeSessionIds[0]).toBe('sess-old');
+    // Every Invoke after recovery (bootstrap + retry) targets the new session.
+    expect(invokeSessionIds.slice(1).every(sid => sid === 'sess-new')).toBe(true);
+  });
+
+  test('writeFiles also recovers from an expired session', async () => {
+    let failed = false;
+    mockSend.mockImplementation((command) => {
+      if (command.__type === 'Start') return Promise.resolve({ sessionId: 'sess-new' });
+      if (command.input?.arguments?.content && !failed) {
+        failed = true;
+        return Promise.reject(sessionExpiredError());
+      }
+      return Promise.resolve({ stream: emptyStream() });
+    });
+
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-old';
+
+    const result = await manager.writeFiles([{ path: 'a.txt', text: 'hi' }]);
+
+    expect(result.sessionRecreated).toBe(true);
+    expect(manager.sessionId).toBe('sess-new');
+  });
+
+  test('recovery is attempted exactly once — a second expiry failure propagates', async () => {
+    mockSend.mockImplementation((command) => {
+      if (command.__type === 'Start') return Promise.resolve({ sessionId: 'sess-new' });
+      // Let the bootstrap pip-install succeed so session recreation completes,
+      // but fail the actual target code both before AND after recovery.
+      if (command.input?.arguments?.code?.includes('pip')) {
+        return Promise.resolve({ stream: emptyStream() });
+      }
+      return Promise.reject(sessionExpiredError());
+    });
+
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-old';
+
+    await expect(manager.executeCode('print(1)')).rejects.toThrow(/is not active/);
+    expect(mockSend.mock.calls.filter(([c]) => c.__type === 'Start')).toHaveLength(1);
+  });
+
+  test('an unrelated ValidationException does NOT trigger recovery', async () => {
+    const err = new Error('Invalid arguments: language must be python');
+    err.name = 'ValidationException';
+    mockSend.mockRejectedValue(err);
+
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-1';
+
+    await expect(manager.executeCode('print(1)')).rejects.toThrow('Invalid arguments');
+    expect(mockSend.mock.calls.filter(([c]) => c.__type === 'Start')).toHaveLength(0);
+  });
+
+  test('recovery is skipped when the user has already aborted', async () => {
+    mockSend.mockRejectedValue(sessionExpiredError());
+
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-old';
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(manager.executeCode('print(1)', { signal: controller.signal })).rejects.toThrow(/is not active/);
+    expect(mockSend.mock.calls.filter(([c]) => c.__type === 'Start')).toHaveLength(0);
+  });
+
+  test('a recreated session reuses the timeout the original session was started with', async () => {
+    const startTimeouts = [];
+    let invokeFailed = false;
+    mockSend.mockImplementation((command) => {
+      if (command.__type === 'Start') {
+        startTimeouts.push(command.input.sessionTimeoutSeconds);
+        return Promise.resolve({ sessionId: `sess-${startTimeouts.length}` });
+      }
+      if (command.input?.arguments?.code?.includes('pip')) {
+        return Promise.resolve({ stream: emptyStream() });
+      }
+      if (!invokeFailed) {
+        invokeFailed = true;
+        return Promise.reject(sessionExpiredError());
+      }
+      return Promise.resolve({ stream: emptyStream() });
+    });
+
+    const manager = new CodeInterpreterManager({});
+    await manager.startSession(7200);
+    await manager.executeCode('print(1)');
+
+    expect(startTimeouts).toEqual([7200, 7200]);
+  });
+
+  test('proactive recovery: a session provably past its own lifetime is recreated before invoking', async () => {
+    const invokedSessionIds = [];
+    mockSend.mockImplementation((command) => {
+      if (command.__type === 'Start') return Promise.resolve({ sessionId: 'sess-new' });
+      invokedSessionIds.push(command.input.sessionId);
+      return Promise.resolve({ stream: emptyStream() });
+    });
+
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-old';
+    manager._sessionTimeoutSeconds = 300;
+    manager._sessionStartedAt = Date.now() - 300 * 1000; // past lifetime
+
+    const result = await manager.executeCode('print(1)');
+
+    expect(result.sessionRecreated).toBe(true);
+    // The dead session must never be invoked at all — no doomed round trip.
+    expect(invokedSessionIds).not.toContain('sess-old');
+    expect(manager.sessionId).toBe('sess-new');
+  });
+
+  test('a fresh session is NOT proactively recreated', async () => {
+    mockSend.mockResolvedValue({ stream: emptyStream() });
+
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-1';
+    manager._sessionTimeoutSeconds = 7200;
+    manager._sessionStartedAt = Date.now() - 60 * 1000; // 1 minute old
+
+    const result = await manager.executeCode('print(1)');
+
+    expect(result.sessionRecreated).toBeUndefined();
+    expect(mockSend.mock.calls.filter(([c]) => c.__type === 'Start')).toHaveLength(0);
+  });
+
+  test('readFileBase64 throws on a failed read instead of returning empty text (would write a 0-byte file)', async () => {
+    mockSend.mockResolvedValue({
+      stream: streamWith([{ type: 'error', text: "FileNotFoundError: No such file or directory: '/tmp/out.docx'" }]),
+    });
+
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-1';
+
+    await expect(manager.readFileBase64('/tmp/out.docx')).rejects.toThrow(/FileNotFoundError/);
+  });
+
+  test('stopSession clears session lifetime bookkeeping', async () => {
+    mockSend.mockResolvedValue({});
+    const manager = new CodeInterpreterManager({});
+    manager.sessionId = 'sess-1';
+    manager._sessionTimeoutSeconds = 7200;
+    manager._sessionStartedAt = Date.now();
+
+    await manager.stopSession();
+
+    expect(manager.sessionId).toBeNull();
+    expect(manager._sessionTimeoutSeconds).toBeNull();
+    expect(manager._sessionStartedAt).toBeNull();
+  });
+});

@@ -249,6 +249,14 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
       const fileBlocks = await buildFileContentBlocks(files, {
         codeInterpreter: this.codeInterpreter,
         isAnthropicModel: isAnthropicModel(model),
+        // This is the PERSISTENT per-conversation sandbox — if file prep is
+        // what starts it, it must get the same 2h lifetime the tools use
+        // (swarmTools.js startSession(7200)), not the 5-minute default that
+        // Chat's throwaway session uses. Previously this was left at 300s,
+        // so a conversation whose first message had an attachment got a
+        // sandbox that died 5 minutes in — every later execute_code failed
+        // with "ValidationException: ... session is not active".
+        sessionTimeout: 7200,
       });
       newTurnBlocks = [...newTurnBlocks, ...fileBlocks];
     }
@@ -295,7 +303,13 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
     let aborted = false;
 
     try {
-      for await (const event of agent.stream(userInput)) {
+      // cancelSignal gives the SDK real cancellation: it aborts the in-flight
+      // model HTTP request and stops at built-in checkpoints (between loop
+      // cycles, during model streaming, and between tool calls), ending the
+      // stream gracefully with stopReason 'cancelled'. The in-loop aborted
+      // check below is kept only as a cheap fallback for the window between
+      // an event arriving and the SDK noticing the signal.
+      for await (const event of agent.stream(userInput, { cancelSignal: this.signal ?? undefined })) {
         if (this.signal?.aborted) { aborted = true; break; }
 
         if (event.type === 'modelStreamUpdateEvent') {
@@ -350,7 +364,19 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
           }
         }
       }
+    } catch (err) {
+      // With cancelSignal the stream normally ends gracefully (stopReason
+      // 'cancelled'), but some abort paths — e.g. an AWS SDK call inside a
+      // tool aborted via abortSignal — surface as a thrown AbortError
+      // instead. If the user requested the stop, treat it as a graceful
+      // stop rather than bubbling an error to the renderer.
+      if (!this.signal?.aborted) throw err;
+      log.info(`[work:${this.sessionId}] Run cancelled by user (${err.name || err.message})`);
     } finally {
+      // The stream can also end on its own when cancelled (no event after
+      // the signal fires), so derive the final aborted state from the
+      // signal itself rather than only the in-loop break.
+      if (this.signal?.aborted) aborted = true;
       dispose();
       cleanupFileTracking();
       cleanupToolStatus();
