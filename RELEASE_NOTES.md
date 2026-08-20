@@ -1,6 +1,16 @@
 # Release Notes
 
-## Unreleased
+## v3.2.4
+
+### Fixes
+- **Work tab attachments larger than 4.5MB were still rejected by the file picker, despite the v2.17.0 sandbox fix.** That fix taught the backend (`src/main/utils.js`) to write oversized documents into the agent's Code Interpreter sandbox instead of attaching them inline — but the renderer's shared file manager (`src/renderer/fileManager.js`) kept its original hardcoded 4.5MB gate from before that fix existed, rejecting large files at selection time with "exceeds 4.5MB Bedrock limit" before the backend ever saw them. The gate is now a configurable `maxSize` option: the Work tab passes 100MB (oversized documents are sandboxed server-side; the cap just keeps the IPC payload sane), while the default stays at Bedrock's 4.5MB inline limit for any caller without a sandbox path. The rejection toast now reports the actual configured limit. The Chat tab is unaffected — it has its own separate attachment handler (10MB cap in `src/renderer/index.js`), unchanged.
+
+### Tests
+- Added `tests/renderer/fileManager.test.js` (6 tests): default 4.5MB limit still rejects/accepts correctly, 100MB config accepts >4.5MB files and rejects >100MB, rejection toast reflects the configured limit, and one oversized file rejects the whole batch.
+
+## v3.2.1 – v3.2.3
+
+_The entries below shipped across v3.2.1, v3.2.2, and v3.2.3 (this section was previously titled "Unreleased" — the header was never renamed when those tags were cut)._
 
 ### New Features
 - **Live Mantle integration check** (`tests/integration/mantle-live.js`, run via `npm run test:integration`) — a plain Node script (not a Jest test, since `@strands-agents/sdk` ships as pure ESM with no CJS build) that calls the real Mantle endpoint through Hive's actual `createAgent()` routing logic, one minimal request per model family. Unlike the mocked unit test suite, it can catch upstream Mantle routing changes (like the two Anthropic 404 incidents in v3.0.1 and v3.1.2) that a mocked unit test structurally cannot detect. Locally, exits cleanly if `MANTLE_API_KEY` isn't set — never blocks a contributor without Mantle access.

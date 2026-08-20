@@ -3,11 +3,18 @@
  * Parameterized by element IDs so both Analyze and Work tabs can use their own inputs.
  */
 
-function createFileManager({ fileInputId, attachBtnId, clearBtnId, listSectionId, listId, countId, toolBtnId, maxFiles = 5 }) {
+function createFileManager({
+  fileInputId, attachBtnId, clearBtnId, listSectionId, listId, countId, toolBtnId,
+  maxFiles = 5,
+  // Default matches Bedrock's inline document limit (4.5MB per document).
+  // Tabs whose backend routes oversized files elsewhere (e.g. the Work tab
+  // writes >4.5MB documents into the Code Interpreter sandbox — see
+  // src/main/utils.js) can raise this.
+  maxSize = 4.5 * 1024 * 1024,
+}) {
   let selectedFiles = [];
 
   const validExtensions = ['.pdf', '.csv', '.doc', '.docx', '.xls', '.xlsx', '.html', '.txt', '.md', '.pptx', '.ppt'];
-  const maxSize = 4.5 * 1024 * 1024; // 4.5MB — Bedrock Converse API limit per document
 
   function setup(showToast) {
     const fileInput = document.getElementById(fileInputId);
@@ -37,7 +44,7 @@ function createFileManager({ fileInputId, attachBtnId, clearBtnId, listSectionId
           return;
         }
         if (file.size > maxSize) {
-          showToast(`File ${file.name} exceeds 4.5MB Bedrock limit`, 'error');
+          showToast(`File ${file.name} exceeds the ${formatFileSize(maxSize)} limit`, 'error');
           e.target.value = '';
           return;
         }

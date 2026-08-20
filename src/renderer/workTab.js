@@ -78,6 +78,10 @@
     countId: 'workFileCount',
     toolBtnId: 'workAttachFileBtn',
     maxFiles: 5,
+    // Work tab documents over Bedrock's 4.5MB inline limit are written into
+    // the agent's Code Interpreter sandbox by the backend (src/main/utils.js),
+    // so a much larger cap is safe here. 100MB keeps the IPC payload sane.
+    maxSize: 100 * 1024 * 1024,
   });
 
   function showToast(msg, type) {
