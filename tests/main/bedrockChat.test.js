@@ -23,6 +23,7 @@ jest.mock('@aws-sdk/lib-storage', () => ({ Upload: jest.fn() }));
 jest.mock('@aws-sdk/client-transcribe', () => ({
   StartTranscriptionJobCommand: jest.fn(),
   GetTranscriptionJobCommand: jest.fn(),
+  DeleteTranscriptionJobCommand: jest.fn(),
 }));
 jest.mock('../../src/main/models/codeInterpreterManager', () => jest.fn());
 jest.mock('../../src/main/models/transcriptMapper', () => jest.fn());

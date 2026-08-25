@@ -1,5 +1,28 @@
 # Release Notes
 
+## v3.3.0
+
+### New Features
+- **Transcription no longer blocks the UI, and can be cancelled.** Uploading a file for transcription used to open a `data-bs-backdrop="static"`, `keyboard="false"` Bootstrap modal for the entire duration of the job — up to 5 minutes — which swallowed every click in the app. You couldn't switch tabs, press Escape, or abandon the job; the only exits were completion and failure. That block was never a technical requirement: all the work (S3 upload, `StartTranscriptionJob`, the 60 × 5s status poll) happens in the main process, and progress was *already* being streamed to the renderer over a `transcription-progress` IPC channel that the modal simply sat on top of. Replaced with:
+  - **Inline progress** in the transcript pane — same streamed status text, plus a note that it's safe to switch tabs.
+  - **A spinner on the Transcribe nav item**, visible from any tab, so a running job is discoverable after you navigate away.
+  - **An OS notification on completion and on failure** (the same mechanism the Swarm tab already used for review points and pipeline events). Clicking it focuses the window *and* switches back to the Transcribe tab.
+  - **A working Cancel button.** Previously there was no `cancel-transcription` path at all and the poll loop wasn't interruptible. Cancel now aborts an in-flight S3 upload (`Upload.abort()`), wakes the poll loop immediately instead of waiting out the current 5s interval, and best-effort deletes the Transcribe job so it stops billing rather than running to completion unobserved. `transcribe:DeleteTranscriptionJob` is *not* required — without it, cancellation still works from Hive's side and the delete is logged and skipped.
+  - **A concurrency guard.** The renderer has a single transcript pane, video player, and `currentTranscript` array, so a second job would have silently clobbered the first. A second upload while one is in flight is now rejected with a warning toast, in both the renderer and the main process.
+- **Shared OS notification helper** (`src/main/notify.js`). `ipc/swarm.js` had a local `swarmNotify()` and `credentialMonitor.js` constructed `new Notification(...)` inline three times, so the `Hive — ` title prefix, the `Notification.isSupported()` guard, and click-to-focus were applied inconsistently. All five call sites now go through one `notify()` function.
+
+### Fixes
+- **Transcription failures reported the same error three times** — a modal error state, an inline alert in the transcript pane, and an error toast. Collapsed to a single inline alert with a retry button, plus the OS notification. The error message is now inserted with `textContent` rather than interpolated into `innerHTML`, so a failure string from AWS can't inject markup.
+- The transcription progress and notification-focus IPC listeners moved from inside `DOMContentLoaded` to module scope. Neither depends on the DOM (both resolve their nodes lazily when called), and registering at load means a progress event can't arrive before anything is listening.
+
+### Removed
+- The `transcriptionProcessingModal` markup in `src/pages/index.html` and its now-dead `#transcriptionStatus` node. `ModalManager` itself is unchanged and still used by the settings page.
+
+### Tests
+- Added `tests/main/transcription.test.js` (9 tests): cancelling mid-poll resolves as `CANCELLED` rather than throwing an error into the UI, cancel deletes the Transcribe job, a missing `DeleteTranscriptionJob` permission still cancels cleanly, cancel with no job in flight is a no-op, cancellation raises no OS notification, a second concurrent job is rejected, completion notifies with the file name, failure notifies with critical urgency and rethrows while still releasing the job slot, and clicking a notification asks the renderer to focus the Transcribe tab. The cancel tests complete in single-digit milliseconds, which is itself the evidence that Cancel wakes the sleep — a non-interruptible poll would have taken the full 5s interval.
+- Added `tests/main/notify.test.js` (7 tests): title prefixing, urgency pass-through, no-op when unsupported, no click handler registered when none is needed, click focusing the window then running `onClick`, destroyed windows skipped, and a throwing `Notification` constructor never propagating to the caller.
+- Added 9 renderer tests to `tests/renderer/index.test.js`: inline progress renders with a Cancel button and no `ModalManager` is constructed, the nav spinner toggles for the job's duration, streamed progress messages update the inline status, Cancel invokes `cancel-transcription`, a `CANCELLED` result resets the pane without showing transcript actions, a second concurrent upload is rejected rather than queued, failure reports once with no error toast, error text is inserted as text rather than markup, and the focus request switches tabs.
+
 ## v3.2.4
 
 ### Fixes

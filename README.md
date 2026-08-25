@@ -54,6 +54,7 @@ The list below documents what Hive actually calls, for anyone auditing or scopin
 <summary>Optional permissions</summary>
 
 - **SageMaker**: `InvokeEndpoint` (for SDXL image generation)
+- **Transcribe**: `DeleteTranscriptionJob` — lets the Transcribe tab's **Cancel** button delete a cancelled job so it stops billing. Without it, Cancel still works (Hive stops polling and the UI resets); the job just finishes server-side unobserved.
 </details>
 
 If you're on a scoped-down role rather than Admin and Setup Check reports "Action Required" for **Code Interpreter Permission**, run [`scripts/grant-hive-permissions.sh`](scripts/grant-hive-permissions.sh) against your AWS account — it grants exactly the runtime permissions listed above (not the Setup Check-only ones) by attaching a new, standalone IAM policy to your role. It never modifies anything already on your role, and can be fully undone (instructions printed at the end of the script). See the script's own header comment for full usage, or Settings → Configuration → Run Setup Check → **View Instructions** for the exact command copied to your situation.
@@ -180,6 +181,8 @@ Audio and video transcription powered by AWS Transcribe.
 - Speaker diarization with labels
 - Timestamps per segment
 - Export transcription as text
+
+Transcription runs in the background — it doesn't block the UI. Progress appears inline in the transcript pane, a spinner on the Transcribe nav item shows a job is running from whichever tab you're on, and an OS notification fires on completion or failure (clicking it brings you back to the Transcribe tab). A **Cancel** button stops an in-flight job: it aborts the upload if it's still running and deletes the Transcribe job so it stops billing. Only one transcription runs at a time — starting a second while one is in flight is rejected rather than overwriting the first.
 
 ## Agent Skills
 

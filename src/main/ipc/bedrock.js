@@ -1,10 +1,11 @@
 const { GetObjectCommand } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
-const { StartTranscriptionJobCommand, GetTranscriptionJobCommand } = require('@aws-sdk/client-transcribe');
+const { StartTranscriptionJobCommand, GetTranscriptionJobCommand, DeleteTranscriptionJobCommand } = require('@aws-sdk/client-transcribe');
 const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const TranscriptMapper = require('../models/transcriptMapper');
 const { createAgent, isAnthropicModel } = require('../models/strandsAgentFactory');
 const { buildFileContentBlocks } = require('../utils');
+const { notify } = require('../notify');
 const logger = require('electron-log/main');
 
 /**
@@ -103,14 +104,49 @@ function getMediaFormat(uri) {
   return 'mp4';
 }
 
-async function uploadFile(ctx, file, bucket, key) {
+async function uploadFile(ctx, file, bucket, key, onStart = null) {
   const upload = new Upload({
     client: ctx.awsClients.s3,
     params: { Bucket: bucket, Key: key, Body: file.buffer, ContentType: file.mimetype },
     ...(file.buffer.length >= 20 * 1024 * 1024 ? { queueSize: 4, partSize: 5 * 1024 * 1024 } : {}),
   });
+  // Hand the Upload back to the caller so an in-flight upload can be aborted
+  // (Cancel button) instead of having to run to completion first.
+  if (onStart) onStart(upload);
   await upload.done();
   return `s3://${bucket}/${key}`;
+}
+
+/**
+ * Interruptible sleep. Resolves either after `ms` or as soon as
+ * `job.wake()` is called, so hitting Cancel doesn't have to wait out the
+ * remainder of the current 5s poll interval before the loop notices.
+ */
+function cancellableSleep(job, ms) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => { job.wake = null; resolve(); }, ms);
+    job.wake = () => { clearTimeout(timer); job.wake = null; resolve(); };
+  });
+}
+
+/**
+ * Notify the renderer that a transcription job reached a terminal state, via
+ * an OS notification. Clicking it focuses the window and switches to the
+ * Transcribe tab — the whole point of no longer blocking the UI is that the
+ * user is expected to be somewhere else when this fires.
+ */
+function transcriptionNotify(ctx, title, body, urgency = 'normal') {
+  notify({
+    title,
+    body,
+    urgency,
+    window: ctx.mainWindow,
+    onClick: () => {
+      if (ctx.mainWindow && !ctx.mainWindow.isDestroyed()) {
+        ctx.mainWindow.webContents.send('transcription-focus-request');
+      }
+    },
+  });
 }
 
 function register(ipcMain, ctx) {
@@ -138,59 +174,117 @@ function register(ipcMain, ctx) {
     return settings.bedrockModels;
   });
 
+  /**
+   * Cancel an in-flight transcription. Aborts the S3 upload if it's still
+   * running, wakes the poll loop immediately, and best-effort deletes the
+   * Transcribe job so it stops billing rather than running to completion
+   * with nobody listening.
+   *
+   * `transcribe:DeleteTranscriptionJob` is not required — if the caller's
+   * role lacks it the delete is logged and skipped, and cancellation still
+   * works from Hive's point of view (the loop stops, the UI resets); the
+   * job just finishes server-side unobserved.
+   */
+  ipcMain.handle('cancel-transcription', async () => {
+    const job = ctx.transcriptionJob;
+    if (!job) return { cancelled: false };
+
+    job.cancelled = true;
+    if (job.wake) job.wake();
+    if (job.upload) {
+      try { await job.upload.abort(); } catch (err) { logger.warn(`[transcribe] upload abort failed: ${err.message}`); }
+    }
+    if (job.jobName && ctx.awsClients.transcribe) {
+      try {
+        await ctx.awsClients.transcribe.send(new DeleteTranscriptionJobCommand({ TranscriptionJobName: job.jobName }));
+        logger.info(`[transcribe] deleted cancelled job ${job.jobName}`);
+      } catch (err) {
+        logger.warn(`[transcribe] could not delete job ${job.jobName}: ${err.message}`);
+      }
+    }
+    return { cancelled: true };
+  });
+
   ipcMain.handle('transcribe-media', async (event, { file }) => {
     if (!ctx.awsClients.transcribe) throw new Error('AWS credentials not configured');
+    if (ctx.transcriptionJob) throw new Error('A transcription is already in progress');
+
+    // Single-slot job state: the renderer only has one transcript pane, so
+    // concurrent jobs are rejected above rather than tracked in a map.
+    const job = { cancelled: false, jobName: null, upload: null, wake: null };
+    ctx.transcriptionJob = job;
 
     const fileBuffer = Buffer.from(file.buffer);
     const fileObj = { buffer: fileBuffer, originalname: file.name, mimetype: file.type };
 
-    event.sender.send('transcription-progress', { status: 'UPLOADING', message: 'Uploading file to S3...' });
+    try {
+      event.sender.send('transcription-progress', { status: 'UPLOADING', message: 'Uploading file to S3...' });
 
-    const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
-    const mediaUri = await uploadFile(ctx, fileObj, settings.bucketName, `${Date.now()}-${fileObj.originalname}`);
-    const mediaFormat = getMediaFormat(mediaUri);
-    const jobName = `transcription-${Date.now()}`;
+      const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
+      const mediaUri = await uploadFile(
+        ctx, fileObj, settings.bucketName, `${Date.now()}-${fileObj.originalname}`,
+        (upload) => { job.upload = upload; }
+      );
+      job.upload = null;
+      if (job.cancelled) return { status: 'CANCELLED' };
 
-    const startCmd = new StartTranscriptionJobCommand({
-      TranscriptionJobName: jobName,
-      Media: { MediaFileUri: mediaUri },
-      MediaFormat: mediaFormat,
-      LanguageCode: settings.transcriptionLanguage,
-      OutputBucketName: settings.outputBucketName,
-      Settings: { ShowSpeakerLabels: true, MaxSpeakerLabels: 5 },
-    });
-    await ctx.awsClients.transcribe.send(startCmd);
+      const mediaFormat = getMediaFormat(mediaUri);
+      job.jobName = `transcription-${Date.now()}`;
 
-    event.sender.send('transcription-progress', { status: 'IN_PROGRESS', message: 'Transcription job started. Processing audio...' });
+      const startCmd = new StartTranscriptionJobCommand({
+        TranscriptionJobName: job.jobName,
+        Media: { MediaFileUri: mediaUri },
+        MediaFormat: mediaFormat,
+        LanguageCode: settings.transcriptionLanguage,
+        OutputBucketName: settings.outputBucketName,
+        Settings: { ShowSpeakerLabels: true, MaxSpeakerLabels: 5 },
+      });
+      await ctx.awsClients.transcribe.send(startCmd);
 
-    const maxAttempts = 60;
-    const pollInterval = 5000;
+      event.sender.send('transcription-progress', { status: 'IN_PROGRESS', message: 'Transcription job started. Processing audio...' });
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const statusCmd = new GetTranscriptionJobCommand({ TranscriptionJobName: jobName });
-      const statusRes = await ctx.awsClients.transcribe.send(statusCmd);
-      const job = statusRes.TranscriptionJob;
+      const maxAttempts = 60;
+      const pollInterval = 5000;
 
-      if (job.TranscriptionJobStatus === 'COMPLETED') {
-        event.sender.send('transcription-progress', { status: 'RETRIEVING', message: 'Retrieving transcription results...' });
-        const url = new URL(job.Transcript.TranscriptFileUri);
-        const bucket = url.pathname.split('/')[1];
-        const key = url.pathname.split('/').slice(2).join('/');
-        const getCmd = new GetObjectCommand({ Bucket: bucket, Key: key });
-        const objRes = await ctx.awsClients.s3.send(getCmd);
-        const transcript = JSON.parse(await objRes.Body.transformToString());
-        const mapper = new TranscriptMapper(transcript);
-        return { status: 'COMPLETED', transcript: mapper.getAllTimestampedText(), jobName };
-      } else if (job.TranscriptionJobStatus === 'FAILED') {
-        throw new Error(`Transcription job failed: ${job.FailureReason || 'Unknown error'}`);
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (job.cancelled) return { status: 'CANCELLED' };
+
+        const statusCmd = new GetTranscriptionJobCommand({ TranscriptionJobName: job.jobName });
+        const statusRes = await ctx.awsClients.transcribe.send(statusCmd);
+        const jobStatus = statusRes.TranscriptionJob;
+
+        if (jobStatus.TranscriptionJobStatus === 'COMPLETED') {
+          event.sender.send('transcription-progress', { status: 'RETRIEVING', message: 'Retrieving transcription results...' });
+          const url = new URL(jobStatus.Transcript.TranscriptFileUri);
+          const bucket = url.pathname.split('/')[1];
+          const key = url.pathname.split('/').slice(2).join('/');
+          const getCmd = new GetObjectCommand({ Bucket: bucket, Key: key });
+          const objRes = await ctx.awsClients.s3.send(getCmd);
+          const transcript = JSON.parse(await objRes.Body.transformToString());
+          const mapper = new TranscriptMapper(transcript);
+          if (job.cancelled) return { status: 'CANCELLED' };
+          transcriptionNotify(ctx, 'Transcription Complete', `${fileObj.originalname} is ready to read.`);
+          return { status: 'COMPLETED', transcript: mapper.getAllTimestampedText(), jobName: job.jobName };
+        } else if (jobStatus.TranscriptionJobStatus === 'FAILED') {
+          throw new Error(`Transcription job failed: ${jobStatus.FailureReason || 'Unknown error'}`);
+        }
+
+        const elapsed = Math.floor((attempt + 1) * pollInterval / 1000);
+        event.sender.send('transcription-progress', { status: 'IN_PROGRESS', message: `Processing audio... (${elapsed}s elapsed)` });
+        await cancellableSleep(job, pollInterval);
       }
 
-      const elapsed = Math.floor((attempt + 1) * pollInterval / 1000);
-      event.sender.send('transcription-progress', { status: 'IN_PROGRESS', message: `Processing audio... (${elapsed}s elapsed)` });
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      if (job.cancelled) return { status: 'CANCELLED' };
+      throw new Error('Transcription job timed out after 5 minutes');
+    } catch (err) {
+      // A cancel can surface as a thrown abort from the S3 upload — treat it
+      // as a clean cancellation rather than an error bubble in the UI.
+      if (job.cancelled) return { status: 'CANCELLED' };
+      transcriptionNotify(ctx, 'Transcription Failed', err.message ? err.message.slice(0, 140) : 'An error occurred.', 'critical');
+      throw err;
+    } finally {
+      ctx.transcriptionJob = null;
     }
-
-    throw new Error('Transcription job timed out after 5 minutes');
   });
 }
 

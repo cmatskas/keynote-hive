@@ -114,14 +114,12 @@ describe('Renderer Index.js', () => {
             <button id="clearWithoutSaving"></button>
             <div id="transcribe-page"></div>
             <div id="analyze-page"></div>
-            <div id="nav-transcribe"></div>
+            <div id="nav-transcribe"><span id="navTranscribeSpinner" class="d-none"></span></div>
             <div id="nav-analyze"></div>
             <div id="nav-app-settings"></div>
             <div id="nav-credentials"></div>
             <div id="nav-connection-status"></div>
-            <div id="transcriptionStatus"></div>
             <div id="bedrockProcessingModal"></div>
-            <div id="transcriptionProcessingModal"></div>
             <div id="clearTranscriptionModal"></div>
             <input type="radio" name="viewMode" value="full" checked />
         `;
@@ -404,6 +402,158 @@ describe('Renderer Index.js', () => {
             await window.uploadFile(mockFile);
 
             expect(mockElectronAPI.invoke).toHaveBeenCalledWith('transcribe-media', expect.any(Object));
+        });
+    });
+
+    // Transcription is deliberately non-blocking: it used to open a
+    // static-backdrop modal that swallowed every click for up to 5 minutes.
+    // Progress now renders inline, the nav item shows a spinner from any tab,
+    // and the job can be cancelled.
+    describe('Non-blocking transcription UI', () => {
+        const mockFile = () => ({
+            arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+            name: 'test.mp4',
+            type: 'video/mp4',
+            size: 1024
+        });
+
+        /** Returns an invoke mock whose promise the test controls. */
+        function deferredInvoke() {
+            let resolveInvoke;
+            const promise = new Promise(resolve => { resolveInvoke = resolve; });
+            mockElectronAPI.invoke.mockReturnValue(promise);
+            return { resolveInvoke };
+        }
+
+        beforeEach(() => {
+            require('../../src/renderer/index.js');
+        });
+
+        test('renders inline progress with a Cancel button instead of a blocking modal', async () => {
+            const { resolveInvoke } = deferredInvoke();
+            const upload = window.uploadFile(mockFile());
+            await Promise.resolve();
+
+            const pane = document.getElementById('transcriptionText');
+            expect(pane.querySelector('.transcribe-progress')).not.toBeNull();
+            expect(document.getElementById('cancelTranscriptionBtn')).not.toBeNull();
+            expect(pane.textContent).toContain('You can switch tabs');
+            // The old blocking modal is gone entirely.
+            expect(global.ModalManager).not.toHaveBeenCalled();
+
+            resolveInvoke({ status: 'CANCELLED' });
+            await upload;
+        });
+
+        test('toggles the Transcribe nav spinner for the duration of the job', async () => {
+            const spinner = document.getElementById('navTranscribeSpinner');
+            expect(spinner.classList.contains('d-none')).toBe(true);
+
+            const { resolveInvoke } = deferredInvoke();
+            const upload = window.uploadFile(mockFile());
+            await Promise.resolve();
+            expect(spinner.classList.contains('d-none')).toBe(false);
+
+            resolveInvoke({ status: 'CANCELLED' });
+            await upload;
+            expect(spinner.classList.contains('d-none')).toBe(true);
+        });
+
+        test('progress messages from the main process update the inline status', async () => {
+            const { resolveInvoke } = deferredInvoke();
+            const upload = window.uploadFile(mockFile());
+            await Promise.resolve();
+
+            // Find the transcription-progress listener registered on load and
+            // drive it the way the main process would.
+            const call = mockElectronAPI.receive.mock.calls.find(([ch]) => ch === 'transcription-progress');
+            expect(call).toBeDefined();
+            call[1]({ status: 'IN_PROGRESS', message: 'Processing audio... (10s elapsed)' });
+
+            expect(document.getElementById('inlineTranscriptionStatus').textContent)
+                .toBe('Processing audio... (10s elapsed)');
+
+            resolveInvoke({ status: 'CANCELLED' });
+            await upload;
+        });
+
+        test('Cancel button asks the main process to cancel the job', async () => {
+            const { resolveInvoke } = deferredInvoke();
+            const upload = window.uploadFile(mockFile());
+            await Promise.resolve();
+
+            mockElectronAPI.invoke.mockResolvedValueOnce({ cancelled: true });
+            document.getElementById('cancelTranscriptionBtn').click();
+            await Promise.resolve();
+
+            expect(mockElectronAPI.invoke).toHaveBeenCalledWith('cancel-transcription');
+
+            resolveInvoke({ status: 'CANCELLED' });
+            await upload;
+        });
+
+        test('a CANCELLED result resets the pane without showing transcript actions', async () => {
+            mockElectronAPI.invoke.mockResolvedValue({ status: 'CANCELLED' });
+
+            await window.uploadFile(mockFile());
+
+            expect(document.getElementById('transcriptionText').textContent).toContain('Transcription cancelled');
+            expect(document.getElementById('downloadTranscript').classList.contains('d-none')).toBe(true);
+            expect(document.getElementById('uploadZone').classList.contains('d-none')).toBe(false);
+            expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Transcription cancelled', 'info');
+        });
+
+        test('a second upload while one is in flight is rejected, not queued', async () => {
+            const { resolveInvoke } = deferredInvoke();
+            const upload = window.uploadFile(mockFile());
+            await Promise.resolve();
+
+            const invokeCallsBefore = mockElectronAPI.invoke.mock.calls.length;
+            await window.uploadFile(mockFile());
+
+            expect(mockElectronAPI.invoke.mock.calls.length).toBe(invokeCallsBefore);
+            expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+                'A transcription is already running. Cancel it first or wait for it to finish.',
+                'warning'
+            );
+
+            resolveInvoke({ status: 'CANCELLED' });
+            await upload;
+        });
+
+        test('failure reports once — inline alert with retry, no error toast', async () => {
+            mockElectronAPI.invoke.mockRejectedValue(new Error('Unsupported media format'));
+
+            await window.uploadFile(mockFile());
+
+            const pane = document.getElementById('transcriptionText');
+            expect(pane.querySelector('.alert-danger')).not.toBeNull();
+            expect(pane.textContent).toContain('Unsupported media format');
+            expect(pane.textContent).toContain('Try again');
+            // The main process already raises an OS notification for failures.
+            expect(mockElectronAPI.showToast).not.toHaveBeenCalledWith(
+                expect.stringContaining('Transcription failed'), 'error'
+            );
+        });
+
+        test('error text is inserted as text, not markup', async () => {
+            mockElectronAPI.invoke.mockRejectedValue(new Error('<img src=x onerror=alert(1)>'));
+
+            await window.uploadFile(mockFile());
+
+            const errEl = document.getElementById('transcriptionErrorText');
+            expect(errEl.querySelector('img')).toBeNull();
+            expect(errEl.textContent).toBe('<img src=x onerror=alert(1)>');
+        });
+
+        test('clicking the completion notification switches to the Transcribe tab', () => {
+            const call = mockElectronAPI.receive.mock.calls.find(([ch]) => ch === 'transcription-focus-request');
+            expect(call).toBeDefined();
+
+            call[1]();
+
+            expect(document.getElementById('transcribe-page').style.display).toBe('block');
+            expect(document.getElementById('nav-transcribe').classList.contains('active')).toBe(true);
         });
     });
 

@@ -8,9 +8,9 @@
  * 4. At expiry: navigate to credentials page
  */
 
-const { Notification } = require('electron');
 const AWSValidator = require('./awsValidator');
 const log = require('electron-log/main');
+const { notify } = require('../notify');
 
 const POLL_INTERVAL_MS  = 10 * 60 * 1000; // 10 minutes
 const WARN_15_MS        = 15 * 60 * 1000; // 15 minutes before expiry
@@ -130,13 +130,11 @@ class CredentialMonitor {
     log.info(`[CredentialMonitor] 15min warning (${minsLeft}min left)`);
 
     // System notification
-    if (Notification.isSupported()) {
-      new Notification({
-        title: 'Hive — Credentials Expiring Soon',
-        body: `Your AWS credentials expire in ~${minsLeft} minutes. Update them to avoid interruption.`,
-        urgency: 'normal',
-      }).show();
-    }
+    notify({
+      title: 'Credentials Expiring Soon',
+      body: `Your AWS credentials expire in ~${minsLeft} minutes. Update them to avoid interruption.`,
+      urgency: 'normal',
+    });
 
     // Tell renderer to show banner
     this._sendToRenderer('credential-expiry-warning', { level: 'warning', minsLeft });
@@ -148,13 +146,11 @@ class CredentialMonitor {
     const minsLeft = Math.max(1, Math.round((expiry.getTime() - Date.now()) / 60000));
     log.warn(`[CredentialMonitor] 2min warning (${minsLeft}min left)`);
 
-    if (Notification.isSupported()) {
-      new Notification({
-        title: 'Hive — Credentials Expiring in 2 Minutes',
-        body: 'Update your AWS credentials now to avoid being logged out.',
-        urgency: 'critical',
-      }).show();
-    }
+    notify({
+      title: 'Credentials Expiring in 2 Minutes',
+      body: 'Update your AWS credentials now to avoid being logged out.',
+      urgency: 'critical',
+    });
 
     this._sendToRenderer('credential-expiry-warning', { level: 'critical', minsLeft });
   }
@@ -165,13 +161,11 @@ class CredentialMonitor {
     log.warn('[CredentialMonitor] credentials expired');
     this.stop();
 
-    if (Notification.isSupported()) {
-      new Notification({
-        title: 'Hive — Session Expired',
-        body: 'Your AWS credentials have expired. Please update them to continue.',
-        urgency: 'critical',
-      }).show();
-    }
+    notify({
+      title: 'Session Expired',
+      body: 'Your AWS credentials have expired. Please update them to continue.',
+      urgency: 'critical',
+    });
 
     this._sendToRenderer('credential-expiry-warning', { level: 'expired', minsLeft: 0 });
 

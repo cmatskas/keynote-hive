@@ -112,6 +112,7 @@ if (typeof window !== 'undefined') {
     window.copyTranscript = copyTranscript;
     window.clearTranscription = clearTranscription;
     window.resetTranscriptionUI = resetTranscriptionUI;
+    window.cancelTranscription = cancelTranscription;
 
     // Expose currentAnalysis as a getter/setter to keep it synchronized
     Object.defineProperty(window, 'currentAnalysis', {
@@ -122,7 +123,6 @@ if (typeof window !== 'undefined') {
 }
 
 const ALL_PAGES = ['work', 'swarm', 'transcribe', 'analyze', 'settings', 'showflow'];
-
 function showPage(name) {
     ALL_PAGES.forEach(p => {
         const page = document.getElementById(`${p}-page`);
@@ -190,9 +190,24 @@ function copyAnalysis() {
         });
 }
 
+// ── Transcription IPC listeners ──────────────────────────────────────────
+// Registered at module scope rather than inside DOMContentLoaded: both
+// handlers resolve their DOM nodes lazily when called, and registering early
+// means a progress event can't arrive before anyone is listening.
+
+// Progress updates streamed from the main process during a transcription job.
+window.electronAPI.receive('transcription-progress', (progressData) => {
+    updateTranscriptionProgress(progressData.message);
+});
+
+// Clicking the completion/failure OS notification focuses the window; bring
+// the user back to the tab the news is actually about.
+window.electronAPI.receive('transcription-focus-request', () => {
+    showTranscribePage();
+});
+
 document.getElementById('nav-analyze')?.addEventListener('click', showAnalyzePage);
-document.getElementById('nav-transcribe')?.addEventListener('click', showTranscribePage);
-document.getElementById('nav-work')?.addEventListener('click', showWorkPage);
+document.getElementById('nav-transcribe')?.addEventListener('click', showTranscribePage);document.getElementById('nav-work')?.addEventListener('click', showWorkPage);
 document.getElementById('nav-swarm')?.addEventListener('click', showSwarmPage);
 document.getElementById('nav-settings')?.addEventListener('click', showSettingsPage);
 document.getElementById('nav-showflow')?.addEventListener('click', () => {
@@ -330,6 +345,14 @@ document.getElementById('useExistingTranscript').addEventListener('change', () =
 fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (file) {
+        // Only one transcript pane exists, so a second job would clobber the
+        // first — reject it here rather than silently overwriting.
+        if (transcriptionInFlight) {
+            showWarningToast('A transcription is already running. Cancel it first or wait for it to finish.');
+            fileInput.value = '';
+            return;
+        }
+
         // Show info toast when file is selected
         showInfoToast(`File selected: ${file.name}`);
 
@@ -693,14 +716,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderConversationList();
     });
 
-    // Set up transcription progress listener once
-    window.electronAPI.receive('transcription-progress', (progressData) => {
-        const statusElement = document.getElementById('transcriptionStatus');
-        if (statusElement) {
-            statusElement.textContent = progressData.message;
-        }
-    });
-
     // Add event listeners for transcript management buttons
     document.getElementById('downloadTranscript').addEventListener('click', downloadTranscript);
     document.getElementById('copyTranscript').addEventListener('click', copyTranscript);
@@ -989,17 +1004,75 @@ function performClearTranscription() {
 }
 
 // Handle file upload and transcription
+//
+// Deliberately non-blocking: transcription used to open a static-backdrop
+// Bootstrap modal that swallowed every click for the whole job (up to 5
+// minutes), so the user couldn't switch tabs while waiting. All the real work
+// happens in the main process, which streams progress over
+// `transcription-progress` — so progress now renders inline in the transcript
+// pane instead, the Transcribe nav item shows a spinner from any tab, and
+// completion/failure raise an OS notification.
+let transcriptionInFlight = false;
+
+function setTranscribeNavBusy(busy) {
+    document.getElementById('navTranscribeSpinner')?.classList.toggle('d-none', !busy);
+}
+
+function renderTranscriptionProgress(message) {
+    transcriptionText.innerHTML = `
+        <div class="transcribe-progress text-center py-4">
+            <div class="spinner-border text-success mb-3" role="status" style="width: 2.5rem; height: 2.5rem;">
+                <span class="visually-hidden">Transcribing...</span>
+            </div>
+            <h6 class="mb-2"><i class="bi bi-mic me-2"></i>Transcribing Your Media</h6>
+            <p class="text-muted small mb-1" id="inlineTranscriptionStatus"></p>
+            <small class="text-muted d-block mb-3">You can switch tabs — we'll notify you when it's done.</small>
+            <button class="btn btn-sm btn-outline-danger" id="cancelTranscriptionBtn">
+                <i class="bi bi-x-circle me-1"></i>Cancel
+            </button>
+        </div>`;
+    // textContent, not innerHTML — the status string originates from the main
+    // process and shouldn't be able to inject markup.
+    const statusEl = document.getElementById('inlineTranscriptionStatus');
+    if (statusEl) statusEl.textContent = message;
+    document.getElementById('cancelTranscriptionBtn')?.addEventListener('click', cancelTranscription);
+}
+
+function updateTranscriptionProgress(message) {
+    const inline = document.getElementById('inlineTranscriptionStatus');
+    if (inline) inline.textContent = message;
+}
+
+async function cancelTranscription() {
+    const btn = document.getElementById('cancelTranscriptionBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Cancelling...';
+    }
+    try {
+        await window.electronAPI.invoke('cancel-transcription');
+    } catch (error) {
+        console.error('Cancel transcription failed:', error);
+    }
+}
+
+function resetUploadZone() {
+    uploadZone.classList.remove('d-none');
+    videoContainer.classList.add('d-none');
+    videoPlayer.src = '';
+    fileInput.value = '';
+}
+
 async function uploadFile(file) {
-    const modalManager = new ModalManager('transcriptionProcessingModal');
-    const statusElement = document.getElementById('transcriptionStatus');
+    if (transcriptionInFlight) {
+        showWarningToast('A transcription is already running. Cancel it first or wait for it to finish.');
+        return;
+    }
+    transcriptionInFlight = true;
+    setTranscribeNavBusy(true);
 
     try {
-        // Show the processing modal
-        statusElement.textContent = 'Preparing transcription...';
-        modalManager.show();
-
-        // Clear any previous transcription text
-        transcriptionText.innerHTML = '';
+        renderTranscriptionProgress('Preparing transcription...');
 
         // Convert File to ArrayBuffer to make it cloneable for IPC
         const arrayBuffer = await file.arrayBuffer();
@@ -1013,10 +1086,11 @@ async function uploadFile(file) {
         // Call the transcription service with the uploaded data
         const response = await window.electronAPI.invoke('transcribe-media', { file: fileData });
 
-        // Hide the modal on success
-        modalManager.hide();
-
-        if (response.status === 'COMPLETED') {
+        if (response.status === 'CANCELLED') {
+            transcriptionText.innerHTML = '<div class="text-gray-500 text-center">Transcription cancelled. Upload a file to try again.</div>';
+            resetUploadZone();
+            showInfoToast('Transcription cancelled');
+        } else if (response.status === 'COMPLETED') {
             // Display the transcript with timestamps and speaker details
             displayTranscript(response.transcript);
 
@@ -1033,30 +1107,27 @@ async function uploadFile(file) {
     } catch (error) {
         console.error('Transcription error:', error);
 
-        // Show error in the modal with dismiss button
-        modalManager.showError(error.message || 'Transcription failed');
-
-        // Show error in transcription area with a retry button
+        // Single failure surface: an inline alert with a retry button. The
+        // main process already raises an OS notification for failures, so a
+        // toast (and the old modal error state) would be the same news three
+        // times over.
         transcriptionText.innerHTML = `<div class="alert alert-danger" role="alert">
             <i class="bi bi-exclamation-triangle me-2"></i>
-            <strong>Transcription Failed:</strong> ${error.message || 'An unexpected error occurred'}
+            <strong>Transcription Failed:</strong> <span id="transcriptionErrorText"></span>
             <div class="mt-2">
                 <button class="btn btn-sm btn-outline-danger" onclick="resetTranscriptionUI()">
                     <i class="bi bi-arrow-counterclockwise me-1"></i>Try again
                 </button>
             </div>
         </div>`;
+        const errEl = document.getElementById('transcriptionErrorText');
+        if (errEl) errEl.textContent = error.message || 'An unexpected error occurred';
 
-        showErrorToast(`Transcription failed: ${error.message}`);
-
-        // Restore upload zone so user can retry without dismissing the modal
-        uploadZone.classList.remove('d-none');
-        videoContainer.classList.add('d-none');
-        fileInput.value = '';
-
-        // Restore modal to loading state for next use, then hide
-        modalManager.hide();
-        setTimeout(() => modalManager.restoreLoadingState('Processing Transcription', 'Starting transcription job...'), 300);
+        // Restore upload zone so the user can retry immediately
+        resetUploadZone();
+    } finally {
+        transcriptionInFlight = false;
+        setTranscribeNavBusy(false);
     }
 }
 function displayTranscript(timestampedTranscript) {

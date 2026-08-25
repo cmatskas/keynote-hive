@@ -1,16 +1,13 @@
-const { app, Notification } = require('electron');
+const { app } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
 const SwarmOrchestrator = require('../models/swarmOrchestrator');
 const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const { getTemplate, getAllTemplates, resolveModels } = require('../models/pipelineTemplates');
+const { notify } = require('../notify');
 
 function swarmNotify(ctx, title, body) {
-  if (Notification.isSupported()) {
-    const n = new Notification({ title: `Hive — ${title}`, body, silent: false });
-    n.on('click', () => { if (ctx.mainWindow) { ctx.mainWindow.show(); ctx.mainWindow.focus(); } });
-    n.show();
-  }
+  notify({ title, body, window: ctx.mainWindow });
 }
 
 function createSwarmOrchestrator(ctx) {

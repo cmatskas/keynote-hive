@@ -22,6 +22,7 @@ class AppContext {
     this.mainWindow = null;
     this.credentialMonitor = null;
     this.swarmOrchestrator = null;
+    this.transcriptionJob = null;
 
     this.credentialsManager = new CredentialsManager();
     this.settingsManager = new SettingsManager();
