@@ -1,5 +1,28 @@
 # Release Notes
 
+## v3.10.0
+
+### New Features
+- **Find past transcriptions** — the last step of the Transcribe rework. The registry only ever knew about jobs transcribed since it existed, and it lives in `userData`, which a reinstall or a new machine takes with it. A sidebar button now asks AWS what is actually there and imports whatever is missing.
+  - **The output bucket is scanned first**, because it is the richest source. Each completed job since v3.7.0 leaves a `<jobName>.hive.json` sidecar, which restores an entry *exactly as it was* — display name and original `jobId` included — and works even after Transcribe has aged the job out of its own history. A transcript with no sidecar is a pre-v3.7.0 job: imported unnamed rather than given an invented name, so the sidebar shows it with a prompt to name it.
+  - **Transcribe's job history is the fallback**, covering jobs whose output went to a service-managed bucket or whose objects have since been deleted. Metadata only — there is no transcript to attach.
+  - **Existing local records are never overwritten.** A local record may carry a name the user typed, and AWS knows nothing about that.
+  - **Each source fails independently and says why.** Scanning the bucket needs `s3:ListBucket`, which a scoped-down role may not have; that must not stop the job-history pass, and it must not be reported as a bare "0 found", which would read as "there is nothing there". A missing `s3:ListBucket` is named specifically in the result.
+  - Both listings follow pagination, so a large history isn't silently truncated to its first page. Imported transcripts go through the same `TranscriptMapper` as the live path, so they are indistinguishable from freshly-made ones.
+  - Deliberately a button rather than automatic: it makes real AWS calls, and surprising the user with those is worse than asking them to click. It's disabled while offline like every other network control.
+
+### Documentation
+- README now documents the two permissions this needs: **`s3:ListBucket`** on the output bucket (new — nothing else in Hive required it) and `transcribe:ListTranscriptionJobs`. Both are only used by Find past transcriptions; the rest of the Transcribe tab works without them.
+
+### Tests
+- Added `tests/main/transcriptionReconciler.test.js` (17 tests): a sidecar restoring the original `jobId` and name, a transcript without a sidecar imported unnamed, transcripts mapped through the shared mapper, a sidecar with no transcript, existing records never overwritten, unrelated bucket objects ignored, one unreadable object not aborting the rest, pagination followed for both listings, job-history imports carrying `OutputLocationType` and real status, deduplication between the two sources, a missing `s3:ListBucket` named specifically while job history still runs, a failed job-history listing keeping what the bucket found, no output bucket configured, offline refusal, and "nothing found" reported without inventing an error.
+- Added 7 UI tests to `transcribeSidebar.test.js` (now 42): import counts reported with correct pluralisation, nothing-new stated plainly, partial failures surfaced as warnings including the `s3:ListBucket` hint, imports reported alongside a partial failure, the button restored after a failure, and offline refusal without calling AWS.
+- Added a `transcription-reconcile` handler test.
+
+### Fixes
+- Two more sources of test-suite flakiness, both real: a test that stubbed `window.OfflineGuard` and then failed leaked the stub into every later test, making unrelated ones behave as if offline — cleanup moved to `afterEach` so it cannot leak. And the `OfflineGuard` stub was incomplete, so `index.js` calling `init()` at module scope threw inside the harness rather than in the code under test. Verified stable across three consecutive full runs.
+
+
 ## v3.9.0
 
 ### New Features
@@ -179,10 +202,10 @@
   2. ~~**Registry + sidecar writes + derived naming at job start.**~~ **Done in v3.7.0.** Local registry under `userData/transcriptions/` (metadata and transcript in separate files so listing stays cheap), sidecar `<jobName>.hive.json` in the output bucket, derived-and-editable display names, abandoned jobs recorded. This is where (a) stopped.
   3. ~~**Sidebar list, select-to-view, New Transcription.**~~ **Done in v3.8.0.** Collapsible sidebar reusing the Chat tab's idiom, entries showing name/date/duration and job state, legacy entries shown with a naming prompt, no player for saved transcripts, and two-level delete (local by default, AWS opt-in).
   4. ~~**Rename, then search.**~~ **Done in v3.8.0 (rename, name/source filtering) and v3.9.0 (full-text over transcript bodies, with match counts and timestamped snippets).**
-  5. **Reconciliation** — backfill pre-existing jobs from `ListTranscriptionJobs` and `ListObjectsV2`.
+  5. ~~**Reconciliation**~~ **Done in v3.10.0.** "Find past transcriptions" scans the output bucket (sidecars first, then bare transcripts) and falls back to `ListTranscriptionJobs`, never overwriting local records, with each source failing independently and reporting why.
 
   **Also outstanding:**
-  - Reconciliation by bucket listing needs **`s3:ListBucket`** on the output bucket, which is *not* in the documented permission set (`GetObject`/`PutObject`/`DeleteObject` only — note `ListBuckets` in `awsValidator.js` is the account-level action, a different thing). Add it to the README when this ships.
+  - Reconciliation by bucket listing needs **`s3:ListBucket`** on the output bucket, **documented in the README as of v3.10.0**. (Note `ListBuckets` in `awsValidator.js` is the account-level action, a different thing.)
   - **Output object layout is deliberately flat.** Hive does not set `OutputKey`, so the transcript object is named after the job name at the bucket root. That string links a registry entry to its S3 object. Flat is a deliberate choice — the job name is already unique and parseable, and structure buys little when the registry holds the metadata. Changing it after the registry ships means migrating already-transcribed jobs.
   - **Verify Transcribe's job-history retention window.** 90 days is commonly cited but was not confirmed against current AWS docs. The sidecar design makes Hive robust either way, so this is a documentation detail.
   - Cross-restart recovery of an in-flight job falls out of the registry naturally and belongs here, not in the offline work, which covers outages *within* a session only.

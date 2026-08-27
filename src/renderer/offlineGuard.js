@@ -45,6 +45,7 @@
     { id: 'runSetupCheckBtn',     reason: 'Setup Check needs an internet connection.' },
     { id: 'setupCheckRefreshBtn', reason: 'Setup Check needs an internet connection.' },
     { id: 'webSearchRetryBtn',    reason: 'Web search setup needs an internet connection.' },
+    { id: 'transcriptionReconcileBtn', reason: 'Looking for past transcriptions needs an internet connection.' },
     // AgentCore Memory
     { id: 'memoryConnectBtn',     reason: 'Memory is stored in AWS and needs an internet connection.' },
     { id: 'memoryDeleteBtn',      reason: 'Memory is stored in AWS and needs an internet connection.' },

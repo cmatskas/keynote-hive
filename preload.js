@@ -192,7 +192,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
     'create-skill', 'delete-skill', 'transcribe-media', 'cancel-transcription',
     'get-transcription-state', 'rename-transcription',
     'transcription-list', 'transcription-get', 'transcription-delete',
-    'transcription-search',
+    'transcription-search', 'transcription-reconcile',
     'get-connectivity-status', 'renderer-connectivity-hint',
     'update-custom-prompt', 'validate-credentials', 'work-history-delete', 'work-history-list',
     'work-history-load', 'work-history-rename', 'work-history-save', 'work-history-star', 'work-cleanup-session',

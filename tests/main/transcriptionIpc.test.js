@@ -37,6 +37,10 @@ const mockCancelTranscription = jest.fn(async () => ({ cancelled: true }));
 const mockGetTranscriptionState = jest.fn(() => ({ active: false }));
 const mockRenameTranscription = jest.fn(async () => ({ renamed: true }));
 const mockDeleteTranscriptionJob = jest.fn(async () => true);
+const mockReconcile = jest.fn(async () => ({ imported: 3, skipped: 1, failed: 0, errors: [] }));
+jest.mock('../../src/main/models/transcriptionReconciler', () => ({
+  reconcile: (...args) => mockReconcile(...args),
+}));
 // `mock`-prefixed so the jest.mock factory may reference it.
 const mockJobCounter = { n: 0 };
 
@@ -360,6 +364,13 @@ describe('re-attach and companion handlers', () => {
   test('transcription-get returns null for an unknown job', async () => {
     const { handlers } = buildHarness();
     await expect(handlers['transcription-get'](fakeEvent(), 'nope')).resolves.toBeNull();
+  });
+
+  test('transcription-reconcile delegates to the reconciler', async () => {
+    const { handlers, ctx } = buildHarness();
+
+    await expect(handlers['transcription-reconcile']()).resolves.toMatchObject({ imported: 3 });
+    expect(mockReconcile).toHaveBeenCalledWith(ctx);
   });
 
   test('transcription-search delegates to the registry, which owns the transcripts', async () => {

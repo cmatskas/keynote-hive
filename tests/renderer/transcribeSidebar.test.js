@@ -75,6 +75,7 @@ function buildDom() {
           <button id="newTranscriptionBtn"></button>
           <input type="text" id="transcriptionSearch" />
           <button id="transcriptionSearchClear" class="d-none"></button>
+          <button id="transcriptionReconcileBtn"><i class="bi bi-arrow-repeat me-1"></i>Find past transcriptions</button>
           <div id="transcriptionList"></div>
         </div>
         <div class="transcribe-main">
@@ -152,10 +153,13 @@ function defaultSearchHits(records, query) {
     .map(r => ({ jobId: r.jobId, matchCount: 0, snippet: null, snippetStartTime: null }));
 }
 
-function loadRenderer({ records = RECORDS, getEntry = null, state = { active: false }, searchHits = null } = {}) {
+function loadRenderer({ records = RECORDS, getEntry = null, state = { active: false }, searchHits = null, reconcileResult = null } = {}) {
   mockElectronAPI.invoke.mockImplementation((channel, payload) => {
     switch (channel) {
       case 'transcription-list': return Promise.resolve(records);
+      case 'transcription-reconcile':
+        if (reconcileResult instanceof Error) return Promise.reject(reconcileResult);
+        return Promise.resolve(reconcileResult || { imported: 0, skipped: 0, failed: 0, errors: [] });
       case 'transcription-search':
         return Promise.resolve(searchHits ? searchHits(payload) : defaultSearchHits(records, payload));
       case 'transcription-get': {
@@ -215,6 +219,9 @@ const flushDebounce = async (ms = 300) => {
 
 afterEach(() => {
   jest.clearAllTimers();
+  // Unconditional: a test that stubs this and then fails would otherwise leak it
+  // into every later test, making unrelated ones behave as if offline.
+  delete window.OfflineGuard;
 });
 
 const rows = () => Array.from(document.querySelectorAll('#transcriptionList .conv-item'));
@@ -603,6 +610,121 @@ describe('New Transcription', () => {
     expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
       expect.stringMatching(/already running/i), 'warning'
     );
+  });
+});
+
+/**
+ * Reconciliation is explicitly user-triggered: it makes real AWS calls, and
+ * surprising someone with those is worse than asking them to click.
+ */
+describe('finding past transcriptions', () => {
+  test('reports how many were imported and refreshes the list', async () => {
+    loadRenderer({ reconcileResult: { imported: 3, skipped: 1, failed: 0, errors: [] } });
+    await initSidebar();
+    mockElectronAPI.invoke.mockClear();
+
+    document.getElementById('transcriptionReconcileBtn').click();
+    await flush();
+
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/Imported 3 transcriptions/), 'success'
+    );
+    // The list has to be re-read, or the imports wouldn't be visible.
+    expect(mockElectronAPI.invoke).toHaveBeenCalledWith('transcription-list');
+  });
+
+  test('uses the singular for one import', async () => {
+    loadRenderer({ reconcileResult: { imported: 1, errors: [] } });
+    await initSidebar();
+
+    document.getElementById('transcriptionReconcileBtn').click();
+    await flush();
+
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/Imported 1 transcription from AWS/), 'success'
+    );
+  });
+
+  test('says so plainly when there was nothing new', async () => {
+    loadRenderer({ reconcileResult: { imported: 0, errors: [] } });
+    await initSidebar();
+
+    document.getElementById('transcriptionReconcileBtn').click();
+    await flush();
+
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/No transcriptions found in AWS/), 'info'
+    );
+  });
+
+  test('surfaces a partial failure instead of implying nothing was there', async () => {
+    // A missing s3:ListBucket means the richest source was unavailable. Reporting
+    // a bare "0 found" would read as "there is nothing to find".
+    loadRenderer({
+      reconcileResult: {
+        imported: 0,
+        errors: ['Could not list the output bucket — this needs s3:ListBucket on hive-transcripts-1: AccessDenied'],
+      },
+    });
+    await initSidebar();
+
+    document.getElementById('transcriptionReconcileBtn').click();
+    await flush();
+
+    const [message, type] = mockElectronAPI.showToast.mock.calls.at(-1);
+    expect(type).toBe('warning');
+    expect(message).toMatch(/s3:ListBucket/);
+  });
+
+  test('reports imports alongside a partial failure', async () => {
+    loadRenderer({
+      reconcileResult: { imported: 2, errors: ['Could not list Transcribe jobs: Throttling'] },
+    });
+    await initSidebar();
+
+    document.getElementById('transcriptionReconcileBtn').click();
+    await flush();
+
+    const [message, type] = mockElectronAPI.showToast.mock.calls.at(-1);
+    expect(type).toBe('warning');
+    expect(message).toMatch(/Imported 2/);
+    expect(message).toMatch(/Throttling/);
+  });
+
+  test('restores the button after a failure', async () => {
+    loadRenderer({ reconcileResult: new Error('network down') });
+    await initSidebar();
+    const btn = document.getElementById('transcriptionReconcileBtn');
+
+    btn.click();
+    await flush();
+
+    expect(btn.disabled).toBe(false);
+    expect(btn.innerHTML).toContain('Find past transcriptions');
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/Could not check AWS/), 'error'
+    );
+  });
+
+  test('refuses while offline without calling AWS', async () => {
+    window.OfflineGuard = {
+      isOnline: () => false,
+      requireOnline: jest.fn(() => false),
+      // index.js calls these at module scope; an incomplete stub throws there
+      // rather than in the code under test.
+      init: jest.fn().mockResolvedValue(undefined),
+      refresh: jest.fn(),
+      onChange: jest.fn(),
+    };
+    loadRenderer();
+    await initSidebar();
+    mockElectronAPI.invoke.mockClear();
+
+    document.getElementById('transcriptionReconcileBtn').click();
+    await flush();
+
+    expect(window.OfflineGuard.requireOnline).toHaveBeenCalledWith('Finding past transcriptions');
+    expect(mockElectronAPI.invoke).not.toHaveBeenCalledWith('transcription-reconcile');
   });
 });
 

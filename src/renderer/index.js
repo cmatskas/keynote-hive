@@ -561,6 +561,51 @@ async function confirmDeleteTranscription() {
 
 let transcribeSidebarInitialised = false;
 
+/**
+ * Ask AWS for transcriptions Hive doesn't know about — those made before the
+ * registry existed, or after local state was lost.
+ *
+ * Explicitly user-triggered rather than automatic: it makes real AWS calls, and
+ * surprising the user with those is worse than asking them to click.
+ */
+async function reconcileTranscriptions() {
+    if (window.OfflineGuard && !window.OfflineGuard.requireOnline('Finding past transcriptions')) return;
+
+    const btn = document.getElementById('transcriptionReconcileBtn');
+    const original = btn ? btn.innerHTML : null;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Looking in AWS…';
+    }
+
+    try {
+        const result = await window.electronAPI.invoke('transcription-reconcile');
+        await refreshTranscriptionList();
+
+        const found = result?.imported || 0;
+        // Report partial success honestly — a missing s3:ListBucket means the
+        // richest source was unavailable, and silently saying "0 found" would
+        // read as "nothing there".
+        if (result?.errors?.length) {
+            showWarningToast(
+                `${found === 0 ? 'No new transcriptions imported' : `Imported ${found}`}. ${result.errors[0]}`
+            );
+        } else if (found === 0) {
+            showInfoToast('No transcriptions found in AWS that Hive didn\'t already have.');
+        } else {
+            showSuccessToast(`Imported ${found} transcription${found === 1 ? '' : 's'} from AWS.`);
+        }
+    } catch (err) {
+        console.error('Reconcile failed:', err);
+        showErrorToast(`Could not check AWS: ${err.message}`);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+}
+
 function initTranscribeSidebar() {
     // Idempotent: wiring the same controls twice would double every handler, so
     // a toggle would fire twice and appear not to work at all.
@@ -596,6 +641,7 @@ function initTranscribeSidebar() {
         scheduleTranscriptionSearch('');
     });
 
+    document.getElementById('transcriptionReconcileBtn')?.addEventListener('click', reconcileTranscriptions);
     document.getElementById('transcribeRenameBtn')?.addEventListener('click', renameCurrentTranscription);
     document.getElementById('transcribeDeleteBtn')?.addEventListener('click', promptDeleteTranscription);
     document.getElementById('deleteTranscriptionConfirmBtn')?.addEventListener('click', confirmDeleteTranscription);

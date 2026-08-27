@@ -1,6 +1,7 @@
 const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const transcriptionRunner = require('../models/transcriptionRunner');
+const transcriptionReconciler = require('../models/transcriptionReconciler');
 const { createAgent, isAnthropicModel } = require('../models/strandsAgentFactory');
 const { buildFileContentBlocks } = require('../utils');
 const logger = require('electron-log/main');
@@ -166,6 +167,14 @@ function register(ipcMain, ctx) {
    */
   ipcMain.handle('transcription-search', async (_event, query) => {
     return await ctx.transcriptionRegistry.search(query);
+  });
+
+  /**
+   * Rebuild the local index from AWS — for transcripts made before the registry
+   * existed, or after losing local state. See transcriptionReconciler.js.
+   */
+  ipcMain.handle('transcription-reconcile', async () => {
+    return await transcriptionReconciler.reconcile(ctx);
   });
 
   /**
