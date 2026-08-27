@@ -31,7 +31,7 @@ jest.mock('../../src/main/utils', () => ({ buildFileContentBlocks: jest.fn(async
 const mockRunTranscription = jest.fn();
 const mockCancelTranscription = jest.fn(async () => ({ cancelled: true }));
 const mockGetTranscriptionState = jest.fn(() => ({ active: false }));
-const mockRenameActiveTranscription = jest.fn(() => ({ renamed: true }));
+const mockRenameTranscription = jest.fn(async () => ({ renamed: true }));
 // `mock`-prefixed so the jest.mock factory may reference it.
 const mockJobCounter = { n: 0 };
 
@@ -39,7 +39,7 @@ jest.mock('../../src/main/models/transcriptionRunner', () => ({
   runTranscription: (...args) => mockRunTranscription(...args),
   cancelTranscription: (...args) => mockCancelTranscription(...args),
   getTranscriptionState: (...args) => mockGetTranscriptionState(...args),
-  renameActiveTranscription: (...args) => mockRenameActiveTranscription(...args),
+  renameTranscription: (...args) => mockRenameTranscription(...args),
   createJob: ({ sourceFile, displayName }) => ({
     jobId: `job-fixed-${++mockJobCounter.n}`,
     displayName: displayName || 'clip',
@@ -70,6 +70,12 @@ function buildHarness({ online = true } = {}) {
     },
     awsClients: { transcribe: { send: jest.fn() }, s3: { send: jest.fn() }, agentCoreConfig: {} },
     transcriptionJob: null,
+    transcriptionRegistry: {
+      list: jest.fn(async () => [{ jobId: 'job-old', displayName: 'Keynote Draft 3' }]),
+      get: jest.fn(async (jobId) => (jobId === 'job-old'
+        ? { jobId, displayName: 'Keynote Draft 3', transcript: [{ text: 'hello' }] }
+        : null)),
+    },
     isOnline: () => state.online,
     assertOnline: (action = 'This action') => {
       if (!state.online) {
@@ -317,11 +323,36 @@ describe('re-attach and companion handlers', () => {
     expect(mockCancelTranscription).toHaveBeenCalledWith(ctx);
   });
 
+  test('transcription-list returns the recorded transcriptions', async () => {
+    const { handlers, ctx } = buildHarness();
+
+    await expect(handlers['transcription-list']()).resolves.toEqual([
+      { jobId: 'job-old', displayName: 'Keynote Draft 3' },
+    ]);
+    expect(ctx.transcriptionRegistry.list).toHaveBeenCalled();
+  });
+
+  test('transcription-get returns a single transcription with its transcript', async () => {
+    const { handlers } = buildHarness();
+
+    await expect(handlers['transcription-get'](fakeEvent(), 'job-old')).resolves.toMatchObject({
+      jobId: 'job-old',
+      transcript: [{ text: 'hello' }],
+    });
+  });
+
+  test('transcription-get returns null for an unknown job', async () => {
+    const { handlers } = buildHarness();
+    await expect(handlers['transcription-get'](fakeEvent(), 'nope')).resolves.toBeNull();
+  });
+
   test('rename-transcription delegates to the runner with the job id and name', async () => {
+    // Delegates to renameTranscription, which handles both an in-flight job and
+    // an already-finished registry entry — a rename can happen at either point.
     const { handlers, ctx } = buildHarness();
 
     await handlers['rename-transcription'](fakeEvent(), { jobId: 'job-fixed-1', displayName: 'Board review' });
 
-    expect(mockRenameActiveTranscription).toHaveBeenCalledWith(ctx, 'job-fixed-1', 'Board review');
+    expect(mockRenameTranscription).toHaveBeenCalledWith(ctx, 'job-fixed-1', 'Board review');
   });
 });

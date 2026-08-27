@@ -9,6 +9,7 @@ const ConversationManager = require('./models/conversationManager');
 const CustomPromptsManager = require('./models/customPromptsManager');
 const SkillsManager = require('./models/skillsManager');
 const WorkHistoryManager = require('./models/workHistoryManager');
+const TranscriptionRegistry = require('./models/transcriptionRegistry');
 const CodeInterpreterManager = require('./models/codeInterpreterManager');
 const WebSearchManager = require('./models/webSearchManager');
 const { isNetworkError } = require('./awsErrors');
@@ -32,6 +33,7 @@ class AppContext {
     this.customPromptsManager = new CustomPromptsManager();
     this.skillsManager = new SkillsManager();
     this.workHistoryManager = new WorkHistoryManager();
+    this.transcriptionRegistry = new TranscriptionRegistry();
 
     this.workSandboxes = new Map();
     this.agentAbortControllers = new Map();

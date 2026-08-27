@@ -271,7 +271,7 @@ async function restoreTranscriptionState() {
         activeTranscriptionJobId = state.jobId;
         transcriptionInFlight = true;
         setTranscribeNavBusy(true);
-        renderTranscriptionProgress(state.message || 'Transcribing…');
+        renderTranscriptionProgress(state.message || 'Transcribing…', state.displayName || '');
         updateTranscriptionProgress(state.message || 'Transcribing…', state.status);
     } catch (err) {
         console.error('Could not restore transcription state:', err);
@@ -1107,9 +1107,25 @@ function setTranscribeNavBusy(busy) {
     document.getElementById('navTranscribeSpinner')?.classList.toggle('d-none', !busy);
 }
 
-function renderTranscriptionProgress(message) {
+/**
+ * Strip the extension for the default transcript name. Mirrors the main
+ * process's deriveDisplayName so the field can be populated the instant the job
+ * starts, rather than flashing empty until the STARTED response lands. Both
+ * derive identically, so they agree.
+ */
+function deriveTranscriptName(fileName) {
+    if (!fileName) return 'Untitled transcription';
+    return fileName.replace(/\.[^.]+$/, '').trim() || fileName;
+}
+
+function renderTranscriptionProgress(message, displayName = '') {
     transcriptionText.innerHTML = `
         <div class="transcribe-progress text-center py-4">
+            <div class="transcribe-name-field text-start mb-3">
+                <label for="transcriptionNameInput" class="form-label small text-muted mb-1">Name</label>
+                <input type="text" class="form-control form-control-sm" id="transcriptionNameInput"
+                       placeholder="Name this transcription" autocomplete="off">
+            </div>
             <div class="spinner-border text-success mb-3" role="status" id="transcribeSpinner" style="width: 2.5rem; height: 2.5rem;">
                 <span class="visually-hidden">Transcribing...</span>
             </div>
@@ -1124,7 +1140,39 @@ function renderTranscriptionProgress(message) {
     // process and shouldn't be able to inject markup.
     const statusEl = document.getElementById('inlineTranscriptionStatus');
     if (statusEl) statusEl.textContent = message;
+
+    // Pre-filled and focused, so accepting the default costs nothing and typing
+    // over it is a single gesture. Deliberately not a gate: the job is already
+    // running by the time this appears.
+    const nameInput = document.getElementById('transcriptionNameInput');
+    if (nameInput) {
+        nameInput.value = displayName || '';
+        nameInput.addEventListener('change', () => commitTranscriptionName(nameInput.value));
+        nameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
+        });
+        try { nameInput.focus(); nameInput.select(); } catch { /* not focusable in tests */ }
+    }
+
     document.getElementById('cancelTranscriptionBtn')?.addEventListener('click', cancelTranscription);
+}
+
+/**
+ * Persist an edited name. The main process holds the authoritative copy — in the
+ * job while it runs, in the registry once it has finished — so this is a request,
+ * not a local mutation.
+ */
+async function commitTranscriptionName(value) {
+    const displayName = (value || '').trim();
+    if (!displayName || !activeTranscriptionJobId) return;
+    try {
+        await window.electronAPI.invoke('rename-transcription', {
+            jobId: activeTranscriptionJobId,
+            displayName,
+        });
+    } catch (err) {
+        console.error('Could not rename transcription:', err);
+    }
 }
 
 function updateTranscriptionProgress(message, status = null) {
@@ -1257,7 +1305,7 @@ async function uploadFile(file) {
     setTranscribeNavBusy(true);
 
     try {
-        renderTranscriptionProgress('Preparing transcription...');
+        renderTranscriptionProgress('Preparing transcription...', deriveTranscriptName(file.name));
 
         // Convert File to ArrayBuffer to make it cloneable for IPC
         const arrayBuffer = await file.arrayBuffer();

@@ -141,9 +141,22 @@ function register(ipcMain, ctx) {
     return transcriptionRunner.getTranscriptionState(ctx);
   });
 
-  /** Rename the in-flight job. The display name is Hive-side, so this is local. */
-  ipcMain.handle('rename-transcription', (_event, { jobId, displayName }) => {
-    return transcriptionRunner.renameActiveTranscription(ctx, jobId, displayName);
+  /**
+   * Rename a transcription — in flight or already finished. See
+   * renameTranscription() for why both cases are handled in one place.
+   */
+  ipcMain.handle('rename-transcription', async (_event, { jobId, displayName }) => {
+    return await transcriptionRunner.renameTranscription(ctx, jobId, displayName);
+  });
+
+  /** Metadata for every transcription Hive has recorded, newest first. */
+  ipcMain.handle('transcription-list', async () => {
+    return await ctx.transcriptionRegistry.list();
+  });
+
+  /** A single transcription, transcript included. */
+  ipcMain.handle('transcription-get', async (_event, jobId) => {
+    return await ctx.transcriptionRegistry.get(jobId);
   });
 
   ipcMain.handle('transcribe-media', async (event, { file, displayName = null }) => {

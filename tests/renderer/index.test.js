@@ -648,6 +648,66 @@ describe('Renderer Index.js', () => {
             expect(document.getElementById('navTranscribeSpinner').classList.contains('d-none')).toBe(true);
         });
 
+        // Naming: pre-filled from the file name, editable immediately, never a
+        // gate on starting the job.
+        test('pre-fills the name field from the file name, extension stripped', async () => {
+            await startJob();
+
+            const input = document.getElementById('transcriptionNameInput');
+            expect(input).not.toBeNull();
+            expect(input.value).toBe('test');
+        });
+
+        test('the name field appears without blocking the job', async () => {
+            // The job is already running by the time the field is on screen.
+            await startJob();
+
+            expect(mockElectronAPI.invoke).toHaveBeenCalledWith('transcribe-media', expect.any(Object));
+            expect(document.getElementById('transcriptionNameInput')).not.toBeNull();
+        });
+
+        test('editing the name asks the main process to rename the job', async () => {
+            await startJob();
+            mockElectronAPI.invoke.mockClear();
+            mockElectronAPI.invoke.mockResolvedValue({ renamed: true });
+
+            const input = document.getElementById('transcriptionNameInput');
+            input.value = 'Board review';
+            input.dispatchEvent(new Event('change'));
+            await Promise.resolve();
+
+            expect(mockElectronAPI.invoke).toHaveBeenCalledWith('rename-transcription', {
+                jobId: JOB_ID,
+                displayName: 'Board review',
+            });
+        });
+
+        test('a blank name is not submitted', async () => {
+            await startJob();
+            mockElectronAPI.invoke.mockClear();
+
+            const input = document.getElementById('transcriptionNameInput');
+            input.value = '   ';
+            input.dispatchEvent(new Event('change'));
+            await Promise.resolve();
+
+            expect(mockElectronAPI.invoke).not.toHaveBeenCalledWith('rename-transcription', expect.anything());
+        });
+
+        test('a failed rename does not disturb the running job', async () => {
+            await startJob();
+            mockElectronAPI.invoke.mockRejectedValue(new Error('ipc exploded'));
+
+            const input = document.getElementById('transcriptionNameInput');
+            input.value = 'Board review';
+            input.dispatchEvent(new Event('change'));
+            await Promise.resolve();
+            await Promise.resolve();
+
+            // Still transcribing — a naming problem is not a job problem.
+            expect(document.getElementById('transcriptionText').querySelector('.transcribe-progress')).not.toBeNull();
+        });
+
         test('clicking the completion notification switches to the Transcribe tab', () => {
             const call = mockElectronAPI.receive.mock.calls.find(([ch]) => ch === 'transcription-focus-request');
             expect(call).toBeDefined();
@@ -747,6 +807,8 @@ describe('Renderer Index.js', () => {
             expect(document.getElementById('transcriptionText').querySelector('.transcribe-progress')).not.toBeNull();
             expect(document.getElementById('inlineTranscriptionStatus').textContent)
                 .toBe('Processing audio... (35s elapsed)');
+            // The name comes back from the job, which holds the authoritative copy.
+            expect(document.getElementById('transcriptionNameInput').value).toBe('keynote v4');
             expect(document.getElementById('navTranscribeSpinner').classList.contains('d-none')).toBe(false);
         });
 

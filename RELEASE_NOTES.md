@@ -1,5 +1,24 @@
 # Release Notes
 
+## v3.7.0
+
+### New Features
+- **Every transcription is now recorded and named.** Step 2 of the Transcribe rework. This is where the problem that started it actually stops: a completed job on AWS used to be unreachable from Hive the moment the renderer moved on — nothing recorded that it existed, what it was called, or where its transcript lived — so users re-ran transcriptions they had already paid for. Still no browsing UI (that's step 3), but from this release forward every job is recoverable.
+  - **A local registry** (`src/main/models/transcriptionRegistry.js`, stored under `userData/transcriptions/`) holding the job name, display name, source file, media S3 key, language, status, timestamps, segment count and duration. Follows the same plain-JSON convention as the conversation and work-history managers, so it is readable offline and survives losing AWS access entirely. Metadata and transcript are **separate files**: `list()` renders a sidebar and a transcript can run to hundreds of kilobytes, so listing reads a few hundred bytes per entry rather than the whole corpus.
+  - **A sidecar object in the output bucket** — `<jobName>.hive.json` written next to the transcript, carrying the same metadata. This is the durable tier: a single `ListObjectsV2` rebuilds the index, display names included, which outlives the retention window that eventually removes AWS job metadata. It only became possible once v3.5.0 guaranteed the output bucket exists and belongs to the user. Best-effort by design — the transcript is already retrieved and saved locally by then, so a failed sidecar write costs the AWS-side recovery tier, not the job.
+  - **Names, derived and editable.** The default is the media file name with the extension stripped, kept human-readable rather than slugified. The progress pane now shows a pre-filled, focused name field: accepting the default costs nothing, typing over it is one gesture, and it is never a gate — the job is already running by the time the field appears. Renaming works whether the job is still running (the name lives in memory, and the registry write picks up whatever it is by completion) or already finished (the registry record is updated and the sidecar refreshed, so the two tiers don't drift). Renaming offline still works; only the sidecar refresh is skipped.
+  - **Abandoned jobs are recorded too.** A job that paused past its budget is still running on AWS and still collectable, which makes it exactly the kind a user would otherwise re-run. Cancelled jobs are deliberately *not* recorded — the user threw those away on purpose.
+  - Persistence happens **before** the completion notification. The opposite order would announce success for something unrecoverable if the app died in between.
+
+### Fixes
+- **An abandoned transcription reported a generic failure instead of "paused too long".** Found by a test written for this release, and present since v3.4.0. `parkUntilResumable()`'s budget-exhausted path calls `finish()` *before* the retry timer is created, and the timer was declared with `const` further down the same scope — so `clearTimeout()` hit its temporal dead zone and threw a `ReferenceError`. That propagated as an ordinary error, so instead of `ABANDONED` and "the job is still running on AWS", the user got "Transcription Failed" and no indication their work was still waiting to be collected. No existing test reached it because none exhausted the 30-minute pause budget.
+
+### Tests
+- Added `tests/main/transcriptionRegistry.test.js` (22 tests) against a real temp directory, since the whole contract is about what survives on disk: round-tripping records and transcripts, carrying the media key through, deriving segment count and duration so listing needs no transcript, the metadata/transcript file split, recording a transcript-less abandoned job, newest-first ordering, skipping a corrupt record rather than failing the whole list, rename semantics, and local-only removal.
+- Added 18 tests to `transcriptionRunner.test.js` (now 54): registry record and sidecar contents on completion, persistence ordered before the notification, a sidecar or registry failure not failing a successful job, abandoned jobs recorded and cancelled jobs not, the sidecar skipped without an output bucket, `renameTranscription` covering the in-flight and finished cases plus the sidecar refresh and the offline path, and two regression tests for the budget-exhaustion bug above.
+- Added 3 handler tests to `transcriptionIpc.test.js` (now 20) for `transcription-list` and `transcription-get`, and 5 naming tests plus a re-attach assertion to the renderer suite (now 53): the field pre-filled from the file name, appearing without blocking the job, submitting a rename on edit, refusing a blank name, a failed rename not disturbing the job, and the authoritative name restored on re-attach.
+
+
 ## v3.6.0
 
 ### New Features
@@ -116,7 +135,7 @@
 
   **Implementation order** — chosen so data loss stops before any UI exists, and each step ships independently:
   1. ~~**Main-owned job state.**~~ **Done in v3.6.0.** The main process owns the job and emits progress/terminal events; the renderer subscribes and can re-attach after a reload. This fixed (b) on its own and was a hard prerequisite — selecting a past transcript mid-job is exactly the navigation that would otherwise kill the job. The pausable job state from v3.4.0 sits underneath unchanged; it was a change to result *delivery* only. `jobId`, `displayName` and the media S3 key are now recorded on each job, ready for the registry.
-  2. **Registry + sidecar writes + derived naming at job start.** Still no list UI, but from here every job is recoverable and named. This is where (a) actually stops.
+  2. ~~**Registry + sidecar writes + derived naming at job start.**~~ **Done in v3.7.0.** Local registry under `userData/transcriptions/` (metadata and transcript in separate files so listing stays cheap), sidecar `<jobName>.hive.json` in the output bucket, derived-and-editable display names, abandoned jobs recorded. This is where (a) stopped.
   3. **Sidebar list, select-to-view, New Transcription.** The visible feature.
   4. **Rename, then search** — name filtering first, full-text second.
   5. **Reconciliation** — backfill pre-existing jobs from `ListTranscriptionJobs` and `ListObjectsV2`.

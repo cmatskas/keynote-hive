@@ -28,7 +28,7 @@
  * this.
  */
 
-const { GetObjectCommand } = require('@aws-sdk/client-s3');
+const { GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
 const {
   StartTranscriptionJobCommand,
@@ -198,6 +198,13 @@ function parkUntilResumable(ctx, job, reason) {
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    // Declared before finish() and initialised to null on purpose. The
+    // budget-exhausted path below calls finish() *before* the timer is created,
+    // and a `const` declared further down would put this reference in its
+    // temporal dead zone — which turned the ABANDONED outcome into a
+    // ReferenceError, surfacing as a generic failure instead of "paused too
+    // long, the job is still on AWS". clearTimeout(null) is a no-op.
+    let retryTimer = null;
     const finish = (fn, arg) => {
       if (settled) return;
       settled = true;
@@ -222,7 +229,7 @@ function parkUntilResumable(ctx, job, reason) {
     const pauseStart = Date.now();
     const accrue = () => { job.pausedTotalMs += Date.now() - pauseStart; };
 
-    const retryTimer = setTimeout(() => {
+    retryTimer = setTimeout(() => {
       accrue();
       finish(resolve);
     }, Math.min(PAUSED_RETRY_MS, remaining));
@@ -360,6 +367,77 @@ function assertTranscriptionConfigured(settings) {
   throw err;
 }
 
+// ── Durable record: local registry + sidecar in the output bucket ───────────
+
+/**
+ * Write the sidecar object that sits next to the transcript in the user's own
+ * output bucket.
+ *
+ * This is what makes the index rebuildable without Hive's local state and
+ * without Transcribe's job history: a single `ListObjectsV2` over the output
+ * bucket yields every transcript *and* its display name, which outlives the
+ * retention window that eventually removes job metadata. It only became possible
+ * once v3.5.0 guaranteed the output bucket exists and belongs to the user.
+ *
+ * Best-effort by design. The transcript has already been retrieved and is about
+ * to be saved locally, so a failed sidecar write must not fail the job — it only
+ * costs us the AWS-side recovery tier.
+ */
+async function writeSidecar(ctx, job, record) {
+  const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
+  if (!settings.outputBucketName || !job.jobName) return false;
+
+  try {
+    await ctx.awsClients.s3.send(new PutObjectCommand({
+      Bucket: settings.outputBucketName,
+      Key: `${job.jobName}.hive.json`,
+      Body: JSON.stringify(record, null, 2),
+      ContentType: 'application/json',
+    }));
+    logger.info(`[transcribe] wrote sidecar ${job.jobName}.hive.json`);
+    return true;
+  } catch (err) {
+    logger.warn(`[transcribe] could not write sidecar for ${job.jobName}: ${err.message}`);
+    return false;
+  }
+}
+
+/** The metadata both the local registry and the sidecar carry. */
+function buildRecord(ctx, job, status, extra = {}) {
+  const settings = ctx.currentSettings || {};
+  return {
+    jobId: job.jobId,
+    jobName: job.jobName,
+    displayName: job.displayName,
+    sourceFile: job.sourceFile,
+    // Not derivable from the AWS job name, so it has to be carried through.
+    mediaKey: job.mediaKey,
+    mediaBucket: settings.bucketName || null,
+    outputBucket: settings.outputBucketName || null,
+    language: settings.transcriptionLanguage || null,
+    status,
+    createdAt: job.createdAt,
+    completedAt: new Date().toISOString(),
+    ...extra,
+  };
+}
+
+/**
+ * Persist a finished job locally and, best-effort, to the output bucket.
+ * Never throws — a job that succeeded must not be reported as failed because
+ * bookkeeping afterwards went wrong.
+ */
+async function persistJob(ctx, job, status, transcript = null, extra = {}) {
+  const record = buildRecord(ctx, job, status, extra);
+  try {
+    if (ctx.transcriptionRegistry) await ctx.transcriptionRegistry.save(record, transcript);
+  } catch (err) {
+    logger.error(`[transcribe] could not save registry record for ${job.jobId}: ${err.message}`);
+  }
+  await writeSidecar(ctx, job, record);
+  return record;
+}
+
 // ── Job lifecycle ───────────────────────────────────────────────────────────
 
 /**
@@ -385,6 +463,7 @@ function createJob({ sourceFile, displayName = null }) {
     displayName: displayName || deriveDisplayName(sourceFile),
     sourceFile: sourceFile || null,
     mediaKey: null,         // S3 key of the uploaded media — recorded for later playback
+    createdAt: new Date().toISOString(),
     status: 'STARTING',
     lastMessage: 'Preparing transcription...',
     cancelled: false,
@@ -472,6 +551,13 @@ async function runTranscription(ctx, job, { file }) {
         const mapper = new TranscriptMapper(transcript);
         if (job.cancelled) return { status: 'CANCELLED', jobId: job.jobId };
 
+        const segments = mapper.getAllTimestampedText();
+
+        // Persist before announcing. If the app dies between the two, the
+        // transcript is already on disk and in the output bucket — the opposite
+        // order would report success for something unrecoverable.
+        const record = await persistJob(ctx, job, 'COMPLETED', segments);
+
         transcriptionNotify(ctx, 'Transcription Complete', `${job.displayName} is ready to read.`);
         return {
           status: 'COMPLETED',
@@ -480,7 +566,8 @@ async function runTranscription(ctx, job, { file }) {
           displayName: job.displayName,
           sourceFile: job.sourceFile,
           mediaKey: job.mediaKey,
-          transcript: mapper.getAllTimestampedText(),
+          record,
+          transcript: segments,
         };
       } else if (jobStatus.TranscriptionJobStatus === 'FAILED') {
         throw new Error(`Transcription job failed: ${jobStatus.FailureReason || 'Unknown error'}`);
@@ -501,8 +588,11 @@ async function runTranscription(ctx, job, { file }) {
     }
 
     // The paused budget ran out. The job is still alive on AWS, so say so and
-    // hand back the name rather than implying the work is gone.
+    // hand back the name rather than implying the work is gone. Recorded too —
+    // an abandoned job is exactly the kind the user would otherwise re-run,
+    // since it is still there to be collected.
     if (err instanceof TranscriptionPauseExpired) {
+      await persistJob(ctx, job, 'ABANDONED', null, { abandonedReason: job.pauseReason || 'network' });
       transcriptionNotify(ctx, 'Transcription Paused Too Long', err.message.slice(0, 140), 'critical');
       return { status: 'ABANDONED', jobId: job.jobId, jobName: err.jobName, message: err.message };
     }
@@ -563,11 +653,39 @@ function renameActiveTranscription(ctx, jobId, displayName) {
   return { renamed: true, displayName: trimmed };
 }
 
+/**
+ * Rename a transcription, whether it is still running or already finished.
+ *
+ * Two targets because a rename can happen at either point: while the job runs
+ * the name lives only in memory (the registry record isn't written until
+ * completion, and it picks up whatever the name is by then), and afterwards it
+ * lives in the registry. The sidecar in the output bucket is refreshed too so the
+ * AWS-side recovery tier doesn't drift from the local one — best-effort, since
+ * that tier is a backstop and a rename must still succeed offline.
+ */
+async function renameTranscription(ctx, jobId, displayName) {
+  const active = renameActiveTranscription(ctx, jobId, displayName);
+  if (active.renamed) return active;
+
+  if (!ctx.transcriptionRegistry) return { renamed: false };
+  const record = await ctx.transcriptionRegistry.rename(jobId, displayName);
+  if (!record) return { renamed: false };
+
+  if (record.jobName && ctx.isOnline()) {
+    await writeSidecar(ctx, { jobName: record.jobName }, record);
+  }
+  return { renamed: true, displayName: record.displayName };
+}
+
 module.exports = {
   runTranscription,
+  persistJob,
+  writeSidecar,
+  buildRecord,
   cancelTranscription,
   getTranscriptionState,
   renameActiveTranscription,
+  renameTranscription,
   createJob,
   deriveDisplayName,
   flushPendingTranscriptionDeletes,

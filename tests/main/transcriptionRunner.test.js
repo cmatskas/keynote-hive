@@ -27,7 +27,10 @@ jest.mock('electron-log/main', () => ({
 const mockNotify = jest.fn();
 jest.mock('../../src/main/notify', () => ({ notify: (...args) => mockNotify(...args) }));
 
-jest.mock('@aws-sdk/client-s3', () => ({ GetObjectCommand: jest.fn((input) => ({ _type: 's3get', input })) }));
+jest.mock('@aws-sdk/client-s3', () => ({
+  GetObjectCommand: jest.fn((input) => ({ _type: 's3get', input })),
+  PutObjectCommand: jest.fn((input) => ({ _type: 's3put', input })),
+}));
 
 const mockUploadDone = jest.fn(async () => {});
 const mockUploadAbort = jest.fn(async () => {});
@@ -76,6 +79,16 @@ function buildCtx({ transcribeSend, online = true } = {}) {
     },
     transcriptionJob: null,
     isOnline: () => state.online,
+    // In-memory stand-in for the on-disk registry (covered by its own suite).
+    transcriptionRegistry: {
+      saved: [],
+      save: jest.fn(async (record, transcript) => {
+        const stored = { ...record, hasTranscript: !!(transcript && transcript.length) };
+        ctx.transcriptionRegistry.saved.push({ record: stored, transcript });
+        return stored;
+      }),
+      rename: jest.fn(async () => null),
+    },
   };
   return { ctx, sent, state };
 }
@@ -380,10 +393,13 @@ describe('pausing and resuming', () => {
     const transcribeSend = jest.fn(async (cmd) => (cmd._type === 'get' ? completedJob() : {}));
     const { ctx } = buildCtx({ transcribeSend });
 
-    let s3Calls = 0;
-    ctx.awsClients.s3.send = jest.fn(async () => {
-      s3Calls++;
-      if (s3Calls === 1) throw networkError();
+    // Counts transcript fetches specifically — the sidecar write is also an S3
+    // call, and it isn't what this test is about.
+    let fetches = 0;
+    ctx.awsClients.s3.send = jest.fn(async (cmd) => {
+      if (cmd._type !== 's3get') return {};
+      fetches++;
+      if (fetches === 1) throw networkError();
       return { Body: { transformToString: async () => '{}' } };
     });
 
@@ -392,7 +408,7 @@ describe('pausing and resuming', () => {
     job.resume('network');
 
     await expect(promise).resolves.toMatchObject({ status: 'COMPLETED' });
-    expect(s3Calls).toBe(2);
+    expect(fetches).toBe(2);
   });
 
   test('reports the network failure to the connectivity monitor rather than assuming', async () => {
@@ -651,5 +667,254 @@ describe('emitToRenderer', () => {
     const ctx = { mainWindow: { isDestroyed: () => true, webContents: { send } } };
     runner.emitToRenderer(ctx, 'x', {});
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Step 2 of the rework: a finished job is recorded in two places, so it stops
+ * being something the user has to re-run.
+ *
+ *  - The local registry is the fast, offline tier.
+ *  - A sidecar object next to the transcript in the *user's own* output bucket is
+ *    the durable tier: a single ListObjectsV2 rebuilds the index, names included,
+ *    outliving the retention window that eventually removes AWS job metadata.
+ *    Only possible because v3.5.0 guaranteed that bucket exists and is theirs.
+ */
+describe('persistence', () => {
+  const putsOf = (ctx) => ctx.awsClients.s3.send.mock.calls
+    .filter(([cmd]) => cmd._type === 's3put')
+    .map(([cmd]) => cmd.input);
+
+  function completingCtx() {
+    const transcribeSend = jest.fn(async (cmd) => (cmd._type === 'get' ? completedJob() : {}));
+    const built = buildCtx({ transcribeSend });
+    built.ctx.awsClients.s3.send = jest.fn(async (cmd) => {
+      if (cmd._type === 's3get') return { Body: { transformToString: async () => '{}' } };
+      return {};
+    });
+    return built;
+  }
+
+  test('saves a registry record with the transcript on completion', async () => {
+    const { ctx } = completingCtx();
+
+    const { job } = startJob(ctx);
+    await (ctx.transcriptionJob === job ? Promise.resolve() : Promise.resolve());
+    const result = await runner.runTranscription(ctx, runner.createJob({ sourceFile: fakeFile.name }), { file: fakeFile });
+
+    expect(result.status).toBe('COMPLETED');
+    const saved = ctx.transcriptionRegistry.saved.at(-1);
+    expect(saved.record).toMatchObject({
+      status: 'COMPLETED',
+      displayName: 'clip',
+      sourceFile: 'clip.mp4',
+      language: 'en-US',
+      mediaBucket: 'test-bucket',
+      outputBucket: 'test-out-bucket',
+    });
+    expect(saved.record.mediaKey).toMatch(/^\d+-clip\.mp4$/);
+    expect(saved.transcript).toEqual([{ startTime: 0, endTime: 1, speaker: '1', text: 'hello' }]);
+  });
+
+  test('writes the sidecar next to the transcript in the output bucket', async () => {
+    const { ctx } = completingCtx();
+
+    const result = await runner.runTranscription(ctx, runner.createJob({ sourceFile: fakeFile.name }), { file: fakeFile });
+
+    const [put] = putsOf(ctx);
+    expect(put.Bucket).toBe('test-out-bucket');
+    expect(put.Key).toBe(`${result.jobName}.hive.json`);
+    expect(put.ContentType).toBe('application/json');
+
+    // The sidecar must carry everything needed to rebuild an index entry.
+    const body = JSON.parse(put.Body);
+    expect(body).toMatchObject({
+      jobId: result.jobId,
+      jobName: result.jobName,
+      displayName: 'clip',
+      sourceFile: 'clip.mp4',
+      status: 'COMPLETED',
+    });
+    expect(body.mediaKey).toMatch(/^\d+-clip\.mp4$/);
+  });
+
+  test('persists before announcing completion', async () => {
+    // The opposite order would report success for something unrecoverable if the
+    // app died in between.
+    const order = [];
+    const { ctx } = completingCtx();
+    ctx.transcriptionRegistry.save = jest.fn(async () => { order.push('save'); return {}; });
+    mockNotify.mockImplementation(() => { order.push('notify'); });
+
+    await runner.runTranscription(ctx, runner.createJob({ sourceFile: fakeFile.name }), { file: fakeFile });
+
+    expect(order).toEqual(['save', 'notify']);
+  });
+
+  test('a sidecar failure does not fail the job', async () => {
+    // The transcript is already retrieved and saved locally; losing the AWS-side
+    // recovery tier is not worth failing a successful job over.
+    const { ctx } = completingCtx();
+    ctx.awsClients.s3.send = jest.fn(async (cmd) => {
+      if (cmd._type === 's3get') return { Body: { transformToString: async () => '{}' } };
+      throw new Error('AccessDenied on PutObject');
+    });
+
+    const result = await runner.runTranscription(ctx, runner.createJob({ sourceFile: fakeFile.name }), { file: fakeFile });
+
+    expect(result.status).toBe('COMPLETED');
+    expect(ctx.transcriptionRegistry.saved).toHaveLength(1);
+  });
+
+  test('a registry failure does not fail the job either', async () => {
+    const { ctx } = completingCtx();
+    ctx.transcriptionRegistry.save = jest.fn(async () => { throw new Error('disk full'); });
+
+    const result = await runner.runTranscription(ctx, runner.createJob({ sourceFile: fakeFile.name }), { file: fakeFile });
+
+    expect(result.status).toBe('COMPLETED');
+    expect(result.transcript).toHaveLength(1);
+  });
+
+  test('records an abandoned job — it is still on AWS and still collectable', async () => {
+    // Exactly the kind of job a user would otherwise re-run.
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type === 'get') throw networkError();
+      return {};
+    });
+    const { ctx } = buildCtx({ transcribeSend });
+    const job = runner.createJob({ sourceFile: fakeFile.name });
+    ctx.transcriptionJob = job;
+    job.pausedTotalMs = runner.MAX_PAUSED_MS;   // budget already spent
+
+    const result = await runner.runTranscription(ctx, job, { file: fakeFile });
+
+    expect(result.status).toBe('ABANDONED');
+    const saved = ctx.transcriptionRegistry.saved.at(-1);
+    expect(saved.record).toMatchObject({ status: 'ABANDONED', abandonedReason: 'network' });
+    expect(saved.transcript).toBeNull();
+  });
+
+  test('does not record a cancelled job — the user threw it away deliberately', async () => {
+    const transcribeSend = jest.fn(async (cmd) => (cmd._type === 'get'
+      ? { TranscriptionJob: { TranscriptionJobStatus: 'IN_PROGRESS' } } : {}));
+    const { ctx } = buildCtx({ transcribeSend });
+
+    const { job, promise } = startJob(ctx);
+    await pollingAsleep(job);
+    await runner.cancelTranscription(ctx);
+    await promise;
+
+    expect(ctx.transcriptionRegistry.saved).toHaveLength(0);
+  });
+
+  test('skips the sidecar when no output bucket is configured', async () => {
+    const { ctx } = completingCtx();
+    ctx.currentSettings = { ...ctx.currentSettings, outputBucketName: '' };
+    // Bypass the config guard to isolate sidecar behaviour.
+    const job = runner.createJob({ sourceFile: fakeFile.name });
+    job.jobName = 'transcription-1';
+
+    await expect(runner.writeSidecar(ctx, job, { jobId: job.jobId })).resolves.toBe(false);
+    expect(putsOf(ctx)).toHaveLength(0);
+  });
+});
+
+describe('renameTranscription', () => {
+  test('renames the in-flight job without touching the registry', async () => {
+    const { ctx } = buildCtx();
+    const job = runner.createJob({ sourceFile: 'clip.mp4' });
+    ctx.transcriptionJob = job;
+
+    await expect(runner.renameTranscription(ctx, job.jobId, 'Board review'))
+      .resolves.toEqual({ renamed: true, displayName: 'Board review' });
+    expect(job.displayName).toBe('Board review');
+    expect(ctx.transcriptionRegistry.rename).not.toHaveBeenCalled();
+  });
+
+  test('falls back to the registry for a job that has already finished', async () => {
+    const { ctx } = buildCtx();
+    ctx.transcriptionRegistry.rename = jest.fn(async () => ({
+      jobId: 'job-old', jobName: 'transcription-1', displayName: 'Board review',
+    }));
+
+    await expect(runner.renameTranscription(ctx, 'job-old', 'Board review'))
+      .resolves.toEqual({ renamed: true, displayName: 'Board review' });
+    expect(ctx.transcriptionRegistry.rename).toHaveBeenCalledWith('job-old', 'Board review');
+  });
+
+  test('refreshes the sidecar so the AWS-side tier does not drift', async () => {
+    const { ctx } = buildCtx();
+    ctx.transcriptionRegistry.rename = jest.fn(async () => ({
+      jobId: 'job-old', jobName: 'transcription-1', displayName: 'Board review',
+    }));
+
+    await runner.renameTranscription(ctx, 'job-old', 'Board review');
+
+    const put = ctx.awsClients.s3.send.mock.calls.find(([cmd]) => cmd._type === 's3put');
+    expect(put).toBeDefined();
+    expect(JSON.parse(put[0].input.Body).displayName).toBe('Board review');
+  });
+
+  test('still renames offline — the sidecar is a backstop, not a gate', async () => {
+    const { ctx, state } = buildCtx();
+    state.online = false;
+    ctx.transcriptionRegistry.rename = jest.fn(async () => ({
+      jobId: 'job-old', jobName: 'transcription-1', displayName: 'Board review',
+    }));
+
+    await expect(runner.renameTranscription(ctx, 'job-old', 'Board review'))
+      .resolves.toMatchObject({ renamed: true });
+    expect(ctx.awsClients.s3.send).not.toHaveBeenCalled();
+  });
+
+  test('reports failure for an unknown job', async () => {
+    const { ctx } = buildCtx();
+    await expect(runner.renameTranscription(ctx, 'nope', 'X')).resolves.toEqual({ renamed: false });
+  });
+});
+
+describe('paused budget exhaustion', () => {
+  /**
+   * Regression: the budget-exhausted path calls finish() before the retry timer
+   * exists, and the timer used to be declared with `const` further down the same
+   * scope — so clearTimeout() hit its temporal dead zone and threw a
+   * ReferenceError. The ABANDONED outcome became a generic failure, telling the
+   * user their transcription had failed rather than that it was paused too long
+   * and still waiting on AWS. Present since v3.4.0; no test reached it because
+   * none exhausted the 30-minute budget.
+   */
+  test('reports ABANDONED rather than throwing when the budget is already spent', async () => {
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type === 'get') throw networkError();
+      return {};
+    });
+    const { ctx } = buildCtx({ transcribeSend });
+    const job = runner.createJob({ sourceFile: fakeFile.name });
+    ctx.transcriptionJob = job;
+    job.pausedTotalMs = runner.MAX_PAUSED_MS;
+
+    const result = await runner.runTranscription(ctx, job, { file: fakeFile });
+
+    expect(result).toMatchObject({ status: 'ABANDONED', jobId: job.jobId });
+    expect(result.message).toMatch(/still running on AWS/i);
+    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Transcription Paused Too Long',
+    }));
+  });
+
+  test('the abandoned job is named so it can be found on AWS', async () => {
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type === 'get') throw networkError();
+      return {};
+    });
+    const { ctx } = buildCtx({ transcribeSend });
+    const job = runner.createJob({ sourceFile: fakeFile.name });
+    ctx.transcriptionJob = job;
+    job.pausedTotalMs = runner.MAX_PAUSED_MS;
+
+    const result = await runner.runTranscription(ctx, job, { file: fakeFile });
+
+    expect(result.jobName).toMatch(/^transcription-\d+$/);
   });
 });
