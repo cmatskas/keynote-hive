@@ -83,14 +83,70 @@ describe('CredentialMonitor offline handling', () => {
     monitor.stop();
   });
 
-  test('skips the STS round trip entirely when already known to be offline', async () => {
+  test('checks credentials even when the connectivity monitor says offline', async () => {
+    // This used to short-circuit — "don't bother with a doomed round trip" —
+    // which made expired credentials undetectable for as long as the connectivity
+    // monitor was wrong. In production it was wrong for three hours, so the app
+    // blamed the network and could not tell the user whether their token had also
+    // expired. quickValidate() already distinguishes the two cases itself.
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
     const { monitor } = build({ online: false });
     monitor.start();
 
     await monitor._runPollCheck();
 
-    expect(mockQuickValidate).not.toHaveBeenCalled();
-    expect(monitor.isPausedOffline()).toBe(true);
+    expect(mockQuickValidate).toHaveBeenCalled();
+    // AWS answered, so we are demonstrably not offline whatever the monitor thinks.
+    expect(monitor.isPausedOffline()).toBe(false);
+    monitor.stop();
+  });
+
+  test('a successful check nudges the connectivity monitor to re-evaluate', async () => {
+    // Reaching AWS is proof the network works, so the credential poll becomes the
+    // thing that corrects a wrong offline verdict rather than a casualty of it.
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    const onReachedAws = jest.fn();
+    const monitor = new CredentialMonitor({
+      getCredentials: () => CREDS,
+      getMainWindow: () => ({ isDestroyed: () => false, webContents: { send: jest.fn() } }),
+      isOnline: () => false,
+      onReachedAws,
+      onExpired: jest.fn(),
+    });
+    monitor.start();
+
+    await monitor._runPollCheck();
+
+    expect(onReachedAws).toHaveBeenCalled();
+    monitor.stop();
+  });
+
+  test('detects expiry even while the connectivity monitor believes it is offline', async () => {
+    // The scenario that was undiagnosable before: a wrong offline verdict must not
+    // hide a genuinely rejected token.
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: false, errors: ['Invalid'] });
+    const { monitor, send } = build({ online: false });
+    monitor.start();
+
+    await monitor._runPollCheck();
+
+    expect(bannerLevels(send)).toContain('expired');
+    expect(monitor.getCredentialState()).toBe('rejected');
+  });
+
+  test('reports the credential state so the UI can name the real problem', async () => {
+    const { monitor } = build();
+    monitor.start();
+    expect(monitor.getCredentialState()).toBe('unknown');
+
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    await monitor._runPollCheck();
+    expect(monitor.getCredentialState()).toBe('valid');
+
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: true, errors: [] });
+    await monitor._runPollCheck();
+    // Unreachable tells us nothing about the credentials — don't claim it does.
+    expect(monitor.getCredentialState()).toBe('unknown');
     monitor.stop();
   });
 

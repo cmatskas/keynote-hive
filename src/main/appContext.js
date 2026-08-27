@@ -140,6 +140,15 @@ class AppContext {
   }
 
   /**
+   * What we last learned about the credentials, for the UI to distinguish "can't
+   * reach AWS" from "AWS rejected your credentials" — only the second is
+   * actionable.
+   */
+  credentialState() {
+    return this.credentialMonitor ? this.credentialMonitor.getCredentialState() : 'unknown';
+  }
+
+  /**
    * Guard for network-dependent IPC handlers. Throws a recognisable error so a
    * renderer control that slipped past the OfflineGuard degrades into a clear
    * message instead of a 30-second SDK retry-and-timeout hang.

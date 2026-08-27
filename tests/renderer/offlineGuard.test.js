@@ -50,7 +50,7 @@ const LOCAL_CONTROLS = [
   'themeToggle', 'workAttachFileBtn',
 ];
 
-async function loadGuard({ online = true, statusThrows = false } = {}) {
+async function loadGuard({ online = true, statusThrows = false, credentialState = 'unknown' } = {}) {
   document.body.innerHTML = `
     <div id="credentialWarningBanner" style="display:none;"></div>
     ${NETWORK_BUTTONS.map(id => `<button id="${id}"></button>`).join('\n')}
@@ -60,7 +60,7 @@ async function loadGuard({ online = true, statusThrows = false } = {}) {
 
   mockElectronAPI.invoke.mockImplementation((channel) => {
     if (channel === 'get-connectivity-status') {
-      return statusThrows ? Promise.reject(new Error('boom')) : Promise.resolve({ online });
+      return statusThrows ? Promise.reject(new Error('boom')) : Promise.resolve({ online, credentialState });
     }
     if (channel === 'renderer-connectivity-hint') return Promise.resolve({ online });
     return Promise.resolve(undefined);
@@ -124,6 +124,134 @@ describe('OfflineGuard banner', () => {
     await loadGuard({ statusThrows: true });
     expect(window.OfflineGuard.isOnline()).toBe(true);
     expect(document.getElementById('offlineBanner').style.display).toBe('none');
+  });
+});
+
+/**
+ * The field report that prompted this: after walking between buildings the app
+ * stayed offline, and there was no way to prompt it to look again — restarting was
+ * the only recovery.
+ */
+describe('OfflineGuard retry', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('offers a retry while offline', async () => {
+    await loadGuard({ online: false });
+    const btn = document.getElementById('offlineRetryBtn');
+    expect(btn).not.toBeNull();
+    expect(btn.classList.contains('d-none')).toBe(false);
+  });
+
+  test('asks the main process to re-probe rather than guessing locally', async () => {
+    await loadGuard({ online: false });
+    mockElectronAPI.invoke.mockClear();
+    mockElectronAPI.invoke.mockResolvedValue({ online: true });
+
+    document.getElementById('offlineRetryBtn').click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockElectronAPI.invoke).toHaveBeenCalledWith('renderer-connectivity-hint');
+  });
+
+  test('clears the banner when the network is back', async () => {
+    await loadGuard({ online: false });
+    expect(document.getElementById('offlineBanner').style.display).toBe('flex');
+    mockElectronAPI.invoke.mockResolvedValue({ online: true });
+
+    document.getElementById('offlineRetryBtn').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.getElementById('offlineBanner').style.display).toBe('none');
+    expect(window.OfflineGuard.isOnline()).toBe(true);
+  });
+
+  test('says so when still offline, rather than appearing to do nothing', async () => {
+    await loadGuard({ online: false });
+    mockElectronAPI.invoke.mockResolvedValue({ online: false });
+
+    document.getElementById('offlineRetryBtn').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/Still offline/i), 'warning'
+    );
+    expect(document.getElementById('offlineBanner').style.display).toBe('flex');
+  });
+
+  test('re-enables the button afterwards, including on failure', async () => {
+    await loadGuard({ online: false });
+    mockElectronAPI.invoke.mockRejectedValue(new Error('ipc gone'));
+    const btn = document.getElementById('offlineRetryBtn');
+
+    btn.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent).toMatch(/Retry now/);
+  });
+});
+
+/**
+ * "Offline" and "AWS rejected your credentials" are different problems and only
+ * one of them is actionable. Reporting the first when the second is true is what
+ * sent the user hunting through their network settings.
+ */
+describe('OfflineGuard credential state', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('names the credentials when AWS has rejected them', async () => {
+    await loadGuard({ online: false, credentialState: 'rejected' });
+
+    const banner = document.getElementById('offlineBanner');
+    expect(banner.textContent).toMatch(/rejected your credentials/i);
+    expect(banner.textContent).toMatch(/Settings/);
+    expect(banner.textContent).not.toMatch(/Hive is offline/);
+  });
+
+  test('hides the retry button when retrying cannot help', async () => {
+    await loadGuard({ online: false, credentialState: 'rejected' });
+    expect(document.getElementById('offlineRetryBtn').classList.contains('d-none')).toBe(true);
+  });
+
+  test('still reassures that local work is available', async () => {
+    await loadGuard({ online: false, credentialState: 'rejected' });
+    expect(document.getElementById('offlineBanner').textContent).toMatch(/locally/);
+  });
+
+  test('blames the network when the credentials are fine', async () => {
+    await loadGuard({ online: false, credentialState: 'valid' });
+
+    const banner = document.getElementById('offlineBanner');
+    expect(banner.textContent).toMatch(/Hive is offline/);
+    expect(document.getElementById('offlineRetryBtn').classList.contains('d-none')).toBe(false);
+  });
+
+  test('picks up a credential verdict from a connectivity event', async () => {
+    await loadGuard({ online: true, credentialState: 'valid' });
+
+    receiveHandler('connectivity-changed')({ online: false, credentialState: 'rejected' });
+
+    expect(document.getElementById('offlineBanner').textContent).toMatch(/rejected your credentials/i);
+  });
+
+  test('a verdict learned elsewhere updates the banner', async () => {
+    await loadGuard({ online: false, credentialState: 'valid' });
+
+    window.OfflineGuard.setCredentialState('rejected');
+
+    expect(document.getElementById('offlineBanner').textContent).toMatch(/rejected your credentials/i);
+    expect(window.OfflineGuard.credentialState()).toBe('rejected');
   });
 });
 

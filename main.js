@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Notification, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Notification, Menu, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const logger = require('electron-log/main');
@@ -11,6 +11,7 @@ const AppContext = require('./src/main/appContext');
 const CredentialMonitor = require('./src/main/models/credentialMonitor');
 const ConnectivityMonitor = require('./src/main/models/connectivityMonitor');
 const transcriptionRunner = require('./src/main/models/transcriptionRunner');
+const windowState = require('./src/main/models/windowState');
 const { resolveStartupRoute } = require('./src/main/startupRoute');
 
 // IPC handler modules
@@ -50,6 +51,42 @@ function webPrefs() {
   return { nodeIntegration: false, contextIsolation: true, sandbox: false, preload: path.join(__dirname, 'preload.js') };
 }
 
+// ── Window sizing ───────────────────────────────────────────────────────────
+//
+// Sized against the display rather than hardcoded, so the window is as large as
+// the screen sensibly allows and never opens partly off-screen. The previous
+// fixed 1200x800 (and 800x600 for credentials) clipped content on larger
+// displays for no reason — users were resizing every launch to see fields that
+// were only hidden because the default was conservative.
+//
+// Minimums are set too: below these, controls start hiding behind scroll, and a
+// window you cannot shrink into uselessness is friendlier than one you can.
+const MAIN_PREFERRED = { width: 1500, height: 1000 };
+const MAIN_MIN = { width: 1100, height: 720 };
+const CREDS_PREFERRED = { width: 1040, height: 820 };
+const CREDS_MIN = { width: 840, height: 640 };
+// Leave a margin so the window never butts against the screen edges.
+const SCREEN_MARGIN = 80;
+
+/**
+ * Largest sensible size for a window on the current display: the preferred size,
+ * shrunk to fit the work area if necessary, but never below the minimum.
+ */
+function fitToScreen(preferred, minimum) {
+  let available = { width: preferred.width, height: preferred.height };
+  try {
+    const work = screen.getPrimaryDisplay().workAreaSize;
+    available = {
+      width: Math.max(minimum.width, Math.min(preferred.width, work.width - SCREEN_MARGIN)),
+      height: Math.max(minimum.height, Math.min(preferred.height, work.height - SCREEN_MARGIN)),
+    };
+  } catch {
+    // screen is unavailable before app-ready; the preferred size is a safe
+    // fallback since it is only ever reduced from here.
+  }
+  return available;
+}
+
 function createSplashWindow() {
   const splash = new BrowserWindow({
     width: 600, height: 400, frame: false, resizable: false, center: true,
@@ -60,16 +97,40 @@ function createSplashWindow() {
 }
 
 function createWindow() {
+  // Whatever the user last chose wins; the screen-fitted default is only for a
+  // first run, or when saved bounds would land on a display that's gone.
+  const saved = windowState.load('main', MAIN_MIN);
+  const size = saved || { ...fitToScreen(MAIN_PREFERRED, MAIN_MIN) };
+
   ctx.mainWindow = new BrowserWindow({
-    width: 1200, height: 800, icon: getIconPath(), webPreferences: webPrefs(),
+    width: size.width,
+    height: size.height,
+    ...(saved ? { x: saved.x, y: saved.y } : { center: true }),
+    minWidth: MAIN_MIN.width,
+    minHeight: MAIN_MIN.height,
+    icon: getIconPath(),
+    webPreferences: webPrefs(),
   });
+  if (saved?.isMaximized) ctx.mainWindow.maximize();
+  windowState.track('main', ctx.mainWindow);
   ctx.mainWindow.loadFile('src/pages/index.html');
 }
 
 function createCredentialsWindow() {
+  const saved = windowState.load('credentials', CREDS_MIN);
+  const size = saved || { ...fitToScreen(CREDS_PREFERRED, CREDS_MIN) };
+
   ctx.mainWindow = new BrowserWindow({
-    width: 800, height: 600, center: true, icon: getIconPath(), webPreferences: webPrefs(),
+    width: size.width,
+    height: size.height,
+    ...(saved ? { x: saved.x, y: saved.y } : { center: true }),
+    minWidth: CREDS_MIN.width,
+    minHeight: CREDS_MIN.height,
+    icon: getIconPath(),
+    webPreferences: webPrefs(),
   });
+  if (saved?.isMaximized) ctx.mainWindow.maximize();
+  windowState.track('credentials', ctx.mainWindow);
   ctx.mainWindow.loadFile('src/pages/credentials.html');
 }
 
@@ -82,7 +143,10 @@ function createCredentialsWindow() {
  */
 function handleConnectivityChange(online) {
   if (ctx.mainWindow && !ctx.mainWindow.isDestroyed()) {
-    ctx.mainWindow.webContents.send('connectivity-changed', { online });
+    ctx.mainWindow.webContents.send('connectivity-changed', {
+      online,
+      credentialState: ctx.credentialState(),
+    });
   }
 
   if (!online) return;
@@ -127,11 +191,18 @@ ctx.startCredentialMonitor = function () {
     // the job's result would be lost with the renderer, and the user is far
     // better served by the banner plus Settings → Credentials in place.
     shouldDeferNavigation: () => !!ctx.transcriptionJob,
+    // A real answer from AWS proves the network works, whatever the connectivity
+    // monitor currently believes — so let it re-check rather than staying wrong.
+    onReachedAws: () => ctx.connectivityMonitor?.recheck().catch(() => {}),
     onExpired: () => {
       if (ctx.credentialMonitor) { ctx.credentialMonitor.stop(); ctx.credentialMonitor = null; }
       if (ctx.mainWindow && !ctx.mainWindow.isDestroyed()) {
-        ctx.mainWindow.setSize(800, 600);
-        ctx.mainWindow.center();
+        const credsSaved = windowState.load('credentials', CREDS_MIN);
+        const credsSize = credsSaved || fitToScreen(CREDS_PREFERRED, CREDS_MIN);
+        ctx.mainWindow.setMinimumSize(CREDS_MIN.width, CREDS_MIN.height);
+        ctx.mainWindow.setSize(credsSize.width, credsSize.height);
+        if (credsSaved) ctx.mainWindow.setPosition(credsSaved.x, credsSaved.y);
+        else ctx.mainWindow.center();
         ctx.mainWindow.loadFile('src/pages/credentials.html');
       }
     },
@@ -223,8 +294,12 @@ app.whenReady().then(async () => {
   // Misc handlers
   ipcMain.handle('navigate-to-main', async () => {
     if (ctx.mainWindow) {
-      ctx.mainWindow.setSize(1200, 800);
-      ctx.mainWindow.center();
+      const mainSaved = windowState.load('main', MAIN_MIN);
+      const mainSize = mainSaved || fitToScreen(MAIN_PREFERRED, MAIN_MIN);
+      ctx.mainWindow.setMinimumSize(MAIN_MIN.width, MAIN_MIN.height);
+      ctx.mainWindow.setSize(mainSize.width, mainSize.height);
+      if (mainSaved) ctx.mainWindow.setPosition(mainSaved.x, mainSaved.y);
+      else ctx.mainWindow.center();
       ctx.mainWindow.setResizable(true);
       ctx.mainWindow.loadFile('src/pages/index.html');
     }
@@ -255,7 +330,10 @@ app.whenReady().then(async () => {
   // The renderer asks for the current state on load (it can't rely on having
   // been present for the last transition) and forwards its own OS
   // online/offline events, which fire sooner than our recheck timer.
-  ipcMain.handle('get-connectivity-status', () => ({ online: ctx.isOnline() }));
+  ipcMain.handle('get-connectivity-status', () => ({
+    online: ctx.isOnline(),
+    credentialState: ctx.credentialState(),
+  }));
 
   ipcMain.handle('renderer-connectivity-hint', async () => {
     // Deliberately ignores the renderer's own verdict and re-probes:

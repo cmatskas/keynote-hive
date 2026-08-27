@@ -62,6 +62,9 @@
     'pipelines, and transcription — is paused until the connection returns.';
 
   let online = true;
+  // 'valid' | 'rejected' | 'unknown' — reported by the main process so the banner
+  // can name the actual problem rather than always blaming the network.
+  let credentialState = 'unknown';
   // Only restore what we disabled, so a control disabled for its own reasons
   // (mid-request, invalid form) isn't wrongly re-enabled on reconnect.
   const disabledByUs = new Set();
@@ -80,8 +83,9 @@
     banner.setAttribute('aria-live', 'polite');
     banner.style.display = 'none';
     banner.innerHTML =
-      '<i class="bi bi-wifi-off me-2" aria-hidden="true"></i>' +
-      '<span id="offlineBannerText" class="flex-grow-1 small"></span>';
+        '<i class="bi bi-wifi-off me-2" aria-hidden="true"></i>' +
+        '<span id="offlineBannerText" class="flex-grow-1 small"></span>' +
+        '<button class="btn btn-sm btn-outline-light ms-3" id="offlineRetryBtn">Retry now</button>';
 
     // Sit directly above the credential warning banner if present, so the two
     // stack predictably below the navbar instead of fighting for the same slot.
@@ -93,12 +97,62 @@
     }
     const textEl = banner.querySelector('#offlineBannerText');
     if (textEl) textEl.textContent = OFFLINE_MESSAGE;
+    banner.querySelector('#offlineRetryBtn')?.addEventListener('click', retryNow);
     return banner;
   }
+
+  /**
+   * Ask the main process to re-check immediately.
+   *
+   * A user who has just walked back into coverage should not have to wait out the
+   * next scheduled probe, or guess whether the app has noticed. Before this there
+   * was no way to prompt it at all — the only recovery was restarting the app.
+   */
+  async function retryNow() {
+    const btn = document.getElementById('offlineRetryBtn');
+    const original = btn ? btn.textContent : null;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Checking…';
+    }
+
+    try {
+      const res = await window.electronAPI.invoke('renderer-connectivity-hint');
+      const back = res && res.online === true;
+      setOnline(back);
+      if (!back && window.electronAPI?.showToast) {
+        window.electronAPI.showToast('Still offline — could not reach AWS.', 'warning');
+      }
+    } catch (err) {
+      console.error('Connectivity retry failed:', err);
+    } finally {
+      // Restore even on success: the banner is hidden rather than destroyed, so
+      // the button has to be usable again next time.
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+  }
+
+  const CREDENTIALS_REJECTED_MESSAGE =
+    'AWS rejected your credentials. Update them in Settings → Credentials. Your ' +
+    'conversations, work history, skills and showflows are stored locally and remain available.';
 
   function renderBanner() {
     const banner = ensureBanner();
     banner.style.display = online ? 'none' : 'flex';
+
+    // When AWS has actually rejected the credentials, saying "offline" sends the
+    // user looking at their network instead of the thing they can fix. Prefer the
+    // actionable message, and drop the retry button — retrying won't help.
+    const rejected = credentialState === 'rejected';
+    const textEl = banner.querySelector('#offlineBannerText');
+    if (textEl) textEl.textContent = rejected ? CREDENTIALS_REJECTED_MESSAGE : OFFLINE_MESSAGE;
+    const icon = banner.querySelector('.bi');
+    if (icon) icon.className = rejected ? 'bi bi-key me-2' : 'bi bi-wifi-off me-2';
+    const retry = banner.querySelector('#offlineRetryBtn');
+    if (retry) retry.classList.toggle('d-none', rejected);
   }
 
   // ── Control gating ───────────────────────────────────────────────────────
@@ -151,6 +205,15 @@
 
   const OfflineGuard = {
     isOnline: () => online,
+    credentialState: () => credentialState,
+
+    /** Record a credential verdict learned elsewhere (e.g. a failed send). */
+    setCredentialState(next) {
+      credentialState = next || 'unknown';
+      renderBanner();
+    },
+
+    retryNow,
 
     /** Subscribe to connectivity transitions. Returns an unsubscribe function. */
     onChange(fn) {
@@ -180,13 +243,15 @@
       // loaded after the last transition, so there's nothing to infer from.
       try {
         const status = await window.electronAPI.invoke('get-connectivity-status');
+        credentialState = status?.credentialState || 'unknown';
         setOnline(status?.online !== false);
       } catch {
         setOnline(true); // never trap the user behind a failed status check
       }
 
-      window.electronAPI.receive('connectivity-changed', ({ online: isOnline }) => {
-        setOnline(isOnline !== false);
+      window.electronAPI.receive('connectivity-changed', (payload) => {
+        if (payload && payload.credentialState) credentialState = payload.credentialState;
+        setOnline(payload?.online !== false);
       });
 
       // The browser's own events fire sooner than the main process's recheck

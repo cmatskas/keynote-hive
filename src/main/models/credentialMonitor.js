@@ -26,12 +26,13 @@ const WARN_15_MS        = 15 * 60 * 1000; // 15 minutes before expiry
 const WARN_2_MS         =  2 * 60 * 1000; //  2 minutes before expiry
 
 class CredentialMonitor {
-  constructor({ getCredentials, getMainWindow, onExpired, isOnline = null, shouldDeferNavigation = null }) {
+  constructor({ getCredentials, getMainWindow, onExpired, isOnline = null, shouldDeferNavigation = null, onReachedAws = null }) {
     this.getCredentials  = getCredentials;   // () => currentCredentials
     this.getMainWindow   = getMainWindow;    // () => mainWindow
     this.onExpired       = onExpired;        // called when credentials expire
     this.isOnline        = isOnline;         // () => boolean, optional
     this.shouldDeferNavigation = shouldDeferNavigation; // () => boolean, optional veto
+    this.onReachedAws = onReachedAws;        // () => void, called on any real answer from AWS
 
     this._pollTimer   = null;
     this._warn15Timer = null;
@@ -41,6 +42,7 @@ class CredentialMonitor {
     this._lastStatus  = 'valid'; // 'valid' | 'warning15' | 'warning2' | 'expired'
     this._pausedOffline = false; // true while we can't reach AWS to check
     this._navigationDeferred = false; // expired, but navigating would lose work
+    this._credentialState = 'unknown'; // 'valid' | 'rejected' | 'unknown'
   }
 
   start() {
@@ -66,6 +68,7 @@ class CredentialMonitor {
     this.stop();
     this._lastStatus = 'valid';
     this._pausedOffline = false;
+    this._credentialState = 'unknown';
     this.start();
   }
 
@@ -152,25 +155,24 @@ class CredentialMonitor {
    * One poll iteration. Extracted so resumeAfterOffline() can run the same
    * check immediately instead of waiting for the next interval.
    *
-   * The critical distinction: `valid: false` with `offline: true` means we
-   * never reached AWS, which says nothing about whether the credentials are
-   * still good. Escalating that to _handleExpired() would tear down the
-   * renderer and lose the user's work over a transient network blip.
+   * Deliberately **not** gated on connectivity. It used to return early when the
+   * connectivity monitor reported offline — "don't bother with a doomed round
+   * trip" — and that made expired credentials undetectable for as long as that
+   * monitor was wrong. In production it was wrong for three hours, so the app
+   * blamed the network and could not tell the user whether their token had also
+   * expired. `quickValidate()` already returns a three-state result that
+   * distinguishes "could not reach AWS" from "AWS rejected these credentials",
+   * which is the right place for that decision.
+   *
+   * A successful check is also proof we can reach AWS, so it nudges the
+   * connectivity monitor — the two now correct each other rather than one
+   * depending on the other.
    */
   async _runPollCheck() {
     if (!this._running) return;
 
     const creds = this.getCredentials();
     if (!creds) return;
-
-    // Skip the round trip entirely if we already know we're offline.
-    if (this.isOnline && !this.isOnline()) {
-      if (!this._pausedOffline) {
-        log.info('[CredentialMonitor] offline — pausing credential checks');
-        this._pausedOffline = true;
-      }
-      return;
-    }
 
     const validator = new AWSValidator(creds);
     const result = await validator.quickValidate();
@@ -180,16 +182,32 @@ class CredentialMonitor {
         log.info('[CredentialMonitor] could not reach AWS — pausing credential checks (not treating as expiry)');
         this._pausedOffline = true;
       }
+      this._credentialState = 'unknown';
       return;
     }
 
-    // We got a real answer from AWS, so any earlier pause is over.
+    // We got a real answer from AWS, so any earlier pause is over — and we have
+    // just proved the network works, whatever the connectivity monitor believes.
     this._pausedOffline = false;
+    if (this.onReachedAws) {
+      try { this.onReachedAws(); } catch (err) { log.warn(`[CredentialMonitor] onReachedAws threw: ${err.message}`); }
+    }
+
+    this._credentialState = result.valid ? 'valid' : 'rejected';
 
     if (!result.valid && this._lastStatus !== 'expired') {
       log.warn('[CredentialMonitor] poll detected invalid credentials');
       this._handleExpired();
     }
+  }
+
+  /**
+   * What we last learned about the credentials: 'valid', 'rejected', or 'unknown'
+   * when AWS could not be reached. Lets the UI say which thing is actually broken
+   * instead of attributing everything to being offline.
+   */
+  getCredentialState() {
+    return this._credentialState;
   }
 
   _handleWarn15(expiry) {
@@ -236,6 +254,7 @@ class CredentialMonitor {
       urgency: 'critical',
     });
 
+    this._credentialState = 'rejected';
     this._sendToRenderer('credential-expiry-warning', { level: 'expired', minsLeft: 0 });
 
     // Navigating replaces the renderer with the credentials page, which throws
