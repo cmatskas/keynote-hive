@@ -28,6 +28,12 @@ jest.mock('@aws-sdk/client-s3', () => ({
   CreateBucketCommand: jest.fn((input) => ({ __type: 'CreateBucketCommand', input })),
 }));
 
+const mockStsSend = jest.fn();
+jest.mock('@aws-sdk/client-sts', () => ({
+  STSClient: jest.fn().mockImplementation(() => ({ send: mockStsSend })),
+  GetCallerIdentityCommand: jest.fn((input) => ({ __type: 'GetCallerIdentityCommand', input })),
+}));
+
 const mockAgentCoreSend = jest.fn();
 jest.mock('@aws-sdk/client-bedrock-agentcore-control', () => ({
   BedrockAgentCoreControlClient: jest.fn().mockImplementation(() => ({ send: mockAgentCoreSend })),
@@ -67,6 +73,9 @@ beforeEach(() => {
     if (cmd.__type === 'StopCodeInterpreterSessionCommand') return Promise.resolve({});
     return Promise.resolve({});
   });
+  // Default: account ID resolves, so bucket-name suggestions are available.
+  // Tests that care about the no-account-id path override this.
+  mockStsSend.mockResolvedValue({ Account: '111122223333' });
 });
 
 describe('checkStatus()', () => {
@@ -390,5 +399,107 @@ describe('createMemory()', () => {
       { semanticMemoryStrategy: { name: 'semantic_strategy' } },
       { summaryMemoryStrategy: { name: 'summary_strategy' } },
     ]);
+  });
+});
+
+/**
+ * Transcription needs two buckets: the input one media is uploaded to, and the
+ * output one Transcribe writes the transcript into. Only the input bucket used
+ * to be checked, so a blank output bucket passed Setup Check silently and then
+ * broke transcription at the point of use with an opaque AWS error.
+ */
+describe('suggestBucketName()', () => {
+  test('scopes the name to the account so the global S3 namespace is not contended', () => {
+    expect(setupWizard.suggestBucketName('111122223333', 'input')).toBe('hive-media-111122223333');
+    expect(setupWizard.suggestBucketName('111122223333', 'output')).toBe('hive-transcripts-111122223333');
+  });
+
+  test('produces names that satisfy S3 naming rules', () => {
+    for (const kind of ['input', 'output']) {
+      const name = setupWizard.suggestBucketName('111122223333', kind);
+      expect(name.length).toBeGreaterThanOrEqual(3);
+      expect(name.length).toBeLessThanOrEqual(63);
+      expect(name).toMatch(/^[a-z0-9][.\-a-z0-9]{1,61}[a-z0-9]$/);
+    }
+  });
+
+  test('returns null when the account id is unknown, rather than a bogus name', () => {
+    expect(setupWizard.suggestBucketName(null, 'output')).toBeNull();
+    expect(setupWizard.suggestBucketName('', 'output')).toBeNull();
+  });
+});
+
+describe('checkStatus() transcription output bucket', () => {
+  test('checks both buckets, not just the input one', async () => {
+    mockS3Send.mockResolvedValue({});
+    mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+
+    const status = await setupWizard.checkStatus(credentials(), {
+      bucketName: 'my-input',
+      outputBucketName: 'my-output',
+    });
+
+    expect(status.transcriptionBucket.status).toBe('ready');
+    expect(status.transcriptionOutputBucket.status).toBe('ready');
+
+    const headed = mockS3Send.mock.calls
+      .filter(([cmd]) => cmd.__type === 'HeadBucketCommand')
+      .map(([cmd]) => cmd.input.Bucket);
+    expect(headed).toEqual(expect.arrayContaining(['my-input', 'my-output']));
+  });
+
+  test('reports the output bucket missing when unconfigured, with a suggestion', async () => {
+    mockS3Send.mockResolvedValue({});
+    mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+
+    const status = await setupWizard.checkStatus(credentials(), {
+      bucketName: 'my-input',
+      outputBucketName: '',
+    });
+
+    expect(status.transcriptionOutputBucket.status).toBe('missing');
+    expect(status.transcriptionOutputBucket.suggested).toBe('hive-transcripts-111122223333');
+    expect(status.transcriptionOutputBucket.detail).toMatch(/hive-transcripts-111122223333/);
+  });
+
+  test('reports the output bucket missing when the configured one does not exist', async () => {
+    mockS3Send.mockImplementation((cmd) => {
+      if (cmd.__type === 'HeadBucketCommand' && cmd.input.Bucket === 'gone') {
+        return Promise.reject(notFoundError('NotFound'));
+      }
+      return Promise.resolve({});
+    });
+    mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+
+    const status = await setupWizard.checkStatus(credentials(), {
+      bucketName: 'my-input',
+      outputBucketName: 'gone',
+    });
+
+    expect(status.transcriptionOutputBucket.status).toBe('missing');
+    expect(status.transcriptionOutputBucket.detail).toMatch(/'gone' not found/);
+  });
+
+  test('still reports statuses when the account id cannot be resolved — just without suggestions', async () => {
+    mockStsSend.mockRejectedValue(new Error('AccessDenied'));
+    mockS3Send.mockResolvedValue({});
+    mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+
+    const status = await setupWizard.checkStatus(credentials(), { bucketName: '', outputBucketName: '' });
+
+    expect(status.transcriptionOutputBucket.status).toBe('missing');
+    expect(status.transcriptionOutputBucket.suggested).toBeNull();
+  });
+
+  test('resolving the account id does not make checkStatus mutate anything', async () => {
+    mockS3Send.mockResolvedValue({});
+    mockAgentCoreSend.mockRejectedValue(notFoundError('ResourceNotFoundException'));
+
+    await setupWizard.checkStatus(credentials(), { bucketName: 'a', outputBucketName: 'b' });
+
+    const mutating = [...mockS3Send.mock.calls, ...mockIamSend.mock.calls, ...mockAgentCoreSend.mock.calls]
+      .map(([cmd]) => cmd.__type)
+      .filter(type => /^Create/.test(type || ''));
+    expect(mutating).toEqual([]);
   });
 });

@@ -218,10 +218,38 @@
       }
     } catch { /* defaults */ }
 
+    prefillBucketSuggestions();
     refreshWebSearchStatus();
 
     // Memory status — read toggle state directly from settings (no AWS call needed)
     // (handled by loadMemoryList called from init)
+  }
+
+  /**
+   * Pre-fill blank bucket fields with an account-scoped suggestion the user can
+   * overwrite. Neither bucket can ship a default (S3 names are unique across
+   * all of AWS), which is why both settings start empty — but leaving the field
+   * blank left users to invent a name with no guidance, and nothing validated
+   * the result. The value is a real editable field value, not a placeholder, so
+   * saving keeps it.
+   *
+   * Requires an AWS round trip to resolve the account ID, so it's skipped
+   * offline and on failure — the field simply stays blank, and save-time
+   * validation still catches it.
+   */
+  async function prefillBucketSuggestions() {
+    const input = document.getElementById('bucketName');
+    const output = document.getElementById('outputBucketName');
+    if (!input || !output) return;
+    if (input.value && output.value) return; // nothing to suggest
+    if (window.OfflineGuard && !window.OfflineGuard.isOnline()) return;
+
+    try {
+      const suggestions = await window.electronAPI.invoke('get-suggested-bucket-names');
+      if (!suggestions) return;
+      if (!input.value && suggestions.input) input.value = suggestions.input;
+      if (!output.value && suggestions.output) output.value = suggestions.output;
+    } catch { /* leave blank — save validation will prompt */ }
   }
 
   // ── Setup Check (Flow 1 — per-user, non-sequential checklist) ──────────
@@ -232,7 +260,8 @@
 
   const SETUP_ITEM_LABELS = {
     webSearchGateway: { title: 'Web Search Gateway', help: 'Needed for Work/Swarm web search' },
-    transcriptionBucket: { title: 'Transcription Storage Bucket', help: 'Needed for the Transcribe tab' },
+    transcriptionBucket: { title: 'Transcription Input Bucket', help: 'Where the Transcribe tab uploads your media' },
+    transcriptionOutputBucket: { title: 'Transcription Output Bucket', help: 'Where AWS Transcribe writes the transcript' },
     memory: { title: 'AgentCore Memory', help: 'Needed for Work tab conversation memory' },
     codeInterpreterPermission: { title: 'Code Interpreter Permission', help: 'Needed for Work/Swarm code execution and document attachments' },
   };
@@ -516,6 +545,22 @@
         webSearchGatewayRoleArn: document.getElementById('webSearchGatewayRoleArn').value.trim(),
         mantleApiKey: document.getElementById('mantleApiKey').value.trim(),
       };
+
+      // Both buckets are required for transcription and neither can have a
+      // default (S3 names are globally unique). Refuse the save rather than
+      // storing a blank that only surfaces as an opaque AWS error later — this
+      // check used to exist only on a settings page that is no longer reachable.
+      const missingBuckets = [];
+      if (!settings.bucketName) missingBuckets.push('Input S3 Bucket');
+      if (!settings.outputBucketName) missingBuckets.push('Output S3 Bucket');
+      if (missingBuckets.length) {
+        window.electronAPI.showToast(
+          `${missingBuckets.join(' and ')} ${missingBuckets.length > 1 ? 'are' : 'is'} required for transcription. ` +
+          'Enter a name, or run Setup Check to create one for you.',
+          'error'
+        );
+        return;
+      }
 
       await window.electronAPI.invoke('save-settings', settings);
 

@@ -354,6 +354,36 @@ async function flushPendingTranscriptionDeletes(ctx) {
   }
 }
 
+/**
+ * Reject a transcription that can't possibly succeed, before spending anything
+ * on it.
+ *
+ * Both S3 bucket settings default to empty — there's no possible default,
+ * since bucket names are unique across all of AWS. `OutputBucketName` was
+ * nonetheless passed through unconditionally, so a blank setting sent an empty
+ * string, which cannot satisfy the parameter's documented pattern
+ * (`[a-z0-9][\.\-a-z0-9]{1,61}[a-z0-9]`). Nothing validated it: the only check
+ * that ever existed lived in a settings page that is no longer reachable, and
+ * Setup Check only ever looked at the input bucket. The result was a job that
+ * failed at AWS with an opaque validation error.
+ *
+ * Deliberately runs *before* the upload. Failing after it would leave the media
+ * sitting in S3, billed, for a job that was never startable.
+ */
+function assertTranscriptionConfigured(settings) {
+  const missing = [];
+  if (!settings.bucketName) missing.push('Input S3 Bucket');
+  if (!settings.outputBucketName) missing.push('Output S3 Bucket');
+  if (!missing.length) return;
+
+  const err = new Error(
+    `Transcription is not configured: ${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not set. ` +
+    'Set them in Settings → Configuration, or run Setup Check to create them for you.'
+  );
+  err.code = 'HIVE_TRANSCRIPTION_UNCONFIGURED';
+  throw err;
+}
+
 function register(ipcMain, ctx) {
   ipcMain.handle('cancel-bedrock', () => {
     if (ctx.bedrockAbortController) { ctx.bedrockAbortController.abort(); ctx.bedrockAbortController = null; }
@@ -434,9 +464,14 @@ function register(ipcMain, ctx) {
     const fileObj = { buffer: fileBuffer, originalname: file.name, mimetype: file.type };
 
     try {
+      // Configuration check first: no upload, no job, no S3 charges for a job
+      // that can't start. Deliberately not swallowed or defaulted — the user
+      // gets a message naming exactly what to fix.
+      const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
+      assertTranscriptionConfigured(settings);
+
       event.sender.send('transcription-progress', { status: 'UPLOADING', message: 'Uploading file to S3...' });
 
-      const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
       const mediaUri = await uploadFile(
         ctx, fileObj, settings.bucketName, `${Date.now()}-${fileObj.originalname}`,
         (upload) => { job.upload = upload; }

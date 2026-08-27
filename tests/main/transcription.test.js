@@ -192,6 +192,105 @@ describe('transcribe-media cancellation', () => {
   });
 });
 
+describe('transcribe-media configuration guard', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useRealTimers();
+  });
+
+  /**
+   * Both bucket settings default to empty and neither can have a default,
+   * since S3 names are unique across all of AWS. `OutputBucketName` used to be
+   * passed through unconditionally, so a blank setting sent an empty string —
+   * which cannot satisfy the parameter's documented pattern. Nothing validated
+   * it and Setup Check only ever looked at the input bucket, so the job failed
+   * at AWS with an opaque error.
+   */
+  test('refuses the job when the output bucket is unset, naming the setting', async () => {
+    const { handlers, ctx } = buildHarness();
+    ctx.currentSettings = { ...ctx.currentSettings, outputBucketName: '' };
+
+    await expect(handlers['transcribe-media'](fakeEvent(), { file: fakeFile }))
+      .rejects.toThrow(/Output S3 Bucket is not set/);
+  });
+
+  test('refuses the job when the input bucket is unset', async () => {
+    const { handlers, ctx } = buildHarness();
+    ctx.currentSettings = { ...ctx.currentSettings, bucketName: '' };
+
+    await expect(handlers['transcribe-media'](fakeEvent(), { file: fakeFile }))
+      .rejects.toThrow(/Input S3 Bucket is not set/);
+  });
+
+  test('names both buckets when neither is set', async () => {
+    const { handlers, ctx } = buildHarness();
+    ctx.currentSettings = { ...ctx.currentSettings, bucketName: '', outputBucketName: '' };
+
+    await expect(handlers['transcribe-media'](fakeEvent(), { file: fakeFile }))
+      .rejects.toThrow(/Input S3 Bucket and Output S3 Bucket are not set/);
+  });
+
+  test('points the user at Settings and Setup Check', async () => {
+    const { handlers, ctx } = buildHarness();
+    ctx.currentSettings = { ...ctx.currentSettings, outputBucketName: '' };
+
+    await expect(handlers['transcribe-media'](fakeEvent(), { file: fakeFile }))
+      .rejects.toThrow(/Settings → Configuration.*Setup Check/s);
+  });
+
+  test('carries a recognisable error code rather than only a message', async () => {
+    const { handlers, ctx } = buildHarness();
+    ctx.currentSettings = { ...ctx.currentSettings, outputBucketName: '' };
+
+    await expect(handlers['transcribe-media'](fakeEvent(), { file: fakeFile }))
+      .rejects.toMatchObject({ code: 'HIVE_TRANSCRIPTION_UNCONFIGURED' });
+  });
+
+  test('does not upload the media before failing — a misconfigured job costs nothing', async () => {
+    // Failing after the upload would leave the file sitting in S3, billed, for
+    // a job that was never startable.
+    const { Upload } = require('@aws-sdk/lib-storage');
+    const transcribeSend = jest.fn(async () => ({}));
+    const { handlers, ctx } = buildHarness({ transcribeSend });
+    ctx.currentSettings = { ...ctx.currentSettings, outputBucketName: '' };
+
+    await expect(handlers['transcribe-media'](fakeEvent(), { file: fakeFile })).rejects.toThrow();
+
+    expect(Upload).not.toHaveBeenCalled();
+    expect(mockUploadDone).not.toHaveBeenCalled();
+    expect(transcribeSend).not.toHaveBeenCalled();
+  });
+
+  test('releases the job slot so a corrected retry is not blocked', async () => {
+    const { handlers, ctx } = buildHarness();
+    ctx.currentSettings = { ...ctx.currentSettings, outputBucketName: '' };
+
+    await expect(handlers['transcribe-media'](fakeEvent(), { file: fakeFile })).rejects.toThrow();
+
+    expect(ctx.transcriptionJob).toBeNull();
+  });
+
+  test('a fully configured job proceeds past the guard', async () => {
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type !== 'get') return {};
+      return {
+        TranscriptionJob: {
+          TranscriptionJobStatus: 'COMPLETED',
+          Transcript: { TranscriptFileUri: 'https://s3.amazonaws.com/out/job/transcript.json' },
+        },
+      };
+    });
+    const { handlers } = buildHarness({ transcribeSend });
+
+    const result = await handlers['transcribe-media'](fakeEvent(), { file: fakeFile });
+
+    expect(result.status).toBe('COMPLETED');
+    // The output bucket is still handed to Transcribe as configured.
+    const startCall = transcribeSend.mock.calls.find(([cmd]) => cmd._type === 'start');
+    expect(startCall[0].input.OutputBucketName).toBe('test-out-bucket');
+  });
+});
+
 describe('transcribe-media offline and auth pausing', () => {
   beforeEach(() => {
     jest.clearAllMocks();

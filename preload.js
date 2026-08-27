@@ -182,7 +182,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
     'load-conversation', 'load-credentials', 'load-settings', 'memory-connect', 'memory-delete', 'memory-disable',
     'memory-enable', 'memory-extract', 'memory-list', 'memory-status', 'navigate-to-main', 'open-skills-folder',
     'get-web-search-status', 'retry-web-search-init',
-    'setup-wizard-check-status', 'setup-wizard-create-item',
+    'setup-wizard-check-status', 'setup-wizard-create-item', 'get-suggested-bucket-names',
     'admin-check-kb-status', 'admin-check-gateway-kb-target', 'admin-get-gateway-policy',
     'admin-preview-policy-change', 'admin-apply-policy-change',
     'quick-validate-credentials', 'refresh-skills', 'save-conversation', 'save-credentials',

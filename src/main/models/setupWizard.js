@@ -4,8 +4,9 @@
  * This is Flow 1 of Hive's two-tier setup system (see README's "Setup
  * Check" section): a non-sequential checklist of independent AWS resources
  * that Hive needs in the *current user's own account* — the Web Search
- * Gateway execution role, a transcription S3 bucket, and an AgentCore
- * Memory resource. Each item is checked and created independently; there is
+ * Gateway execution role, the two transcription S3 buckets (input media and
+ * transcription output), and an AgentCore Memory resource. Each item is
+ * checked and created independently; there is
  * no ordering dependency between them, which is why the UI built on top of
  * this module is a checklist rather than a linear wizard (see design notes
  * in chat history — a forced Step 1→2→3 flow would add friction without
@@ -25,6 +26,7 @@
  */
 const { IAMClient, GetRoleCommand, CreateRoleCommand, PutRolePolicyCommand } = require('@aws-sdk/client-iam');
 const { S3Client, HeadBucketCommand, CreateBucketCommand } = require('@aws-sdk/client-s3');
+const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
 const {
   BedrockAgentCoreControlClient,
   ListGatewaysCommand,
@@ -78,9 +80,44 @@ function buildClients(credentials, region) {
   return {
     iam: new IAMClient(clientConfig),
     s3: new S3Client(clientConfig),
+    sts: new STSClient(clientConfig),
     agentCoreControl: new BedrockAgentCoreControlClient(clientConfig),
     agentCoreData: new BedrockAgentCoreClient(clientConfig),
   };
+}
+
+/**
+ * Suggest an S3 bucket name for one of Hive's two transcription buckets.
+ *
+ * Neither bucket can ship with a default, because S3 bucket names are unique
+ * across all of AWS — which is why both settings default to empty. That left
+ * users to invent a name, and (before this) nothing validated or provisioned
+ * the output bucket at all. Scoping the suggestion to the account ID makes a
+ * global-namespace collision unlikely while keeping the name recognisable.
+ *
+ * Result is always valid per S3 naming rules: lowercase, alphanumeric at both
+ * ends, and well inside the 3–63 character limit (a 12-digit account ID gives
+ * 23 and 29 characters respectively).
+ *
+ * @param {string} accountId - 12-digit AWS account ID
+ * @param {'input'|'output'} kind
+ * @returns {string|null} suggestion, or null if the account ID is unknown
+ */
+function suggestBucketName(accountId, kind) {
+  if (!accountId) return null;
+  const prefix = kind === 'output' ? 'hive-transcripts' : 'hive-media';
+  return `${prefix}-${accountId}`;
+}
+
+/** Best-effort account ID lookup — a failure just means no suggestions. */
+async function _resolveAccountId(sts) {
+  try {
+    const identity = await sts.send(new GetCallerIdentityCommand({}));
+    return identity.Account || null;
+  } catch (err) {
+    log.warn(`[setupWizard] could not resolve account ID for bucket suggestions: ${err.message}`);
+    return null;
+  }
 }
 
 /**
@@ -88,22 +125,36 @@ function buildClients(credentials, region) {
  * status object safe to call on every app launch / Settings visit — never
  * creates anything itself.
  *
+ * Transcription needs *two* buckets: the input bucket the media is uploaded
+ * to, and the output bucket Transcribe writes the transcript into. Only the
+ * input one used to be checked here, so a blank output bucket passed Setup
+ * Check silently and then broke transcription at the point of use.
+ *
  * @param {object} credentials - { accessKeyId, secretAccessKey, sessionToken, region }
  * @param {object} settings - Hive settings (reads bucketName, outputBucketName, memoryId)
- * @returns {Promise<{webSearchGateway: object, transcriptionBucket: object, memory: object}>}
+ * @returns {Promise<object>} keyed by item id, each { status, detail, suggested? }
  */
 async function checkStatus(credentials, settings) {
   const region = credentials.region || settings.region || 'us-east-1';
-  const { iam, s3, agentCoreControl, agentCoreData } = buildClients(credentials, region);
+  const { iam, s3, sts, agentCoreControl, agentCoreData } = buildClients(credentials, region);
 
-  const [webSearchGateway, transcriptionBucket, memory, codeInterpreterPermission] = await Promise.all([
+  const accountId = await _resolveAccountId(sts);
+
+  const [webSearchGateway, transcriptionBucket, transcriptionOutputBucket, memory, codeInterpreterPermission] = await Promise.all([
     _checkWebSearchGateway(agentCoreControl, iam),
-    _checkTranscriptionBucket(s3, settings.bucketName),
+    _checkBucket(s3, settings.bucketName, {
+      purpose: 'media uploads for the Transcribe tab',
+      suggested: suggestBucketName(accountId, 'input'),
+    }),
+    _checkBucket(s3, settings.outputBucketName, {
+      purpose: 'transcription results',
+      suggested: suggestBucketName(accountId, 'output'),
+    }),
     _checkMemory(agentCoreControl, settings.memoryId),
     _checkCodeInterpreterPermission(agentCoreData),
   ]);
 
-  return { webSearchGateway, transcriptionBucket, memory, codeInterpreterPermission };
+  return { webSearchGateway, transcriptionBucket, transcriptionOutputBucket, memory, codeInterpreterPermission };
 }
 
 async function _checkWebSearchGateway(agentCoreControl, iam) {
@@ -132,18 +183,31 @@ async function _checkWebSearchGateway(agentCoreControl, iam) {
   }
 }
 
-async function _checkTranscriptionBucket(s3, bucketName) {
+/**
+ * Check one of the transcription buckets. Shared by both so the input and
+ * output buckets can never drift apart in behaviour.
+ *
+ * When nothing is configured the suggestion is passed through, so the UI can
+ * offer a one-click create instead of asking the user to invent a name.
+ */
+async function _checkBucket(s3, bucketName, { purpose, suggested } = {}) {
   if (!bucketName) {
-    return { status: 'missing', detail: 'No bucket configured — needed for the Transcribe tab' };
+    return {
+      status: 'missing',
+      detail: suggested
+        ? `No bucket configured for ${purpose} — suggested: ${suggested}`
+        : `No bucket configured for ${purpose}`,
+      suggested: suggested || null,
+    };
   }
   try {
     await s3.send(new HeadBucketCommand({ Bucket: bucketName }));
-    return { status: 'ready', detail: `Bucket '${bucketName}' exists` };
+    return { status: 'ready', detail: `Bucket '${bucketName}' exists`, suggested: null };
   } catch (err) {
     if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
-      return { status: 'missing', detail: `Bucket '${bucketName}' not found` };
+      return { status: 'missing', detail: `Bucket '${bucketName}' not found`, suggested: null };
     }
-    return { status: 'unknown', detail: `Could not check: ${err.message}` };
+    return { status: 'unknown', detail: `Could not check: ${err.message}`, suggested: null };
   }
 }
 
@@ -315,6 +379,7 @@ module.exports = {
   createWebSearchGatewayRole,
   createTranscriptionBucket,
   createMemory,
+  suggestBucketName,
   WEB_SEARCH_GATEWAY_NAME,
   WEB_SEARCH_ROLE_NAME,
 };
