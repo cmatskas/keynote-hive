@@ -76,6 +76,39 @@ html[data-theme] {
     --info: #60a5fa;
 }
 
+/* Offline banner — persistent and non-dismissible while offline, since
+   dismissing it would hide a condition the user has no other indicator for. */
+.offline-banner {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0.5rem 1rem;
+    background: #78350f;
+    color: #fef3c7;
+    border-bottom: 1px solid #b45309;
+    font-weight: 500;
+}
+
+.offline-banner .bi {
+    flex-shrink: 0;
+    font-size: 1rem;
+}
+
+/* Controls disabled because Hive is offline. Distinguished from ordinary
+   disabled state so the reason is legible at a glance. */
+.offline-disabled {
+    opacity: 0.5 !important;
+    cursor: not-allowed !important;
+}
+
+/* The transcribe upload zone is a div, so `disabled` does nothing to it —
+   block the click affordance explicitly. */
+.offline-blocked {
+    opacity: 0.5;
+    pointer-events: none;
+    cursor: not-allowed;
+}
+
 /* Nav-item background-job spinner (e.g. transcription running while the
    user is on another tab) */
 .nav-job-spinner {

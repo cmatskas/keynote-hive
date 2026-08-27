@@ -8,8 +8,9 @@ process.stderr.on('error', err => { if (err.code !== 'EPIPE') throw err; });
 const { autoUpdater } = require('electron-updater');
 
 const AppContext = require('./src/main/appContext');
-const AWSValidator = require('./src/main/models/awsValidator');
 const CredentialMonitor = require('./src/main/models/credentialMonitor');
+const ConnectivityMonitor = require('./src/main/models/connectivityMonitor');
+const { resolveStartupRoute } = require('./src/main/startupRoute');
 
 // IPC handler modules
 const credentialsIPC = require('./src/main/ipc/credentials');
@@ -71,6 +72,48 @@ function createCredentialsWindow() {
   ctx.mainWindow.loadFile('src/pages/credentials.html');
 }
 
+// ── Connectivity monitor ────────────────────────────────────────────────────
+
+/**
+ * Broadcast a connectivity transition to the renderer and run the work that
+ * has to happen on reconnect. Everything here is best-effort: a failure in one
+ * reconnect task must not prevent the others or the banner update.
+ */
+function handleConnectivityChange(online) {
+  if (ctx.mainWindow && !ctx.mainWindow.isDestroyed()) {
+    ctx.mainWindow.webContents.send('connectivity-changed', { online });
+  }
+
+  if (!online) return;
+
+  // Web search init runs once at credential load and, if it failed because we
+  // were offline, previously stayed dead for the rest of the session with no
+  // retry. Reconnecting is exactly the moment to try again.
+  if (ctx.webSearchManager && !ctx.webSearchManager.ready) {
+    ctx.initializeWebSearch().catch(err => logger.warn('[connectivity] web search retry failed:', err.message));
+  }
+
+  // A credential poll that was paused while offline can resume now.
+  if (ctx.credentialMonitor) ctx.credentialMonitor.resumeAfterOffline();
+
+  // A transcription parked waiting for the network can resume polling.
+  if (ctx.transcriptionJob?.resume) ctx.transcriptionJob.resume('network');
+
+  // Deletes for jobs cancelled while offline couldn't reach AWS at the time.
+  // Retry them now so a cancellation during an outage still stops the billing.
+  bedrockIPC.flushPendingTranscriptionDeletes(ctx)
+    .catch(err => logger.warn('[connectivity] flushing queued job deletes failed:', err.message));
+}
+
+ctx.startConnectivityMonitor = function () {
+  if (ctx.connectivityMonitor) ctx.connectivityMonitor.stop();
+  ctx.connectivityMonitor = new ConnectivityMonitor({
+    getRegion: () => ctx.currentSettings?.region || ctx.currentCredentials?.region,
+    onChange: handleConnectivityChange,
+  });
+  ctx.connectivityMonitor.start();
+};
+
 // ── Credential monitor ──────────────────────────────────────────────────────
 
 ctx.startCredentialMonitor = function () {
@@ -78,6 +121,11 @@ ctx.startCredentialMonitor = function () {
   ctx.credentialMonitor = new CredentialMonitor({
     getCredentials: () => ctx.currentCredentials,
     getMainWindow: () => ctx.mainWindow,
+    isOnline: () => ctx.isOnline(),
+    // Veto the destructive navigation while a transcription is mid-flight:
+    // the job's result would be lost with the renderer, and the user is far
+    // better served by the banner plus Settings → Credentials in place.
+    shouldDeferNavigation: () => !!ctx.transcriptionJob,
     onExpired: () => {
       if (ctx.credentialMonitor) { ctx.credentialMonitor.stop(); ctx.credentialMonitor = null; }
       if (ctx.mainWindow && !ctx.mainWindow.isDestroyed()) {
@@ -91,24 +139,13 @@ ctx.startCredentialMonitor = function () {
 };
 
 // ── Validate + route to credentials or main ─────────────────────────────────
+//
+// The routing decision itself lives in src/main/startupRoute.js so it can be
+// unit tested — main.js isn't requirable under Jest.
 
 async function validateAndRoute() {
-  const hasCredentials = await ctx.credentialsManager.hasCredentials();
-  let credentialsValid = false;
-
-  if (hasCredentials) {
-    try {
-      ctx.currentCredentials = await ctx.credentialsManager.loadCredentials();
-      ctx.initializeAWSClients(ctx.currentCredentials);
-      const validator = new AWSValidator(ctx.currentCredentials);
-      const result = await validator.quickValidate();
-      credentialsValid = result.valid;
-    } catch (err) {
-      console.error('Error validating credentials:', err);
-    }
-  }
-
-  if (!hasCredentials || !credentialsValid) {
+  const route = await resolveStartupRoute(ctx);
+  if (route === 'credentials') {
     createCredentialsWindow();
   } else {
     createWindow();
@@ -128,13 +165,12 @@ app.whenReady().then(async () => {
   ipcMain.handleOnce('splash-ready', () => { splashReady = true; });
 
   // Startup work in parallel
-  const [, loadedSettings, hasCredentials] = await Promise.all([
+  const [, loadedSettings] = await Promise.all([
     ctx.skillsManager.init()
       .then(() => console.info(`Loaded ${ctx.skillsManager.getSkills().length} skills`))
       .catch(err => console.error('Error loading skills:', err)),
     ctx.settingsManager.loadSettings()
       .catch(err => { console.error('Error loading settings:', err); return ctx.settingsManager.getDefaultSettings(); }),
-    ctx.credentialsManager.hasCredentials(),
   ]);
   ctx.currentSettings = loadedSettings;
 
@@ -143,19 +179,15 @@ app.whenReady().then(async () => {
     await ctx.settingsManager.saveSettings(ctx.currentSettings);
   }
 
-  // Validate credentials
-  let credentialsValid = false;
-  if (hasCredentials) {
-    try {
-      ctx.currentCredentials = await ctx.credentialsManager.loadCredentials();
-      ctx.initializeAWSClients(ctx.currentCredentials);
-      const validator = new AWSValidator(ctx.currentCredentials);
-      const result = await validator.quickValidate();
-      credentialsValid = result.valid;
-    } catch (error) {
-      console.error('Error validating credentials:', error);
-    }
-  }
+  // Start connectivity detection before validating, so the startup route and
+  // the first banner state are decided against a known connectivity state
+  // rather than being inferred from a failed AWS call.
+  ctx.startConnectivityMonitor();
+
+  // Decide the startup route. Shares resolveStartupRoute() with
+  // validateAndRoute() so the offline-aware behaviour can't drift between the
+  // two entry points (this one, and the macOS activate/re-open path).
+  const route = await resolveStartupRoute(ctx);
 
   // Ensure splash visible for minimum time
   const MIN_SPLASH_MS = 1500;
@@ -165,7 +197,7 @@ app.whenReady().then(async () => {
   }
 
   // Route to correct page
-  if (!hasCredentials || !credentialsValid) {
+  if (route === 'credentials') {
     createCredentialsWindow();
   } else {
     createWindow();
@@ -217,6 +249,21 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('get-app-version', () => app.getVersion());
   ipcMain.handle('install-update', () => autoUpdater.quitAndInstall());
+
+  // ── Connectivity ───────────────────────────────────────
+  // The renderer asks for the current state on load (it can't rely on having
+  // been present for the last transition) and forwards its own OS
+  // online/offline events, which fire sooner than our recheck timer.
+  ipcMain.handle('get-connectivity-status', () => ({ online: ctx.isOnline() }));
+
+  ipcMain.handle('renderer-connectivity-hint', async () => {
+    // Deliberately ignores the renderer's own verdict and re-probes:
+    // navigator.onLine reports interface state, which is true on a captive
+    // portal. The hint is a prompt to check, not the answer.
+    if (!ctx.connectivityMonitor) return { online: ctx.isOnline() };
+    const online = await ctx.connectivityMonitor.recheck();
+    return { online };
+  });
 
   // ── Application menu ───────────────────────────────────
   const menuTemplate = [

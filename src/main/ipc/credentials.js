@@ -7,6 +7,13 @@ function register(ipcMain, ctx) {
     ctx.initializeAWSClients(credentials);
     if (ctx.credentialMonitor) ctx.credentialMonitor.reset();
     else ctx.startCredentialMonitor();
+
+    // A transcription parked because AWS rejected the old credentials can
+    // resume now. The poll loop re-reads ctx.awsClients on every iteration, so
+    // initializeAWSClients() above is all it needs to start working again —
+    // this just wakes it instead of waiting for the slow retry tick.
+    if (ctx.transcriptionJob?.resume) ctx.transcriptionJob.resume('auth');
+
     return true;
   });
 

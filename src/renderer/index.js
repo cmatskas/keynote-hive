@@ -190,14 +190,21 @@ function copyAnalysis() {
         });
 }
 
-// ── Transcription IPC listeners ──────────────────────────────────────────
-// Registered at module scope rather than inside DOMContentLoaded: both
+// ── Offline detection ────────────────────────────────────────────────────
+// Initialised at module scope so the banner and control gating are correct
+// before the user can interact with anything, rather than after
+// DOMContentLoaded's much heavier startup work has finished.
+if (window.OfflineGuard) {
+    window.OfflineGuard.init().catch(err => console.error('OfflineGuard init failed:', err));
+}
+
+// ── Transcription IPC listeners ──────────────────────────────────────────// Registered at module scope rather than inside DOMContentLoaded: both
 // handlers resolve their DOM nodes lazily when called, and registering early
 // means a progress event can't arrive before anyone is listening.
 
 // Progress updates streamed from the main process during a transcription job.
 window.electronAPI.receive('transcription-progress', (progressData) => {
-    updateTranscriptionProgress(progressData.message);
+    updateTranscriptionProgress(progressData.message, progressData.status);
 });
 
 // Clicking the completion/failure OS notification focuses the window; bring
@@ -448,9 +455,20 @@ async function sendMessage() {
         return;
     }
 
+    // Offline check first: a failed credential check while offline says nothing
+    // about the credentials, and reporting it as an auth problem sends the user
+    // to Settings to fix something that isn't broken.
+    if (window.OfflineGuard && !window.OfflineGuard.requireOnline('Sending a message')) {
+        return;
+    }
+
     // Lazy credential check — once per session
     if (!credentialsVerified) {
         const check = await window.electronAPI.invoke('quick-validate-credentials');
+        if (check.offline) {
+            showWarningToast('Hive is offline — could not reach AWS. Your message has not been sent.');
+            return;
+        }
         if (!check.valid) {
             showErrorToast('AWS credentials are invalid or expired. Please update in Settings → AWS Credentials.');
             return;
@@ -642,6 +660,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { if (window.WorkTab) window.WorkTab.init(); } catch (e) { console.error('WorkTab init failed:', e); }
     try { if (window.SwarmTab) window.SwarmTab.init(); } catch (e) { console.error('SwarmTab init failed:', e); }
     try { if (window.SettingsTab) window.SettingsTab.init(); } catch (e) { console.error('SettingsTab init failed:', e); }
+
+    // Tabs render their own controls during init, so re-apply offline gating
+    // now that those controls exist.
+    if (window.OfflineGuard) window.OfflineGuard.refresh();
 
     // First-launch (and every subsequent launch) check for missing AWS
     // setup items — only meaningful once credentials exist, since the
@@ -1021,12 +1043,12 @@ function setTranscribeNavBusy(busy) {
 function renderTranscriptionProgress(message) {
     transcriptionText.innerHTML = `
         <div class="transcribe-progress text-center py-4">
-            <div class="spinner-border text-success mb-3" role="status" style="width: 2.5rem; height: 2.5rem;">
+            <div class="spinner-border text-success mb-3" role="status" id="transcribeSpinner" style="width: 2.5rem; height: 2.5rem;">
                 <span class="visually-hidden">Transcribing...</span>
             </div>
-            <h6 class="mb-2"><i class="bi bi-mic me-2"></i>Transcribing Your Media</h6>
+            <h6 class="mb-2" id="transcribeProgressTitle"><i class="bi bi-mic me-2"></i>Transcribing Your Media</h6>
             <p class="text-muted small mb-1" id="inlineTranscriptionStatus"></p>
-            <small class="text-muted d-block mb-3">You can switch tabs — we'll notify you when it's done.</small>
+            <small class="text-muted d-block mb-3" id="transcribeProgressHint">You can switch tabs — we'll notify you when it's done.</small>
             <button class="btn btn-sm btn-outline-danger" id="cancelTranscriptionBtn">
                 <i class="bi bi-x-circle me-1"></i>Cancel
             </button>
@@ -1038,9 +1060,31 @@ function renderTranscriptionProgress(message) {
     document.getElementById('cancelTranscriptionBtn')?.addEventListener('click', cancelTranscription);
 }
 
-function updateTranscriptionProgress(message) {
+function updateTranscriptionProgress(message, status = null) {
     const inline = document.getElementById('inlineTranscriptionStatus');
     if (inline) inline.textContent = message;
+
+    // A paused job hasn't failed — AWS is still working on it. Make that
+    // visually distinct from active progress so the user doesn't assume it's
+    // stuck or broken, and keep Cancel available throughout.
+    const paused = status === 'PAUSED';
+    const spinner = document.getElementById('transcribeSpinner');
+    if (spinner) {
+        spinner.classList.toggle('text-success', !paused);
+        spinner.classList.toggle('text-warning', paused);
+    }
+    const title = document.getElementById('transcribeProgressTitle');
+    if (title) {
+        title.innerHTML = paused
+            ? '<i class="bi bi-pause-circle me-2"></i>Transcription Paused'
+            : '<i class="bi bi-mic me-2"></i>Transcribing Your Media';
+    }
+    const hint = document.getElementById('transcribeProgressHint');
+    if (hint) {
+        hint.textContent = paused
+            ? 'It will resume automatically. Cancelling will stop the job on AWS so it stops billing.'
+            : "You can switch tabs — we'll notify you when it's done.";
+    }
 }
 
 async function cancelTranscription() {
@@ -1090,6 +1134,22 @@ async function uploadFile(file) {
             transcriptionText.innerHTML = '<div class="text-gray-500 text-center">Transcription cancelled. Upload a file to try again.</div>';
             resetUploadZone();
             showInfoToast('Transcription cancelled');
+        } else if (response.status === 'ABANDONED') {
+            // Paused too long waiting for a connection or credentials. The job
+            // is still alive on AWS, so don't imply the work was lost — name it
+            // so it's identifiable once the tabled job registry lands.
+            transcriptionText.innerHTML = `<div class="alert alert-warning" role="alert">
+                <i class="bi bi-pause-circle me-2"></i>
+                <strong>Transcription paused too long:</strong> <span id="transcriptionAbandonedText"></span>
+                <div class="mt-2">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="resetTranscriptionUI()">
+                        <i class="bi bi-arrow-counterclockwise me-1"></i>Start over
+                    </button>
+                </div>
+            </div>`;
+            const el = document.getElementById('transcriptionAbandonedText');
+            if (el) el.textContent = response.message || 'The job is still running on AWS.';
+            resetUploadZone();
         } else if (response.status === 'COMPLETED') {
             // Display the transcript with timestamps and speaker details
             displayTranscript(response.transcript);

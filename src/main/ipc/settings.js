@@ -38,14 +38,26 @@ function register(ipcMain, ctx) {
     return {
       ready: !!ctx.webSearchManager?.ready,
       error: ctx.webSearchInitError || null,
+      offline: !ctx.isOnline(),
     };
   });
 
   ipcMain.handle('retry-web-search-init', async () => {
+    // Retrying while offline is guaranteed to fail and would overwrite a real
+    // diagnostic error with a network one. The reconnect handler in main.js
+    // retries automatically anyway, so there's nothing lost by declining here.
+    if (!ctx.isOnline()) {
+      return {
+        ready: !!ctx.webSearchManager?.ready,
+        error: 'Hive is offline — web search setup needs an internet connection.',
+        offline: true,
+      };
+    }
     await ctx.initializeWebSearch();
     return {
       ready: !!ctx.webSearchManager?.ready,
       error: ctx.webSearchInitError || null,
+      offline: false,
     };
   });
 }

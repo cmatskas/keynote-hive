@@ -11,6 +11,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { app } = require('electron');
 const log = require('electron-log/main');
+const { describeAwsError } = require('../awsErrors');
 
 class SwarmOrchestrator {
   constructor({ awsConfig, skillsManager, codeInterpreterManager, webSearchManager, settings, onEvent }) {
@@ -209,7 +210,7 @@ class SwarmOrchestrator {
           log.error(`[swarm:${swarmId}] Agent ${i} (${agentConfig.id}) failed: ${err.message}`);
           state.agents[i].status = 'error';
           state.status = 'error';
-          this.onEvent('swarm-error', { swarmId, error: err.message, agentIndex: i });
+          this.onEvent('swarm-error', { swarmId, error: describeAwsError(err, err.message), agentIndex: i });
           await this._saveState(swarmId, state);
           return;
         }
@@ -227,7 +228,7 @@ class SwarmOrchestrator {
       this.onEvent('swarm-pipeline-done', { swarmId, finalOutput: previousOutput });
     } catch (err) {
       state.status = 'error';
-      this.onEvent('swarm-error', { swarmId, error: err.message, agentIndex: state.currentIndex });
+      this.onEvent('swarm-error', { swarmId, error: describeAwsError(err, err.message), agentIndex: state.currentIndex });
     }
   }
 

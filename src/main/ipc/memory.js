@@ -3,6 +3,7 @@ const MemoryManager = require('../models/memoryManager');
 function register(ipcMain, ctx) {
   ipcMain.handle('memory-connect', async (event, memoryId) => {
     if (!ctx.awsClients.agentCoreConfig) throw new Error('AWS credentials not configured');
+    ctx.assertOnline('Connecting memory');
     const mm = new MemoryManager(ctx.awsClients.agentCoreConfig);
     mm.setMemoryId(memoryId);
     const status = await mm.getStatus();
@@ -15,6 +16,7 @@ function register(ipcMain, ctx) {
 
   ipcMain.handle('memory-list', async () => {
     if (!ctx.awsClients.agentCoreConfig) throw new Error('AWS credentials not configured');
+    ctx.assertOnline('Listing memories');
     const mm = new MemoryManager(ctx.awsClients.agentCoreConfig);
     const { ListMemoriesCommand } = require('@aws-sdk/client-bedrock-agentcore-control');
     const res = await mm.controlClient.send(new ListMemoriesCommand({ maxResults: 50 }));
@@ -23,6 +25,7 @@ function register(ipcMain, ctx) {
 
   ipcMain.handle('memory-enable', async () => {
     if (!ctx.awsClients.agentCoreConfig) throw new Error('AWS credentials not configured');
+    ctx.assertOnline('Enabling memory');
     const settings = await ctx.settingsManager.loadSettings();
 
     if (settings.memoryId) {
@@ -51,6 +54,7 @@ function register(ipcMain, ctx) {
   });
 
   ipcMain.handle('memory-delete', async () => {
+    ctx.assertOnline('Deleting memory');
     const settings = await ctx.settingsManager.loadSettings();
     if (settings.memoryId && ctx.awsClients.agentCoreConfig) {
       const mm = new MemoryManager(ctx.awsClients.agentCoreConfig);

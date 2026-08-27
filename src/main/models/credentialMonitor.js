@@ -6,6 +6,15 @@
  * 2. Poll every 10 minutes as safety net for long-lived keys / parse failures
  * 3. Warnings: system notification at T-15min, in-app banner at T-2min
  * 4. At expiry: navigate to credentials page
+ *
+ * Offline handling matters a great deal here, because `_handleExpired()` is
+ * destructive: it replaces the renderer with the credentials page, discarding
+ * unsaved Work tab state, attachments, and any in-flight UI. The poll used to
+ * reach that conclusion from any `valid: false`, and `quickValidate()` reported
+ * a DNS failure as `valid: false` — so closing a laptop lid or switching
+ * networks could silently destroy the user's work within 10 minutes. A
+ * transport failure now pauses the poll instead of escalating; only a genuine
+ * rejection by AWS counts as expiry.
  */
 
 const AWSValidator = require('./awsValidator');
@@ -17,10 +26,12 @@ const WARN_15_MS        = 15 * 60 * 1000; // 15 minutes before expiry
 const WARN_2_MS         =  2 * 60 * 1000; //  2 minutes before expiry
 
 class CredentialMonitor {
-  constructor({ getCredentials, getMainWindow, onExpired }) {
+  constructor({ getCredentials, getMainWindow, onExpired, isOnline = null, shouldDeferNavigation = null }) {
     this.getCredentials  = getCredentials;   // () => currentCredentials
     this.getMainWindow   = getMainWindow;    // () => mainWindow
     this.onExpired       = onExpired;        // called when credentials expire
+    this.isOnline        = isOnline;         // () => boolean, optional
+    this.shouldDeferNavigation = shouldDeferNavigation; // () => boolean, optional veto
 
     this._pollTimer   = null;
     this._warn15Timer = null;
@@ -28,6 +39,8 @@ class CredentialMonitor {
     this._expireTimer = null;
     this._running     = false;
     this._lastStatus  = 'valid'; // 'valid' | 'warning15' | 'warning2' | 'expired'
+    this._pausedOffline = false; // true while we can't reach AWS to check
+    this._navigationDeferred = false; // expired, but navigating would lose work
   }
 
   start() {
@@ -52,7 +65,31 @@ class CredentialMonitor {
   reset() {
     this.stop();
     this._lastStatus = 'valid';
+    this._pausedOffline = false;
     this.start();
+  }
+
+  /**
+   * Called when connectivity returns. Re-checks immediately rather than
+   * waiting up to another 10 minutes for the next poll tick, so a credential
+   * that genuinely expired *during* the outage is caught promptly.
+   */
+  resumeAfterOffline() {
+    if (!this._running) {
+      // Stopped because we already concluded expiry, but the navigation was
+      // deferred while offline — now that we're back, honour it.
+      this.retryDeferredNavigation();
+      return;
+    }
+    if (!this._pausedOffline) return;
+    log.info('[CredentialMonitor] connectivity restored — re-checking credentials');
+    this._pausedOffline = false;
+    this._runPollCheck().catch(err => log.warn('[CredentialMonitor] resume check failed:', err.message));
+  }
+
+  /** True while the monitor is holding off because it can't reach AWS. */
+  isPausedOffline() {
+    return this._pausedOffline;
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────
@@ -106,21 +143,53 @@ class CredentialMonitor {
   }
 
   _startPoll() {
-    this._pollTimer = setInterval(async () => {
-      if (!this._running) return;
-      const creds = this.getCredentials();
-      if (!creds) return;
-      try {
-        const validator = new AWSValidator(creds);
-        const result = await validator.quickValidate();
-        if (!result.valid && this._lastStatus !== 'expired') {
-          log.warn('[CredentialMonitor] poll detected invalid credentials');
-          this._handleExpired();
-        }
-      } catch (err) {
-        log.warn('[CredentialMonitor] poll error:', err.message);
-      }
+    this._pollTimer = setInterval(() => {
+      this._runPollCheck().catch(err => log.warn('[CredentialMonitor] poll error:', err.message));
     }, POLL_INTERVAL_MS);
+  }
+
+  /**
+   * One poll iteration. Extracted so resumeAfterOffline() can run the same
+   * check immediately instead of waiting for the next interval.
+   *
+   * The critical distinction: `valid: false` with `offline: true` means we
+   * never reached AWS, which says nothing about whether the credentials are
+   * still good. Escalating that to _handleExpired() would tear down the
+   * renderer and lose the user's work over a transient network blip.
+   */
+  async _runPollCheck() {
+    if (!this._running) return;
+
+    const creds = this.getCredentials();
+    if (!creds) return;
+
+    // Skip the round trip entirely if we already know we're offline.
+    if (this.isOnline && !this.isOnline()) {
+      if (!this._pausedOffline) {
+        log.info('[CredentialMonitor] offline — pausing credential checks');
+        this._pausedOffline = true;
+      }
+      return;
+    }
+
+    const validator = new AWSValidator(creds);
+    const result = await validator.quickValidate();
+
+    if (result.offline) {
+      if (!this._pausedOffline) {
+        log.info('[CredentialMonitor] could not reach AWS — pausing credential checks (not treating as expiry)');
+        this._pausedOffline = true;
+      }
+      return;
+    }
+
+    // We got a real answer from AWS, so any earlier pause is over.
+    this._pausedOffline = false;
+
+    if (!result.valid && this._lastStatus !== 'expired') {
+      log.warn('[CredentialMonitor] poll detected invalid credentials');
+      this._handleExpired();
+    }
   }
 
   _handleWarn15(expiry) {
@@ -169,8 +238,36 @@ class CredentialMonitor {
 
     this._sendToRenderer('credential-expiry-warning', { level: 'expired', minsLeft: 0 });
 
-    // Give renderer 3 seconds to show the message, then navigate
-    setTimeout(() => this.onExpired(), 3000);
+    // Navigating replaces the renderer with the credentials page, which throws
+    // away unsaved work. Only do it when it's actually useful: offline, the
+    // user can't validate new credentials anyway, and a caller can veto (e.g.
+    // a transcription parked mid-job would lose its result). In those cases the
+    // banner has already told them, and the navigation is deferred until the
+    // veto lifts — see retryDeferredNavigation().
+    if (this._canNavigateNow()) {
+      setTimeout(() => this.onExpired(), 3000);
+    } else {
+      log.info('[CredentialMonitor] deferring navigation to credentials page (offline or vetoed)');
+      this._navigationDeferred = true;
+    }
+  }
+
+  _canNavigateNow() {
+    if (this.isOnline && !this.isOnline()) return false;
+    if (this.shouldDeferNavigation && this.shouldDeferNavigation()) return false;
+    return true;
+  }
+
+  /**
+   * Retry a navigation that was deferred because we were offline or a caller
+   * vetoed it. Safe to call repeatedly; does nothing unless a navigation is
+   * actually outstanding and now permitted.
+   */
+  retryDeferredNavigation() {
+    if (!this._navigationDeferred || !this._canNavigateNow()) return;
+    this._navigationDeferred = false;
+    log.info('[CredentialMonitor] running deferred navigation to credentials page');
+    this.onExpired();
   }
 
   _sendToRenderer(channel, data) {

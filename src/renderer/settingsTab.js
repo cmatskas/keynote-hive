@@ -70,9 +70,13 @@
     // credentials loaded, without requiring them to explicitly re-test.
     // quick-validate-credentials is a single cheap STS call (~100ms),
     // safe to run on every Settings load.
-    window.electronAPI.invoke('quick-validate-credentials')
-      .then(result => _toggleAdminTab(result.valid && result.isAdminAccount))
-      .catch(() => {});
+    // Skip the Admin-tab probe entirely when offline: it can't succeed, and a
+    // transport failure would otherwise read as "not the admin account".
+    if (!window.OfflineGuard || window.OfflineGuard.isOnline()) {
+      window.electronAPI.invoke('quick-validate-credentials')
+        .then(result => _toggleAdminTab(result.valid && result.isAdminAccount))
+        .catch(() => {});
+    }
   }
 
   // ── Credentials ────────────────────────────────────────────

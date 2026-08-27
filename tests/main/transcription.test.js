@@ -49,12 +49,14 @@ jest.mock('../../src/main/models/strandsAgentFactory', () => ({
 }));
 jest.mock('../../src/main/utils', () => ({ buildFileContentBlocks: jest.fn(async () => []) }));
 
-const { register } = require('../../src/main/ipc/bedrock');
+const { register, flushPendingTranscriptionDeletes } = require('../../src/main/ipc/bedrock');
 
 /** Collects handlers registered via ipcMain.handle so tests can invoke them. */
-function buildHarness({ transcribeSend } = {}) {
+function buildHarness({ transcribeSend, online = true } = {}) {
   const handlers = {};
   const ipcMain = { handle: (channel, fn) => { handlers[channel] = fn; } };
+
+  const state = { online };
 
   const ctx = {
     currentSettings: {
@@ -71,10 +73,20 @@ function buildHarness({ transcribeSend } = {}) {
       agentCoreConfig: {},
     },
     transcriptionJob: null,
+    // Mirrors AppContext's real implementations so the handlers' offline
+    // guards behave the same way here as in production.
+    isOnline: () => state.online,
+    assertOnline: (action = 'This action') => {
+      if (!state.online) {
+        const err = new Error(`${action} needs an internet connection — Hive is offline.`);
+        err.code = 'HIVE_OFFLINE';
+        throw err;
+      }
+    },
   };
 
   register(ipcMain, ctx);
-  return { handlers, ctx };
+  return { handlers, ctx, state };
 }
 
 const fakeEvent = () => ({ sender: { send: jest.fn() } });
@@ -180,7 +192,279 @@ describe('transcribe-media cancellation', () => {
   });
 });
 
+describe('transcribe-media offline and auth pausing', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useRealTimers();
+  });
+
+  /** An error shaped the way the SDK reports a transport failure. */
+  const networkError = () => Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' });
+  /** An error shaped the way STS reports an expired session token. */
+  const authError = () => Object.assign(new Error('The security token included in the request is expired'), {
+    name: 'ExpiredTokenException',
+    $metadata: { httpStatusCode: 403, attempts: 1 },
+  });
+
+  test('a network failure mid-poll pauses the job instead of failing it', async () => {
+    // The job is still running and billing on AWS — failing here would discard
+    // work the user has already paid for.
+    let polls = 0;
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type !== 'get') return {};
+      polls++;
+      if (polls === 1) throw networkError();
+      return {
+        TranscriptionJob: {
+          TranscriptionJobStatus: 'COMPLETED',
+          Transcript: { TranscriptFileUri: 'https://s3.amazonaws.com/out/job/transcript.json' },
+        },
+      };
+    });
+    const { handlers, ctx } = buildHarness({ transcribeSend });
+    const event = fakeEvent();
+
+    const pending = handlers['transcribe-media'](event, { file: fakeFile });
+    await waitUntil(() => !!ctx.transcriptionJob?.resume, 'job to park');
+
+    // The renderer is told it's paused, not that it failed.
+    const paused = event.sender.send.mock.calls
+      .map(([, data]) => data)
+      .find(d => d.status === 'PAUSED');
+    expect(paused).toBeDefined();
+    expect(paused.reason).toBe('network');
+    expect(paused.message).toMatch(/still running on AWS/i);
+
+    // An OS notification says paused, not failed.
+    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Transcription Paused' }));
+
+    // Reconnecting resumes the same job and it completes normally.
+    ctx.transcriptionJob.resume('network');
+    const result = await pending;
+
+    expect(result.status).toBe('COMPLETED');
+    expect(result.transcript).toEqual([{ startTime: 0, endTime: 1, speaker: '1', text: 'hello' }]);
+  });
+
+  test('an expired token mid-poll pauses rather than failing, and resumes on new credentials', async () => {
+    // Isengard-style credentials are typically 1 hour, so mid-job expiry on a
+    // multi-minute transcription is routine, not a corner case.
+    let polls = 0;
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type !== 'get') return {};
+      polls++;
+      if (polls === 1) throw authError();
+      return {
+        TranscriptionJob: {
+          TranscriptionJobStatus: 'COMPLETED',
+          Transcript: { TranscriptFileUri: 'https://s3.amazonaws.com/out/job/transcript.json' },
+        },
+      };
+    });
+    const { handlers, ctx } = buildHarness({ transcribeSend });
+    const event = fakeEvent();
+
+    const pending = handlers['transcribe-media'](event, { file: fakeFile });
+    await waitUntil(() => !!ctx.transcriptionJob?.resume, 'job to park');
+
+    const paused = event.sender.send.mock.calls
+      .map(([, data]) => data)
+      .find(d => d.status === 'PAUSED');
+    expect(paused.reason).toBe('auth');
+    expect(paused.message).toMatch(/credentials/i);
+
+    ctx.transcriptionJob.resume('auth');
+    const result = await pending;
+    expect(result.status).toBe('COMPLETED');
+  });
+
+  test('emits a resumed message once the observation succeeds again', async () => {
+    let polls = 0;
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type !== 'get') return {};
+      polls++;
+      if (polls === 1) throw networkError();
+      return {
+        TranscriptionJob: {
+          TranscriptionJobStatus: 'COMPLETED',
+          Transcript: { TranscriptFileUri: 'https://s3.amazonaws.com/out/job/transcript.json' },
+        },
+      };
+    });
+    const { handlers, ctx } = buildHarness({ transcribeSend });
+    const event = fakeEvent();
+
+    const pending = handlers['transcribe-media'](event, { file: fakeFile });
+    await waitUntil(() => !!ctx.transcriptionJob?.resume, 'job to park');
+    ctx.transcriptionJob.resume('network');
+    await pending;
+
+    const messages = event.sender.send.mock.calls.map(([, data]) => data.message);
+    expect(messages.some(m => /Connection restored/i.test(m))).toBe(true);
+  });
+
+  test('paused time does not consume the poll attempt budget', async () => {
+    // The 60-attempt budget bounds how long the *job* may take. Time spent
+    // waiting for a connection is a separate concern with its own budget.
+    let getCalls = 0;
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type !== 'get') return {};
+      getCalls++;
+      if (getCalls <= 3) throw networkError();
+      return {
+        TranscriptionJob: {
+          TranscriptionJobStatus: 'COMPLETED',
+          Transcript: { TranscriptFileUri: 'https://s3.amazonaws.com/out/job/transcript.json' },
+        },
+      };
+    });
+    const { handlers, ctx } = buildHarness({ transcribeSend });
+
+    const pending = handlers['transcribe-media'](fakeEvent(), { file: fakeFile });
+
+    // Three separate pauses, each resumed — all within the first attempt.
+    // Waits on `resume` rather than `paused`: `resume` exists only while the
+    // job is genuinely parked, so this can't latch onto a stale state.
+    for (let i = 0; i < 3; i++) {
+      await waitUntil(() => !!ctx.transcriptionJob?.resume, `pause ${i + 1}`);
+      ctx.transcriptionJob.resume('network');
+    }
+
+    const result = await pending;
+    expect(result.status).toBe('COMPLETED');
+    // 4 GetTranscriptionJob calls, but the loop never advanced past attempt 0.
+    expect(getCalls).toBe(4);
+  });
+
+  test('cancelling while paused stops the job promptly', async () => {
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type === 'get') throw networkError();
+      return {};
+    });
+    const { handlers, ctx } = buildHarness({ transcribeSend });
+
+    const pending = handlers['transcribe-media'](fakeEvent(), { file: fakeFile });
+    await waitUntil(() => !!ctx.transcriptionJob?.resume, 'job to park');
+
+    await handlers['cancel-transcription']();
+
+    await expect(pending).resolves.toEqual({ status: 'CANCELLED' });
+  });
+
+  test('cancelling while offline queues the delete so billing still stops later', async () => {
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type === 'get') return { TranscriptionJob: { TranscriptionJobStatus: 'IN_PROGRESS' } };
+      return {};
+    });
+    const { handlers, ctx, state } = buildHarness({ transcribeSend });
+
+    const pending = handlers['transcribe-media'](fakeEvent(), { file: fakeFile });
+    await parkedInPoll(ctx);
+
+    // Connection drops, then the user cancels.
+    state.online = false;
+    await handlers['cancel-transcription']();
+    await pending;
+
+    // No delete attempted while offline...
+    expect(transcribeSend.mock.calls.filter(([c]) => c._type === 'delete')).toHaveLength(0);
+    // ...but it's queued rather than lost.
+    expect(ctx.pendingTranscriptionDeletes).toEqual([expect.stringMatching(/^transcription-\d+$/)]);
+
+    // On reconnect the queued delete is flushed.
+    state.online = true;
+    await flushPendingTranscriptionDeletes(ctx);
+
+    expect(transcribeSend.mock.calls.filter(([c]) => c._type === 'delete')).toHaveLength(1);
+    expect(ctx.pendingTranscriptionDeletes).toEqual([]);
+  });
+
+  test('a queued delete that fails on the network stays queued', async () => {
+    const { ctx, state } = buildHarness({
+      transcribeSend: jest.fn(async () => { throw networkError(); }),
+    });
+    ctx.pendingTranscriptionDeletes = ['transcription-123'];
+    state.online = true;
+
+    await flushPendingTranscriptionDeletes(ctx);
+
+    expect(ctx.pendingTranscriptionDeletes).toEqual(['transcription-123']);
+  });
+
+  test('an AccessDenied on delete is dropped rather than retried forever', async () => {
+    // DeleteTranscriptionJob is documented as an optional permission.
+    const { ctx, state } = buildHarness({
+      transcribeSend: jest.fn(async () => {
+        throw Object.assign(new Error('not authorized'), {
+          name: 'AccessDeniedException',
+          $metadata: { httpStatusCode: 403 },
+        });
+      }),
+    });
+    ctx.pendingTranscriptionDeletes = ['transcription-123'];
+    state.online = true;
+
+    await flushPendingTranscriptionDeletes(ctx);
+
+    expect(ctx.pendingTranscriptionDeletes).toEqual([]);
+  });
+
+  test('a genuine service error still fails the job rather than pausing', async () => {
+    // Throttling and validation errors mean AWS answered — pausing on those
+    // would hide real failures behind an indefinite "waiting" state.
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type !== 'get') return {};
+      throw Object.assign(new Error('Rate exceeded'), {
+        name: 'ThrottlingException',
+        $metadata: { httpStatusCode: 429 },
+      });
+    });
+    const { handlers } = buildHarness({ transcribeSend });
+
+    await expect(handlers['transcribe-media'](fakeEvent(), { file: fakeFile }))
+      .rejects.toThrow('Rate exceeded');
+  });
+
+  test('a network failure fetching the finished transcript pauses instead of discarding it', async () => {
+    // AWS has already produced the transcript at this point; failing here would
+    // throw away completed, paid-for work.
+    const transcribeSend = jest.fn(async (cmd) => {
+      if (cmd._type !== 'get') return {};
+      return {
+        TranscriptionJob: {
+          TranscriptionJobStatus: 'COMPLETED',
+          Transcript: { TranscriptFileUri: 'https://s3.amazonaws.com/out/job/transcript.json' },
+        },
+      };
+    });
+    const { handlers, ctx } = buildHarness({ transcribeSend });
+
+    let s3Calls = 0;
+    ctx.awsClients.s3.send = jest.fn(async () => {
+      s3Calls++;
+      if (s3Calls === 1) throw networkError();
+      return { Body: { transformToString: async () => '{}' } };
+    });
+
+    const pending = handlers['transcribe-media'](fakeEvent(), { file: fakeFile });
+    await waitUntil(() => !!ctx.transcriptionJob?.resume, 'result fetch to park');
+    ctx.transcriptionJob.resume('network');
+
+    const result = await pending;
+    expect(result.status).toBe('COMPLETED');
+    expect(s3Calls).toBe(2);
+  });
+
+  test('refuses to start a transcription while offline', async () => {
+    const { handlers } = buildHarness({ online: false });
+
+    await expect(handlers['transcribe-media'](fakeEvent(), { file: fakeFile }))
+      .rejects.toThrow(/offline/i);
+  });
+});
+
 describe('transcribe-media concurrency and notifications', () => {
+
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useRealTimers();

@@ -15,18 +15,21 @@ const KB_TARGET_NAME = 'hive-knowledge-base';
 function register(ipcMain, ctx) {
   ipcMain.handle('admin-check-kb-status', async () => {
     if (!ctx.currentCredentials) throw new Error('No AWS credentials configured');
+    ctx.assertOnline('Admin actions');
     const region = ctx.currentCredentials.region || 'us-east-1';
     return await adminSetup.checkKnowledgeBaseStatus(ctx.currentCredentials, region, KB_NAME);
   });
 
   ipcMain.handle('admin-check-gateway-kb-target', async () => {
     if (!ctx.currentCredentials) throw new Error('No AWS credentials configured');
+    ctx.assertOnline('Admin actions');
     const region = ctx.currentCredentials.region || 'us-east-1';
     return await adminSetup.checkGatewayKbTarget(ctx.currentCredentials, region, GATEWAY_NAME, KB_TARGET_NAME);
   });
 
   ipcMain.handle('admin-get-gateway-policy', async (event, gatewayArn) => {
     if (!ctx.currentCredentials) throw new Error('No AWS credentials configured');
+    ctx.assertOnline('Admin actions');
     const region = ctx.currentCredentials.region || 'us-east-1';
     return await adminSetup.getGatewayResourcePolicy(ctx.currentCredentials, region, gatewayArn);
   });
@@ -37,6 +40,7 @@ function register(ipcMain, ctx) {
   // Apply.
   ipcMain.handle('admin-preview-policy-change', async (event, { gatewayArn, action, roleArn }) => {
     if (!ctx.currentCredentials) throw new Error('No AWS credentials configured');
+    ctx.assertOnline('Admin actions');
     const region = ctx.currentCredentials.region || 'us-east-1';
     return await adminSetup.previewGatewayPolicyChange(ctx.currentCredentials, region, gatewayArn, action, roleArn);
   });
@@ -46,6 +50,7 @@ function register(ipcMain, ctx) {
   // guaranteed to match what the admin reviewed.
   ipcMain.handle('admin-apply-policy-change', async (event, { gatewayArn, policyDocument }) => {
     if (!ctx.currentCredentials) throw new Error('No AWS credentials configured');
+    ctx.assertOnline('Admin actions');
     const region = ctx.currentCredentials.region || 'us-east-1';
     return await adminSetup.applyGatewayResourcePolicy(ctx.currentCredentials, region, gatewayArn, policyDocument);
   });

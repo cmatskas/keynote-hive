@@ -11,6 +11,7 @@ const SkillsManager = require('./models/skillsManager');
 const WorkHistoryManager = require('./models/workHistoryManager');
 const CodeInterpreterManager = require('./models/codeInterpreterManager');
 const WebSearchManager = require('./models/webSearchManager');
+const { isNetworkError } = require('./awsErrors');
 
 class AppContext {
   constructor() {
@@ -23,6 +24,7 @@ class AppContext {
     this.credentialMonitor = null;
     this.swarmOrchestrator = null;
     this.transcriptionJob = null;
+    this.connectivityMonitor = null;
 
     this.credentialsManager = new CredentialsManager();
     this.settingsManager = new SettingsManager();
@@ -79,6 +81,12 @@ class AppContext {
    * (Re-)initialize the web search Gateway using the role ARN from settings,
    * if any. Safe to call multiple times — e.g. after the user sets/updates
    * webSearchGatewayRoleArn in Settings, to retry without restarting the app.
+   *
+   * Also retried automatically when connectivity returns (see main.js's
+   * handleConnectivityChange). Without that, a launch while offline left
+   * `ready === false` for the entire session with no retry, so web search
+   * stayed dead even after the network came back and the model silently fell
+   * back to scraping via execute_code.
    */
   async initializeWebSearch() {
     if (!this.webSearchManager) return;
@@ -87,7 +95,11 @@ class AppContext {
       await this.webSearchManager.initialize(settings.webSearchGatewayRoleArn || undefined);
       this.webSearchInitError = null;
     } catch (err) {
-      this.webSearchInitError = err.message;
+      // Don't record a transport failure as a Gateway configuration problem —
+      // it sends the user hunting for a permissions issue that isn't there.
+      this.webSearchInitError = isNetworkError(err)
+        ? 'Hive was offline when web search initialized — it will retry automatically when the connection returns.'
+        : err.message;
       log.warn(`[web-search] Initialization failed: ${err.message}`);
     }
   }
@@ -115,6 +127,27 @@ class AppContext {
     const ci = this.workSandboxes.get(sessionId);
     if (ci?.sessionId) await ci.stopSession().catch(() => {});
     this.workSandboxes.delete(sessionId);
+  }
+
+  /**
+   * Whether Hive can currently reach AWS. Defaults to true when no monitor is
+   * running (tests, early startup) so nothing is gated off a missing monitor.
+   */
+  isOnline() {
+    return this.connectivityMonitor ? this.connectivityMonitor.isOnline() : true;
+  }
+
+  /**
+   * Guard for network-dependent IPC handlers. Throws a recognisable error so a
+   * renderer control that slipped past the OfflineGuard degrades into a clear
+   * message instead of a 30-second SDK retry-and-timeout hang.
+   */
+  assertOnline(action = 'This action') {
+    if (!this.isOnline()) {
+      const err = new Error(`${action} needs an internet connection — Hive is offline.`);
+      err.code = 'HIVE_OFFLINE';
+      throw err;
+    }
   }
 }
 

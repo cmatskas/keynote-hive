@@ -2,6 +2,7 @@ const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
 const { BedrockClient, ListFoundationModelsCommand } = require('@aws-sdk/client-bedrock');
 const { TranscribeClient, ListTranscriptionJobsCommand } = require('@aws-sdk/client-transcribe');
 const { S3Client, ListBucketsCommand } = require('@aws-sdk/client-s3');
+const { isNetworkError, describeAwsError } = require('../awsErrors');
 
 // The shared admin AWS account that owns Hive's organization-wide
 // resources (the Managed Knowledge Base and its AgentCore Gateway). This
@@ -21,6 +22,15 @@ class AWSValidator {
   /**
    * Quick validation — single STS call to check credentials are fresh.
    * ~100ms. Use before first service call.
+   *
+   * Returns one of three states, not two. `{ valid: false }` alone was
+   * ambiguous: it conflated "AWS rejected these credentials" with "we never
+   * reached AWS", and callers acted on the former when it was really the
+   * latter — routing to the credentials page at startup, escalating a poll to
+   * "expired" and tearing down the renderer, and telling users their working
+   * credentials were invalid. When the failure is transport-level the result
+   * now carries `offline: true`, and callers must treat that as "unknown,
+   * try again later" rather than "invalid".
    */
   async quickValidate() {
     try {
@@ -35,12 +45,26 @@ class AWSValidator {
       const identity = await stsClient.send(new GetCallerIdentityCommand({}));
       return {
         valid: true,
+        offline: false,
         identity: { userId: identity.UserId, account: identity.Account, arn: identity.Arn },
         isAdminAccount: identity.Account === AWS_KEYNOTE_ACCOUNT_ID,
         errors: []
       };
     } catch (error) {
-      return { valid: false, identity: null, errors: [`Invalid AWS credentials: ${error.message}`] };
+      if (isNetworkError(error)) {
+        return {
+          valid: false,
+          offline: true,
+          identity: null,
+          errors: [describeAwsError(error)]
+        };
+      }
+      return {
+        valid: false,
+        offline: false,
+        identity: null,
+        errors: [`Invalid AWS credentials: ${error.message}`]
+      };
     }
   }
 
@@ -51,6 +75,7 @@ class AWSValidator {
   async validateCredentials() {
     const results = {
       valid: false,
+      offline: false,
       identity: null,
       isAdminAccount: false,
       permissions: {
@@ -138,7 +163,14 @@ class AWSValidator {
       }
 
     } catch (error) {
-      results.errors.push(`Invalid AWS credentials: ${error.message}`);
+      // Same three-state distinction as quickValidate: a transport failure
+      // must not be reported to the Connection Status tab as bad credentials.
+      if (isNetworkError(error)) {
+        results.offline = true;
+        results.errors.push(describeAwsError(error));
+      } else {
+        results.errors.push(`Invalid AWS credentials: ${error.message}`);
+      }
     }
 
     return results;

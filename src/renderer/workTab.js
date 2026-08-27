@@ -488,8 +488,20 @@
       return;
     }
 
+    // Offline check first — see the matching comment in index.js's sendMessage.
+    // `credentialsVerified` must not be set from a check that failed only
+    // because we couldn't reach AWS, or the next attempt would skip validation
+    // entirely on the strength of a non-answer.
+    if (window.OfflineGuard && !window.OfflineGuard.requireOnline('Sending a message')) {
+      return;
+    }
+
     if (!credentialsVerified) {
       const check = await window.electronAPI.invoke('quick-validate-credentials');
+      if (check.offline) {
+        showToast('Hive is offline — could not reach AWS. Your message has not been sent.', 'warning');
+        return;
+      }
       if (!check.valid) {
         showToast('AWS credentials are invalid or expired. Update in Settings → AWS Credentials.', 'error');
         return;

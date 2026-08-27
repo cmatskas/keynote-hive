@@ -91,3 +91,82 @@ describe('validateCredentials() isAdminAccount', () => {
     expect(result.isAdminAccount).toBe(false);
   });
 });
+
+/**
+ * The three-state result. `{ valid: false }` alone was ambiguous — it meant
+ * both "AWS rejected these credentials" and "we never reached AWS" — and
+ * callers acted on the first reading when it was really the second: startup
+ * routing opened the credentials page, the credential monitor escalated to
+ * expiry and replaced the renderer (losing unsaved work), and the pre-send
+ * gates told users their working credentials were invalid.
+ */
+describe('quickValidate() offline vs invalid', () => {
+  test('reports offline for a transport failure, and never as a credentials problem', async () => {
+    mockSend.mockRejectedValue(Object.assign(new Error('getaddrinfo ENOTFOUND sts.us-east-1.amazonaws.com'), {
+      code: 'ENOTFOUND',
+    }));
+
+    const result = await new AWSValidator(credentials()).quickValidate();
+
+    expect(result.valid).toBe(false);
+    expect(result.offline).toBe(true);
+    expect(result.errors[0]).toMatch(/offline/i);
+    expect(result.errors[0]).not.toMatch(/Invalid AWS credentials/);
+  });
+
+  test('reports a genuine rejection as invalid, not offline', async () => {
+    mockSend.mockRejectedValue(Object.assign(new Error('The security token included in the request is expired'), {
+      name: 'ExpiredTokenException',
+      $metadata: { httpStatusCode: 403, attempts: 1 },
+    }));
+
+    const result = await new AWSValidator(credentials()).quickValidate();
+
+    expect(result.valid).toBe(false);
+    expect(result.offline).toBe(false);
+    expect(result.errors[0]).toMatch(/Invalid AWS credentials/);
+  });
+
+  test('a successful validation is explicitly not offline', async () => {
+    mockSend.mockResolvedValue({ UserId: 'AIDA', Account: '111122223333', Arn: 'arn:aws:iam::111122223333:role/Dev' });
+
+    const result = await new AWSValidator(credentials()).quickValidate();
+
+    expect(result.valid).toBe(true);
+    expect(result.offline).toBe(false);
+  });
+
+  test('a timeout is treated as offline rather than bad credentials', async () => {
+    const err = new Error('Connection timed out');
+    err.name = 'TimeoutError';
+    mockSend.mockRejectedValue(err);
+
+    const result = await new AWSValidator(credentials()).quickValidate();
+
+    expect(result.offline).toBe(true);
+  });
+});
+
+describe('validateCredentials() offline flag', () => {
+  test('flags offline on a transport failure so Connection Status does not blame the credentials', async () => {
+    mockSend.mockRejectedValue(Object.assign(new Error('EAI_AGAIN'), { code: 'EAI_AGAIN' }));
+
+    const result = await new AWSValidator(credentials()).validateCredentials();
+
+    expect(result.valid).toBe(false);
+    expect(result.offline).toBe(true);
+    expect(result.errors[0]).toMatch(/offline/i);
+  });
+
+  test('does not flag offline for a genuine rejection', async () => {
+    mockSend.mockRejectedValue(Object.assign(new Error('invalid'), {
+      name: 'InvalidClientTokenId',
+      $metadata: { httpStatusCode: 403 },
+    }));
+
+    const result = await new AWSValidator(credentials()).validateCredentials();
+
+    expect(result.offline).toBe(false);
+    expect(result.errors[0]).toMatch(/Invalid AWS credentials/);
+  });
+});

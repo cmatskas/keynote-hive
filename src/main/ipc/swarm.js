@@ -106,6 +106,7 @@ function register(ipcMain, ctx) {
 
   ipcMain.handle('swarm-run-pipeline', async (event, { templateId, brief, autonomyMode, files }) => {
     if (!ctx.awsClients.bedrock) throw new Error('AWS credentials not configured');
+    ctx.assertOnline('Running a pipeline');
     const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
     const models = (settings.bedrockModels || []);
     const overrides = {};

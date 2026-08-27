@@ -555,6 +555,151 @@ describe('Renderer Index.js', () => {
             expect(document.getElementById('transcribe-page').style.display).toBe('block');
             expect(document.getElementById('nav-transcribe').classList.contains('active')).toBe(true);
         });
+
+        // A paused job hasn't failed — AWS is still working on it and still
+        // billing. Presenting it as an error would push the user to re-run a
+        // transcription they've already paid for.
+        test('a PAUSED progress update is presented as paused, not failed', async () => {
+            const { resolveInvoke } = deferredInvoke();
+            const upload = window.uploadFile(mockFile());
+            await Promise.resolve();
+
+            const call = mockElectronAPI.receive.mock.calls.find(([ch]) => ch === 'transcription-progress');
+            call[1]({
+                status: 'PAUSED',
+                reason: 'network',
+                message: 'Waiting for a connection — your transcription is still running on AWS.',
+            });
+
+            const pane = document.getElementById('transcriptionText');
+            expect(document.getElementById('transcribeProgressTitle').textContent).toMatch(/Paused/i);
+            expect(document.getElementById('transcribeSpinner').classList.contains('text-warning')).toBe(true);
+            expect(document.getElementById('transcribeProgressHint').textContent).toMatch(/resume automatically/i);
+            // No error styling, and Cancel stays available throughout.
+            expect(pane.querySelector('.alert-danger')).toBeNull();
+            expect(document.getElementById('cancelTranscriptionBtn')).not.toBeNull();
+
+            resolveInvoke({ status: 'CANCELLED' });
+            await upload;
+        });
+
+        test('resuming after a pause restores the active presentation', async () => {
+            const { resolveInvoke } = deferredInvoke();
+            const upload = window.uploadFile(mockFile());
+            await Promise.resolve();
+
+            const call = mockElectronAPI.receive.mock.calls.find(([ch]) => ch === 'transcription-progress');
+            call[1]({ status: 'PAUSED', reason: 'network', message: 'Waiting...' });
+            call[1]({ status: 'IN_PROGRESS', message: 'Connection restored — resuming transcription...' });
+
+            expect(document.getElementById('transcribeProgressTitle').textContent).toMatch(/Transcribing/i);
+            expect(document.getElementById('transcribeSpinner').classList.contains('text-success')).toBe(true);
+
+            resolveInvoke({ status: 'CANCELLED' });
+            await upload;
+        });
+
+        test('an ABANDONED result names the still-running AWS job instead of implying lost work', async () => {
+            mockElectronAPI.invoke.mockResolvedValue({
+                status: 'ABANDONED',
+                jobName: 'transcription-1730000000000',
+                message: 'Transcription paused for too long waiting for a connection. The job "transcription-1730000000000" is still running on AWS.',
+            });
+
+            await window.uploadFile(mockFile());
+
+            const pane = document.getElementById('transcriptionText');
+            expect(pane.querySelector('.alert-warning')).not.toBeNull();
+            expect(pane.querySelector('.alert-danger')).toBeNull();
+            expect(pane.textContent).toContain('still running on AWS');
+            expect(pane.textContent).toContain('Start over');
+        });
+    });
+
+    // Offline must never be reported as a credentials problem: it sends the
+    // user to Settings to fix something that isn't broken, and caching the
+    // result would skip real validation on the next attempt.
+    describe('Offline-aware pre-send gate', () => {
+        const setGuard = (online) => {
+            window.OfflineGuard = {
+                isOnline: () => online,
+                requireOnline: jest.fn(() => {
+                    if (!online) mockElectronAPI.showToast('Sending a message needs an internet connection — Hive is offline.', 'warning');
+                    return online;
+                }),
+                refresh: jest.fn(),
+                onChange: jest.fn(),
+                init: jest.fn().mockResolvedValue(undefined),
+            };
+        };
+
+        afterEach(() => {
+            delete window.OfflineGuard;
+        });
+
+        test('refuses to send while offline, without calling the model', async () => {
+            setGuard(false);
+            require('../../src/renderer/index.js');
+            document.getElementById('promptEditor').value = 'Hello';
+            mockElectronAPI.invoke.mockClear();
+
+            document.getElementById('invokeBedrockBtn').dispatchEvent(new Event('click'));
+            await Promise.resolve();
+
+            expect(window.OfflineGuard.requireOnline).toHaveBeenCalledWith('Sending a message');
+            expect(mockElectronAPI.invoke).not.toHaveBeenCalledWith('send-to-bedrock', expect.anything());
+            expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+                expect.stringMatching(/offline/i), 'warning'
+            );
+        });
+
+        test('an offline credential check warns about the connection, not the credentials', async () => {
+            // The guard is bypassed here (reports online) so the gate itself is
+            // exercised: quick-validate returns offline, which must not be
+            // reported as invalid credentials.
+            setGuard(true);
+            require('../../src/renderer/index.js');
+            document.getElementById('promptEditor').value = 'Hello';
+
+            mockElectronAPI.invoke.mockImplementation((channel) => {
+                if (channel === 'quick-validate-credentials') {
+                    return Promise.resolve({ valid: false, offline: true, errors: ['offline'] });
+                }
+                return Promise.resolve(undefined);
+            });
+
+            document.getElementById('invokeBedrockBtn').dispatchEvent(new Event('click'));
+            await Promise.resolve();
+            await Promise.resolve();
+            await Promise.resolve();
+
+            const toasts = mockElectronAPI.showToast.mock.calls;
+            expect(toasts.some(([msg, type]) => /offline/i.test(msg) && type === 'warning')).toBe(true);
+            expect(toasts.some(([msg]) => /invalid or expired/i.test(msg))).toBe(false);
+            expect(mockElectronAPI.invoke).not.toHaveBeenCalledWith('send-to-bedrock', expect.anything());
+        });
+
+        test('a genuine rejection still reports a credentials problem', async () => {
+            setGuard(true);
+            require('../../src/renderer/index.js');
+            document.getElementById('promptEditor').value = 'Hello';
+
+            mockElectronAPI.invoke.mockImplementation((channel) => {
+                if (channel === 'quick-validate-credentials') {
+                    return Promise.resolve({ valid: false, offline: false, errors: ['Invalid AWS credentials'] });
+                }
+                return Promise.resolve(undefined);
+            });
+
+            document.getElementById('invokeBedrockBtn').dispatchEvent(new Event('click'));
+            await Promise.resolve();
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+                expect.stringMatching(/invalid or expired/i), 'error'
+            );
+        });
     });
 
     describe('Bedrock Integration', () => {

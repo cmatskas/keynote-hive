@@ -8,6 +8,9 @@ const setupWizard = require('../models/setupWizard');
  */
 function register(ipcMain, ctx) {
   ipcMain.handle('setup-wizard-check-status', async () => {
+    if (!ctx.isOnline()) {
+      return { error: 'Hive is offline — Setup Check needs an internet connection.', offline: true };
+    }
     if (!ctx.currentCredentials) {
       ctx.currentCredentials = await ctx.credentialsManager.loadCredentials();
     }
@@ -19,6 +22,7 @@ function register(ipcMain, ctx) {
   });
 
   ipcMain.handle('setup-wizard-create-item', async (event, itemId) => {
+    ctx.assertOnline('Setup Check');
     if (!ctx.currentCredentials) {
       ctx.currentCredentials = await ctx.credentialsManager.loadCredentials();
     }

@@ -97,6 +97,23 @@ Every policy change is scoped to a single named statement Hive manages (`HiveAdm
 
 If either constant ever needs to change (e.g. the admin account changes, or the shared Gateway is recreated), that requires a source change and a new Hive release — there is no way to update them from the UI by design.
 
+## Working Offline
+
+Hive stays usable without a connection. Everything it stores — conversations, Work tab history, skills, showflows, settings — lives in plain files in the app's data directory, so none of it needs AWS to read or write.
+
+**Works offline:** browsing, searching, loading and deleting conversations; Work tab history; creating and editing skills; saving settings; showflow new/open/save/import/export; downloading and copying an existing transcript; switching theme.
+
+**Paused until the connection returns:** sending messages (Work, Chat), running Swarm pipelines, transcription, Save & Test Credentials, Setup Check, AgentCore Memory operations, and web search.
+
+While offline you'll see a banner below the navbar, and the controls that need AWS are disabled with a tooltip explaining why. Both clear automatically on reconnect — there's nothing to retry by hand.
+
+Two behaviours worth knowing:
+
+- **Launching offline still opens the main app.** If credentials are already saved, Hive can't verify them without a connection, but it no longer treats that as "your credentials are bad" and sends you to the credentials page. You get the full UI with your work available.
+- **An in-flight transcription is not lost.** A job already accepted by AWS runs to completion server-side regardless of what Hive is doing, so losing the connection — or having your credentials expire mid-job — pauses Hive's polling rather than failing the job. It resumes automatically when the connection returns or when you save new credentials, and the transcript arrives as normal. Cancelling while offline still works: the job deletion is queued and sent on reconnect so it stops billing.
+
+An in-flight Work or Swarm run is deliberately left to fail on its own rather than being cancelled the moment the network drops, since a brief blip often resolves inside the AWS SDK's own retries. If it does fail, the error says Hive is offline rather than showing a raw network error.
+
 ## Which Tab Should I Use?
 
 | | **Work** | **Swarm** | **Chat** |
@@ -183,6 +200,8 @@ Audio and video transcription powered by AWS Transcribe.
 - Export transcription as text
 
 Transcription runs in the background — it doesn't block the UI. Progress appears inline in the transcript pane, a spinner on the Transcribe nav item shows a job is running from whichever tab you're on, and an OS notification fires on completion or failure (clicking it brings you back to the Transcribe tab). A **Cancel** button stops an in-flight job: it aborts the upload if it's still running and deletes the Transcribe job so it stops billing. Only one transcription runs at a time — starting a second while one is in flight is rejected rather than overwriting the first.
+
+If the connection drops or your credentials expire while a job is running, Hive pauses instead of failing — see [Working Offline](#working-offline).
 
 ## Agent Skills
 
