@@ -39,6 +39,7 @@ const {
   StopCodeInterpreterSessionCommand,
 } = require('@aws-sdk/client-bedrock-agentcore');
 const log = require('electron-log/main');
+const { toAwsText } = require('../awsText');
 
 const WEB_SEARCH_GATEWAY_NAME = 'hive-web-search';
 const WEB_SEARCH_ROLE_NAME = 'hive-web-search-gateway';
@@ -308,7 +309,10 @@ async function createWebSearchGatewayRole(credentials, region) {
   const created = await iam.send(new CreateRoleCommand({
     RoleName: WEB_SEARCH_ROLE_NAME,
     AssumeRolePolicyDocument: JSON.stringify(WEB_SEARCH_TRUST_POLICY),
-    Description: 'Created by Hive Setup Check — allows AgentCore Gateway to run the Web Search Tool target',
+    // Plain ASCII, and sanitised on the way out. AWS rejects this field if it
+    // contains anything outside printable ASCII / Latin-1 — an em dash here once
+    // made the whole CreateRole call fail on a fresh install.
+    Description: toAwsText('Created by Hive Setup Check - allows AgentCore Gateway to run the Web Search Tool target'),
   }));
 
   await iam.send(new PutRolePolicyCommand({

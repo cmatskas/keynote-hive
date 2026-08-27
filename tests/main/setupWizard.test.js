@@ -503,3 +503,51 @@ describe('checkStatus() transcription output bucket', () => {
     expect(mutating).toEqual([]);
   });
 });
+
+/**
+ * Regression: a brand-new install could not create the Web Search Gateway role.
+ * The IAM `Description` contained an em dash, and AWS rejected the whole
+ * CreateRole call — "Value at 'description' failed to satisfy constraint" — so
+ * setup failed with an opaque regex complaint and no way forward.
+ *
+ * Asserting on the value actually handed to the SDK, rather than on the source
+ * literal, is what makes this a real guard: it holds however the string is built.
+ */
+describe('AWS text constraints on created resources', () => {
+  const { isAwsSafeText } = require('../../src/main/awsText');
+
+  test('the role description satisfies the constraint AWS enforces', async () => {
+    mockIamSend.mockImplementation((cmd) => {
+      if (cmd.__type === 'GetRoleCommand') return Promise.reject(notFoundError('NoSuchEntityException'));
+      if (cmd.__type === 'CreateRoleCommand') return Promise.resolve({ Role: { Arn: 'arn:aws:iam::1:role/hive-web-search-gateway' } });
+      return Promise.resolve({});
+    });
+
+    await setupWizard.createWebSearchGatewayRole(credentials(), 'us-east-1');
+
+    const create = mockIamSend.mock.calls.find(([cmd]) => cmd.__type === 'CreateRoleCommand');
+    expect(create).toBeDefined();
+    const description = create[0].input.Description;
+    expect(description).toBeTruthy();
+    expect(isAwsSafeText(description)).toBe(true);
+    // Specifically the character that broke it.
+    expect(description).not.toMatch(/[\u2010-\u2015]/);
+  });
+
+  test('every string sent to CreateRole is within the accepted range', async () => {
+    // Not just the description: role name and policy documents travel the same way.
+    mockIamSend.mockImplementation((cmd) => {
+      if (cmd.__type === 'GetRoleCommand') return Promise.reject(notFoundError('NoSuchEntityException'));
+      if (cmd.__type === 'CreateRoleCommand') return Promise.resolve({ Role: { Arn: 'arn:aws:iam::1:role/x' } });
+      return Promise.resolve({});
+    });
+
+    await setupWizard.createWebSearchGatewayRole(credentials(), 'us-east-1');
+
+    for (const [cmd] of mockIamSend.mock.calls) {
+      for (const value of Object.values(cmd.input || {})) {
+        if (typeof value === 'string') expect(isAwsSafeText(value)).toBe(true);
+      }
+    }
+  });
+});

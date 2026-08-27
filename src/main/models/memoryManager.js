@@ -16,6 +16,7 @@ const {
 
 const { BedrockAgentCoreClient } = require('@aws-sdk/client-bedrock-agentcore');
 const log = require('electron-log/main');
+const { toAwsText } = require('../awsText');
 
 const MEMORY_NAME = 'hive_memory';
 const ACTOR_ID = 'user';
@@ -52,7 +53,7 @@ class MemoryManager {
     try {
       const res = await this.controlClient.send(new CreateMemoryCommand({
         name: MEMORY_NAME,
-        description: 'Hive agent memory — stores conversation context and user preferences',
+        description: toAwsText('Hive agent memory - stores conversation context and user preferences'),
         strategies: DEFAULT_STRATEGIES,
         eventExpiryDuration: EVENT_EXPIRY_DAYS,
       }));
