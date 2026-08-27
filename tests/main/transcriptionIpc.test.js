@@ -20,6 +20,10 @@ jest.mock('electron-log/main', () => ({
   error: jest.fn(),
 }));
 
+jest.mock('@aws-sdk/client-s3', () => ({
+  DeleteObjectCommand: jest.fn((input) => ({ _type: 's3delete', input })),
+}));
+
 // Chat-side dependencies of bedrock.js, unused by these tests.
 jest.mock('../../src/main/models/codeInterpreterManager', () => jest.fn());
 jest.mock('../../src/main/models/strandsAgentFactory', () => ({
@@ -32,6 +36,7 @@ const mockRunTranscription = jest.fn();
 const mockCancelTranscription = jest.fn(async () => ({ cancelled: true }));
 const mockGetTranscriptionState = jest.fn(() => ({ active: false }));
 const mockRenameTranscription = jest.fn(async () => ({ renamed: true }));
+const mockDeleteTranscriptionJob = jest.fn(async () => true);
 // `mock`-prefixed so the jest.mock factory may reference it.
 const mockJobCounter = { n: 0 };
 
@@ -40,6 +45,7 @@ jest.mock('../../src/main/models/transcriptionRunner', () => ({
   cancelTranscription: (...args) => mockCancelTranscription(...args),
   getTranscriptionState: (...args) => mockGetTranscriptionState(...args),
   renameTranscription: (...args) => mockRenameTranscription(...args),
+  deleteTranscriptionJob: (...args) => mockDeleteTranscriptionJob(...args),
   createJob: ({ sourceFile, displayName }) => ({
     jobId: `job-fixed-${++mockJobCounter.n}`,
     displayName: displayName || 'clip',
@@ -75,6 +81,15 @@ function buildHarness({ online = true } = {}) {
       get: jest.fn(async (jobId) => (jobId === 'job-old'
         ? { jobId, displayName: 'Keynote Draft 3', transcript: [{ text: 'hello' }] }
         : null)),
+      getRecord: jest.fn(async (jobId) => (jobId === 'job-old'
+        ? {
+          jobId,
+          jobName: 'transcription-1730000000000',
+          displayName: 'Keynote Draft 3',
+          outputBucket: 'hive-transcripts-111122223333',
+        }
+        : null)),
+      remove: jest.fn(async () => {}),
     },
     isOnline: () => state.online,
     assertOnline: (action = 'This action') => {
@@ -354,5 +369,92 @@ describe('re-attach and companion handlers', () => {
     await handlers['rename-transcription'](fakeEvent(), { jobId: 'job-fixed-1', displayName: 'Board review' });
 
     expect(mockRenameTranscription).toHaveBeenCalledWith(ctx, 'job-fixed-1', 'Board review');
+  });
+});
+
+/**
+ * Deleting is two-level on purpose. The transcript in the user's own output
+ * bucket is the durable copy — the tier that survives losing local state and
+ * outlives AWS's job-history retention — so removing it is irreversible and has
+ * to be an explicit choice, never a side effect of tidying the local list.
+ */
+describe('transcription-delete', () => {
+  const s3DeletesOf = (ctx) => ctx.awsClients.s3.send.mock.calls
+    .filter(([cmd]) => cmd._type === 's3delete')
+    .map(([cmd]) => cmd.input);
+
+  beforeEach(() => {
+    // The harness's s3 client is a bare jest.fn; give it a resolved value.
+    jest.clearAllMocks();
+    mockJobCounter.n = 0;
+  });
+
+  test('removes only the local copy by default', async () => {
+    const { handlers, ctx } = buildHarness();
+    ctx.awsClients.s3.send = jest.fn(async () => ({}));
+
+    await expect(handlers['transcription-delete'](fakeEvent(), { jobId: 'job-old' }))
+      .resolves.toEqual({ deleted: true, deletedFromAws: false });
+
+    expect(ctx.transcriptionRegistry.remove).toHaveBeenCalledWith('job-old');
+    // The durable copy is untouched.
+    expect(s3DeletesOf(ctx)).toHaveLength(0);
+    expect(mockDeleteTranscriptionJob).not.toHaveBeenCalled();
+  });
+
+  test('deletes the transcript, its sidecar and the AWS job when asked', async () => {
+    const { handlers, ctx } = buildHarness();
+    ctx.awsClients.s3.send = jest.fn(async () => ({}));
+
+    await expect(handlers['transcription-delete'](fakeEvent(), { jobId: 'job-old', deleteFromAws: true }))
+      .resolves.toEqual({ deleted: true, deletedFromAws: true });
+
+    expect(s3DeletesOf(ctx)).toEqual([
+      { Bucket: 'hive-transcripts-111122223333', Key: 'transcription-1730000000000.json' },
+      { Bucket: 'hive-transcripts-111122223333', Key: 'transcription-1730000000000.hive.json' },
+    ]);
+    expect(mockDeleteTranscriptionJob).toHaveBeenCalledWith(ctx, 'transcription-1730000000000');
+    expect(ctx.transcriptionRegistry.remove).toHaveBeenCalledWith('job-old');
+  });
+
+  test('still removes the local copy when an AWS delete is denied', async () => {
+    // A missing permission must not leave the entry stuck in the list forever.
+    const { handlers, ctx } = buildHarness();
+    ctx.awsClients.s3.send = jest.fn(async () => {
+      throw Object.assign(new Error('not authorized'), {
+        name: 'AccessDeniedException', $metadata: { httpStatusCode: 403 },
+      });
+    });
+
+    await expect(handlers['transcription-delete'](fakeEvent(), { jobId: 'job-old', deleteFromAws: true }))
+      .resolves.toMatchObject({ deleted: true });
+    expect(ctx.transcriptionRegistry.remove).toHaveBeenCalledWith('job-old');
+  });
+
+  test('refuses an AWS delete while offline rather than half-doing it', async () => {
+    const { handlers, ctx } = buildHarness({ online: false });
+    ctx.awsClients.s3.send = jest.fn(async () => ({}));
+
+    await expect(handlers['transcription-delete'](fakeEvent(), { jobId: 'job-old', deleteFromAws: true }))
+      .rejects.toThrow(/offline/i);
+    expect(ctx.transcriptionRegistry.remove).not.toHaveBeenCalled();
+  });
+
+  test('a local-only delete still works offline', async () => {
+    const { handlers, ctx } = buildHarness({ online: false });
+
+    await expect(handlers['transcription-delete'](fakeEvent(), { jobId: 'job-old' }))
+      .resolves.toMatchObject({ deleted: true });
+    expect(ctx.transcriptionRegistry.remove).toHaveBeenCalledWith('job-old');
+  });
+
+  test('deleting an unknown job removes nothing from AWS', async () => {
+    const { handlers, ctx } = buildHarness();
+    ctx.awsClients.s3.send = jest.fn(async () => ({}));
+
+    await handlers['transcription-delete'](fakeEvent(), { jobId: 'nope', deleteFromAws: true });
+
+    expect(s3DeletesOf(ctx)).toHaveLength(0);
+    expect(ctx.transcriptionRegistry.remove).toHaveBeenCalledWith('nope');
   });
 });

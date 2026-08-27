@@ -109,57 +109,136 @@
       <button type="button" class="btn-close ms-2" id="credentialWarningDismiss" aria-label="Dismiss"></button>
     </div>
 
-    <div id="transcribe-page" class="container-fluid py-4" style="display:none;">
-        <div class="row g-12">
-            <!-- Left Column -->
-            <div class="col-md-6">
-                <div class="title-card">
-                    <h2>Player</h2>
+    <div id="transcribe-page" style="display:none;">
+        <div class="transcribe-layout">
+
+            <!-- Transcription history. Reuses the Chat tab's sidebar idiom so the
+                 three tabs with lists look and behave the same way. -->
+            <div class="conv-sidebar transcribe-sidebar" id="transcribeSidebar">
+                <div class="conv-sidebar-header">
+                    <button id="newTranscriptionBtn" class="btn btn-primary btn-sm w-100">
+                        <i class="bi bi-plus-lg me-1"></i> New Transcription
+                    </button>
+                    <div class="conv-search-wrap mt-2">
+                        <i class="bi bi-search conv-search-icon"></i>
+                        <input type="text" id="transcriptionSearch" class="conv-search-input"
+                               placeholder="Search transcriptions...">
+                        <button id="transcriptionSearchClear" class="conv-search-clear d-none" title="Clear search">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    </div>
                 </div>
-                <!-- Upload Zone -->
-                <div class="upload-zone mb-3" id="uploadZone">
-                    <input type="file" id="fileInput" accept="video/*,audio/*" class="d-none">
-                    <i class="fas fa-cloud-upload-alt fa-2x mb-2"></i>
-                    <p class="mb-0">Click or drag video or audio files here to upload</p>
+                <div id="transcriptionList" class="conv-list"></div>
+            </div>
+
+            <div class="transcribe-main">
+                <div class="transcribe-topbar">
+                    <button class="btn btn-sm btn-outline-secondary" id="transcribeSidebarToggle"
+                            title="Show/hide transcriptions">
+                        <i class="bi bi-layout-sidebar"></i>
+                    </button>
+
+                    <!-- Shown only while viewing a saved transcript: the player is
+                         meaningless then, since the local media file is long gone. -->
+                    <div class="transcribe-view-header d-none" id="transcribeViewHeader">
+                        <div class="transcribe-view-title-row">
+                            <h5 class="transcribe-view-title mb-0" id="transcribeViewTitle"></h5>
+                            <button class="btn btn-sm btn-link p-0 ms-2" id="transcribeRenameBtn" title="Rename">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button class="btn btn-sm btn-link p-0 ms-1 text-danger" id="transcribeDeleteBtn" title="Delete">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                        <div class="transcribe-view-meta small text-muted" id="transcribeViewMeta"></div>
+                    </div>
                 </div>
 
-                <!-- Video Container -->
-                <div class="video-container rounded d-none" id="videoContainer">
-                    <video id="videoPlayer" controls>
-                        Your browser doesn't support HTML5 video.
-                    </video>
+                <div class="row g-12" id="transcribePanes">
+                    <!-- Player -->
+                    <div class="col-md-6" id="transcribePlayerPane">
+                        <div class="title-card">
+                            <h2>Player</h2>
+                        </div>
+                        <!-- Upload Zone -->
+                        <div class="upload-zone mb-3" id="uploadZone">
+                            <input type="file" id="fileInput" accept="video/*,audio/*" class="d-none">
+                            <i class="fas fa-cloud-upload-alt fa-2x mb-2"></i>
+                            <p class="mb-0">Click or drag video or audio files here to upload</p>
+                        </div>
+
+                        <!-- Video Container -->
+                        <div class="video-container rounded d-none" id="videoContainer">
+                            <video id="videoPlayer" controls>
+                                Your browser doesn't support HTML5 video.
+                            </video>
+                        </div>
+                    </div>
+
+                    <!-- Transcript -->
+                    <div class="col-md-6" id="transcribeTranscriptPane">
+                        <div class="title-card" id="transcribeTranscriptTitle">
+                            <h2>Transcript</h2>
+                            <button id="clearTranscriptionBtn" class="btn btn-outline-danger btn-sm d-none"
+                                style="float: right; margin-top: -35px;">
+                                <i class="fas fa-trash me-1"></i>Clear
+                            </button>
+                        </div>
+
+                        <div class="transcription-content" id="transcriptionContent">
+                            <div class="loading-spinner" id="loadingSpinner"></div>
+                            <div id="transcriptionText" class="text-gray-500 text-center">
+                                Upload a file to see transcription
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-center justify-content-end mt-2">
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="includeSpeakerTimestamps">
+                                <label class="form-check-label small text-muted" for="includeSpeakerTimestamps">
+                                    Include speaker &amp; timestamps
+                                </label>
+                            </div>
+                        </div>
+                        <div class="d-flex gap-2 mt-2">
+                            <button id="downloadTranscript" class="btn btn-outline-primary flex-fill d-none">
+                                <i class="fas fa-download me-2"></i>Download Transcript
+                            </button>
+                            <button id="copyTranscript" class="btn btn-outline-secondary flex-fill d-none">
+                                <i class="fas fa-copy me-2"></i>Copy Transcript
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
-            <div class="col-md-6">
-                <div class="title-card">
-                    <h2>Transcript</h2>
-                    <button id="clearTranscriptionBtn" class="btn btn-outline-danger btn-sm d-none"
-                        style="float: right; margin-top: -35px;">
-                        <i class="fas fa-trash me-1"></i>Clear
-                    </button>
-                </div>
+        </div>
+    </div>
 
-                <div class="transcription-content" id="transcriptionContent">
-                    <div class="loading-spinner" id="loadingSpinner"></div>
-                    <div id="transcriptionText" class="text-gray-500 text-center">
-                        Upload a file to see transcription
-                    </div>
+    <!-- Delete confirmation. The transcript in the user's own output bucket is the
+         durable copy and removing it is irreversible, so deleting from AWS is an
+         explicit opt-in rather than a side effect of tidying the local list. -->
+    <div class="modal fade" id="deleteTranscriptionModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Delete transcription</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="d-flex align-items-center justify-content-end mt-2">
-                    <div class="form-check form-switch mb-0">
-                        <input class="form-check-input" type="checkbox" id="includeSpeakerTimestamps">
-                        <label class="form-check-label small text-muted" for="includeSpeakerTimestamps">
-                            Include speaker &amp; timestamps
+                <div class="modal-body">
+                    <p class="mb-3">Remove <strong id="deleteTranscriptionName"></strong> from Hive?</p>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="deleteTranscriptionFromAws">
+                        <label class="form-check-label" for="deleteTranscriptionFromAws">
+                            Also delete the transcript from S3 and the job from AWS Transcribe
                         </label>
+                        <div class="form-text text-warning">
+                            <i class="bi bi-exclamation-triangle me-1"></i>This cannot be undone. Leave unchecked to
+                            keep the AWS copy, so this transcription can be recovered later.
+                        </div>
                     </div>
                 </div>
-                <div class="d-flex gap-2 mt-2">
-                    <button id="downloadTranscript" class="btn btn-outline-primary flex-fill d-none">
-                        <i class="fas fa-download me-2"></i>Download Transcript
-                    </button>
-                    <button id="copyTranscript" class="btn btn-outline-secondary flex-fill d-none">
-                        <i class="fas fa-copy me-2"></i>Copy Transcript
-                    </button>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="deleteTranscriptionConfirmBtn">Delete</button>
                 </div>
             </div>
         </div>

@@ -1,5 +1,26 @@
 # Release Notes
 
+## v3.8.0
+
+### New Features
+- **The Transcribe tab now has a history sidebar: past transcriptions are browsable, searchable, renameable and deletable.** Step 3 of the rework — the visible half. The registry added in v3.7.0 finally has a way to see it, so a transcription you have already paid for is one click away instead of gone.
+  - **A collapsible sidebar** reusing the Chat tab's existing idiom (`.conv-sidebar`, `.conv-list`, `.conv-item`, the search wrap), so the three tabs with lists look and behave alike. Collapsing it returns the content area to the original full-width two-pane layout, because three panes at the default 1200px window is tight.
+  - **List entries show what you need to recognise them** — name, date, duration — and distinguish their state: a running job spins at the top of the list, a paused one shows an amber marker, and an abandoned one is labelled "still on AWS" because that is exactly the kind you would otherwise re-run. **Legacy jobs from before naming are shown, not hidden**, with an invitation to name them.
+  - **Selecting a saved transcript never disturbs a job in flight.** This is only safe because v3.6.0 moved job ownership into the main process; before that, navigating away was what killed a job.
+  - **No player for a saved transcript.** The player is handed a local `File` via `createObjectURL`, and by the time you reopen a transcript that object is long gone and the file may have moved — so the header names the source file instead. Streaming from the input bucket is a follow-up, unblocked by the media key v3.7.0 records.
+  - **Deleting is two-level.** Local removal is the default; deleting the transcript, its sidecar and the AWS job is a separate checkbox that is never pre-armed, with the confirmation spelling out that it cannot be undone. The AWS copy is the tier that survives losing local state and outlives Transcribe's job-history retention, so destroying it has to be a deliberate act rather than a side effect of tidying a list. AWS deletions are individually tolerant — a missing permission or a failure on one object still lets the local removal proceed, so an entry can't get stuck in the list forever. An AWS delete is refused outright while offline rather than half-applied.
+  - Search covers the name and the source file name. Searching transcript *bodies* is the next step, and is what makes this genuinely useful months later when you remember a phrase but not what you called the file.
+
+### Fixes
+- **The Transcribe sidebar could have been left unwired by an unrelated startup failure.** `DOMContentLoaded` runs `loadPromptTemplates()`, `loadBedrockModels()`, `setupFileUpload()`, `setupCustomPromptsManagement()` and `await renderConversationList()` as a single unguarded chain — one throw strands everything after it. The sidebar is the user's only route back to past transcripts, so it is now wired first and inside its own `try`/`catch`, matching how the Work/Swarm/Settings tab inits are already individually guarded.
+- `initTranscribeSidebar()` is idempotent. Calling it twice would double every handler, so the sidebar toggle would fire twice and appear not to work at all.
+- `transcription-list` responses are coerced to an array before use, so a malformed IPC response can't break the sidebar.
+
+### Tests
+- Added `tests/renderer/transcribeSidebar.test.js` (25 tests): list rendering with date and duration, legacy unnamed entries shown with a naming prompt, abandoned entries marked as still on AWS, empty-library and failed-load states, search by name and by source file with a distinct no-matches message and a working clear button, opening a saved transcript (header contents, player hidden, download/copy revealed, active row marked, a vanished entry warning rather than blanking), an abandoned entry explaining the job may still be on AWS, New Transcription returning to the drop zone and refusing while a job runs, the sidebar toggle, a running job appearing at the top of the list, **opening a saved transcript not cancelling a running job**, and the delete flow (asks first, AWS box unchecked by default, both options passed through correctly, returns to the drop zone, no-ops with nothing selected).
+- Added 6 delete-handler tests to `transcriptionIpc.test.js` (now 26): local-only by default leaving the durable copy untouched, deleting transcript + sidecar + AWS job when asked, still removing locally when an AWS delete is denied, refusing an AWS delete while offline, a local-only delete working offline, and an unknown job removing nothing from AWS.
+
+
 ## v3.7.0
 
 ### New Features
@@ -136,8 +157,8 @@
   **Implementation order** — chosen so data loss stops before any UI exists, and each step ships independently:
   1. ~~**Main-owned job state.**~~ **Done in v3.6.0.** The main process owns the job and emits progress/terminal events; the renderer subscribes and can re-attach after a reload. This fixed (b) on its own and was a hard prerequisite — selecting a past transcript mid-job is exactly the navigation that would otherwise kill the job. The pausable job state from v3.4.0 sits underneath unchanged; it was a change to result *delivery* only. `jobId`, `displayName` and the media S3 key are now recorded on each job, ready for the registry.
   2. ~~**Registry + sidecar writes + derived naming at job start.**~~ **Done in v3.7.0.** Local registry under `userData/transcriptions/` (metadata and transcript in separate files so listing stays cheap), sidecar `<jobName>.hive.json` in the output bucket, derived-and-editable display names, abandoned jobs recorded. This is where (a) stopped.
-  3. **Sidebar list, select-to-view, New Transcription.** The visible feature.
-  4. **Rename, then search** — name filtering first, full-text second.
+  3. ~~**Sidebar list, select-to-view, New Transcription.**~~ **Done in v3.8.0.** Collapsible sidebar reusing the Chat tab's idiom, entries showing name/date/duration and job state, legacy entries shown with a naming prompt, no player for saved transcripts, and two-level delete (local by default, AWS opt-in).
+  4. **Rename, then search.** Rename and name/source-file filtering shipped in v3.8.0; **full-text search over transcript bodies is still to do** — that's what makes retrieval work months later when you remember a phrase but not the file name.
   5. **Reconciliation** — backfill pre-existing jobs from `ListTranscriptionJobs` and `ListObjectsV2`.
 
   **Also outstanding:**

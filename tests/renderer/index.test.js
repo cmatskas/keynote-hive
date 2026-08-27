@@ -124,7 +124,33 @@ describe('Renderer Index.js', () => {
             <button id="saveTranscriptBeforeClear"></button>
             <button id="copyTranscriptBeforeClear"></button>
             <button id="clearWithoutSaving"></button>
-            <div id="transcribe-page"></div>
+            <div id="transcribe-page">
+                <div class="transcribe-layout">
+                    <div class="conv-sidebar transcribe-sidebar" id="transcribeSidebar">
+                        <button id="newTranscriptionBtn"></button>
+                        <input type="text" id="transcriptionSearch" />
+                        <button id="transcriptionSearchClear" class="d-none"></button>
+                        <div id="transcriptionList"></div>
+                    </div>
+                    <div class="transcribe-main">
+                        <button id="transcribeSidebarToggle"></button>
+                        <div id="transcribeViewHeader" class="d-none">
+                            <h5 id="transcribeViewTitle"></h5>
+                            <button id="transcribeRenameBtn"></button>
+                            <button id="transcribeDeleteBtn"></button>
+                            <div id="transcribeViewMeta"></div>
+                        </div>
+                        <div id="transcribePlayerPane"></div>
+                        <div id="transcribeTranscriptPane"></div>
+                        <div id="transcribeTranscriptTitle"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="deleteTranscriptionModal">
+                <strong id="deleteTranscriptionName"></strong>
+                <input type="checkbox" id="deleteTranscriptionFromAws" />
+                <button id="deleteTranscriptionConfirmBtn"></button>
+            </div>
             <div id="analyze-page"></div>
             <div id="nav-transcribe"><span id="navTranscribeSpinner" class="d-none"></span></div>
             <div id="nav-analyze"></div>

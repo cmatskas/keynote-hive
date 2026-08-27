@@ -1,3 +1,4 @@
+const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const transcriptionRunner = require('../models/transcriptionRunner');
 const { createAgent, isAnthropicModel } = require('../models/strandsAgentFactory');
@@ -157,6 +158,39 @@ function register(ipcMain, ctx) {
   /** A single transcription, transcript included. */
   ipcMain.handle('transcription-get', async (_event, jobId) => {
     return await ctx.transcriptionRegistry.get(jobId);
+  });
+
+  /**
+   * Delete a transcription. Local-only by default.
+   *
+   * `deleteFromAws` additionally removes the transcript object, its sidecar, and
+   * the Transcribe job itself — which is irreversible, and is why it has to be an
+   * explicit choice rather than a side effect of tidying the local list. The AWS
+   * deletions are best-effort and individually tolerant: the local removal still
+   * happens even if the caller lacks a permission or is offline.
+   */
+  ipcMain.handle('transcription-delete', async (_event, { jobId, deleteFromAws = false }) => {
+    const record = await ctx.transcriptionRegistry.getRecord(jobId);
+
+    if (deleteFromAws && record) {
+      ctx.assertOnline('Deleting from AWS');
+      const bucket = record.outputBucket;
+      if (bucket && record.jobName) {
+        for (const key of [`${record.jobName}.json`, `${record.jobName}.hive.json`]) {
+          try {
+            await ctx.awsClients.s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+          } catch (err) {
+            logger.warn(`[transcribe] could not delete s3://${bucket}/${key}: ${err.message}`);
+          }
+        }
+      }
+      if (record.jobName) {
+        await transcriptionRunner.deleteTranscriptionJob(ctx, record.jobName);
+      }
+    }
+
+    await ctx.transcriptionRegistry.remove(jobId);
+    return { deleted: true, deletedFromAws: deleteFromAws };
   });
 
   ipcMain.handle('transcribe-media', async (event, { file, displayName = null }) => {

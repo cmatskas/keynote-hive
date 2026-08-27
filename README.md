@@ -7,7 +7,7 @@ An Electron desktop app that combines AI models served via Amazon Bedrock's Mant
 - 🤖 **Work Tab** — AI agent with code execution, web browsing, file I/O, image generation, and persistent memory via AgentCore
 - 🐝 **Swarm Tab** — Multi-agent pipelines for articles, keynotes, speeches, and demo storyboards with quality rubric evaluation
 - 💬 **Chat Tab** — Conversational AI analysis with conversation history and file attachments
-- 🎵 **Transcribe Tab** — Audio/video transcription via AWS Transcribe with speaker labels and timestamps
+- 🎵 **Transcribe Tab** — Audio/video transcription via AWS Transcribe with speaker labels, timestamps, and a searchable history of past transcripts
 - 🧠 **17 Agent Skills** — Copy editing, copywriting, research, marketing psychology, document creation, generative art, and more
 - 🎯 **Quality Rubrics** — Weighted criteria with penalty scoring, brief-specific adaptation, and adaptive learning from past runs
 - ⚙️ **Model Management** — Configure Mantle-served models and assign pipeline roles (creator/worker/formatter) from the UI
@@ -199,6 +199,12 @@ Audio and video transcription powered by AWS Transcribe.
 - Speaker diarization with labels
 - Timestamps per segment
 - Export transcription as text
+
+Past transcriptions are kept in a sidebar you can search, rename and reopen — so a transcript you've already paid for never has to be re-run. Each one is stored locally (so the list works offline) and mirrored alongside the transcript in your own output bucket, which means the history can be rebuilt from AWS even if Hive's local data is lost. Names default to the media file name and are editable while the job runs or any time afterwards.
+
+Opening a past transcript shows the transcript only — no player. The player is handed the local file you dropped in, and by the time you reopen a transcript that file may have moved or gone, so the header names the source file instead.
+
+Deleting is deliberately two-step. Removing a transcription from the list is local by default; a separate checkbox also deletes the transcript and the job from AWS. That option is never pre-checked, because the AWS copy is what makes a transcript recoverable later and deleting it can't be undone.
 
 Transcription runs in the background — it doesn't block the UI. Progress appears inline in the transcript pane, a spinner on the Transcribe nav item shows a job is running from whichever tab you're on, and an OS notification fires on completion or failure (clicking it brings you back to the Transcribe tab). A **Cancel** button stops an in-flight job: it aborts the upload if it's still running and deletes the Transcribe job so it stops billing. Only one transcription runs at a time — starting a second while one is in flight is rejected rather than overwriting the first.
 

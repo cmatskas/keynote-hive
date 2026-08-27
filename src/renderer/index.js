@@ -206,6 +206,331 @@ if (window.OfflineGuard) {
     window.OfflineGuard.init().catch(err => console.error('OfflineGuard init failed:', err));
 }
 
+// ── Transcription history sidebar ────────────────────────────────────────
+//
+// The list is backed by the local registry (v3.7.0), so it renders offline and
+// survives losing AWS access. Selecting an entry only changes what this pane
+// shows — it never touches a job in flight, which is possible because the main
+// process owns jobs and the renderer merely observes them (v3.6.0).
+
+let transcriptionRecords = [];       // metadata only; transcripts load on demand
+let selectedTranscriptionId = null;  // a saved transcript being viewed
+let pendingDeleteJobId = null;
+
+function transcribeLayout() {
+    return document.querySelector('.transcribe-layout');
+}
+
+/** Human-friendly duration for the list and header. */
+function formatTranscriptDuration(seconds) {
+    if (!Number.isFinite(seconds) || seconds <= 0) return null;
+    const mins = Math.round(seconds / 60);
+    if (mins < 1) return `${Math.round(seconds)} sec`;
+    if (mins < 60) return `${mins} min`;
+    const hours = Math.floor(mins / 60);
+    return `${hours}h ${mins % 60}m`;
+}
+
+function formatTranscriptDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/**
+ * A legacy job has no display name of its own — it predates naming. Show the
+ * bare job name and invite naming rather than hiding it, since it is still a
+ * real transcript the user may want.
+ */
+function isUnnamedRecord(record) {
+    return !record.displayName || /^transcription-\d+$/.test(record.displayName);
+}
+
+async function refreshTranscriptionList() {
+    try {
+        const result = await window.electronAPI.invoke('transcription-list');
+        // Only ever an array — a malformed response shouldn't be able to break
+        // the sidebar.
+        transcriptionRecords = Array.isArray(result) ? result : [];
+    } catch (err) {
+        console.error('Could not load transcriptions:', err);
+        transcriptionRecords = [];
+    }
+    renderTranscriptionList();
+}
+
+function renderTranscriptionList(filter = '') {
+    const list = document.getElementById('transcriptionList');
+    if (!list) return;
+
+    const query = filter.trim().toLowerCase();
+    const matches = query
+        ? transcriptionRecords.filter(r =>
+            (r.displayName || '').toLowerCase().includes(query) ||
+            (r.sourceFile || '').toLowerCase().includes(query))
+        : transcriptionRecords;
+
+    list.innerHTML = '';
+
+    // The job currently running isn't in the registry yet — it's only recorded
+    // on completion — so it's shown from live state, at the top.
+    if (transcriptionInFlight && !query) {
+        list.appendChild(buildRunningTranscriptionRow());
+    }
+
+    if (matches.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'conv-no-results';
+        empty.textContent = query
+            ? 'No transcriptions found'
+            : (transcriptionInFlight ? '' : 'No transcriptions yet');
+        if (empty.textContent) list.appendChild(empty);
+        return;
+    }
+
+    matches.forEach(record => list.appendChild(buildTranscriptionRow(record)));
+}
+
+function buildRunningTranscriptionRow() {
+    const row = document.createElement('div');
+    row.className = 'conv-item is-running';
+    row.id = 'transcriptionListRunningRow';
+
+    const title = document.createElement('div');
+    title.className = 'conv-item-title';
+    const dot = document.createElement('span');
+    dot.className = 'transcription-item-status is-running';
+    title.appendChild(dot);
+    title.appendChild(document.createTextNode(
+        document.getElementById('transcriptionNameInput')?.value || 'Transcribing…'
+    ));
+
+    const meta = document.createElement('div');
+    meta.className = 'transcription-item-meta';
+    meta.textContent = 'now · in progress';
+
+    row.append(title, meta);
+    // Clicking it returns to the live job's pane rather than loading anything.
+    row.addEventListener('click', showLiveTranscriptionPane);
+    return row;
+}
+
+function buildTranscriptionRow(record) {
+    const row = document.createElement('div');
+    row.className = 'conv-item';
+    if (record.jobId === selectedTranscriptionId) row.classList.add('active');
+
+    const title = document.createElement('div');
+    title.className = 'conv-item-title';
+
+    if (record.status && record.status !== 'COMPLETED') {
+        const dot = document.createElement('span');
+        dot.className = `transcription-item-status is-${record.status.toLowerCase()}`;
+        title.appendChild(dot);
+    }
+
+    const label = document.createElement('span');
+    if (isUnnamedRecord(record)) {
+        label.className = 'transcription-item-unnamed';
+        label.textContent = record.jobName || 'Untitled';
+    } else {
+        label.textContent = record.displayName;
+    }
+    title.appendChild(label);
+
+    const meta = document.createElement('div');
+    meta.className = 'transcription-item-meta';
+    const bits = [formatTranscriptDate(record.createdAt)];
+    const duration = formatTranscriptDuration(record.durationSeconds);
+    if (duration) bits.push(duration);
+    if (record.status === 'ABANDONED') bits.push('still on AWS');
+    if (isUnnamedRecord(record)) bits.push('name this');
+    meta.textContent = bits.filter(Boolean).join(' · ');
+
+    row.append(title, meta);
+    row.addEventListener('click', () => openTranscription(record.jobId));
+    return row;
+}
+
+/** Switch the pane back to the live job (or the empty drop zone). */
+function showLiveTranscriptionPane() {
+    selectedTranscriptionId = null;
+    transcribeLayout()?.classList.remove('viewing-saved');
+    document.getElementById('transcribeViewHeader')?.classList.add('d-none');
+    renderTranscriptionList(document.getElementById('transcriptionSearch')?.value || '');
+}
+
+/**
+ * Show a saved transcript. Deliberately does not disturb a job in flight — the
+ * main process owns it, so this is purely a change of view.
+ */
+async function openTranscription(jobId) {
+    try {
+        const entry = await window.electronAPI.invoke('transcription-get', jobId);
+        if (!entry) {
+            showWarningToast('That transcription could not be found.');
+            await refreshTranscriptionList();
+            return;
+        }
+
+        selectedTranscriptionId = jobId;
+        transcribeLayout()?.classList.add('viewing-saved');
+
+        const header = document.getElementById('transcribeViewHeader');
+        header?.classList.remove('d-none');
+        const titleEl = document.getElementById('transcribeViewTitle');
+        if (titleEl) {
+            titleEl.textContent = isUnnamedRecord(entry) ? (entry.jobName || 'Untitled') : entry.displayName;
+        }
+        const metaEl = document.getElementById('transcribeViewMeta');
+        if (metaEl) {
+            const bits = [
+                entry.sourceFile,
+                formatTranscriptDate(entry.createdAt),
+                formatTranscriptDuration(entry.durationSeconds),
+                entry.language,
+            ].filter(Boolean);
+            metaEl.textContent = bits.join(' · ');
+        }
+
+        if (entry.transcript && entry.transcript.length) {
+            displayTranscript(entry.transcript);
+            document.getElementById('downloadTranscript').classList.remove('d-none');
+            document.getElementById('copyTranscript').classList.remove('d-none');
+        } else {
+            // An abandoned job has no transcript stored, but it is still running
+            // on AWS — say so instead of showing an empty pane.
+            transcriptionText.innerHTML = '';
+            const note = document.createElement('div');
+            note.className = 'alert alert-warning mb-0';
+            note.textContent = entry.status === 'ABANDONED'
+                ? `No transcript stored. The job "${entry.jobName}" may still be available on AWS.`
+                : 'No transcript stored for this entry.';
+            transcriptionText.appendChild(note);
+            currentTranscript = [];
+            document.getElementById('downloadTranscript').classList.add('d-none');
+            document.getElementById('copyTranscript').classList.add('d-none');
+        }
+        document.getElementById('clearTranscriptionBtn').classList.add('d-none');
+
+        renderTranscriptionList(document.getElementById('transcriptionSearch')?.value || '');
+    } catch (err) {
+        console.error('Could not open transcription:', err);
+        showErrorToast('Could not open that transcription.');
+    }
+}
+
+/** Rename the transcript on screen — the saved one, or the live job. */
+async function renameCurrentTranscription() {
+    const jobId = selectedTranscriptionId || activeTranscriptionJobId;
+    if (!jobId) return;
+
+    const current = selectedTranscriptionId
+        ? (transcriptionRecords.find(r => r.jobId === jobId)?.displayName || '')
+        : (document.getElementById('transcriptionNameInput')?.value || '');
+
+    const next = prompt('Name this transcription', current);
+    if (next === null) return;
+    if (!next.trim()) {
+        showWarningToast('A name cannot be empty.');
+        return;
+    }
+
+    try {
+        await window.electronAPI.invoke('rename-transcription', { jobId, displayName: next.trim() });
+        await refreshTranscriptionList();
+        if (selectedTranscriptionId === jobId) await openTranscription(jobId);
+    } catch (err) {
+        console.error('Rename failed:', err);
+        showErrorToast('Could not rename that transcription.');
+    }
+}
+
+function promptDeleteTranscription() {
+    if (!selectedTranscriptionId) return;
+    const record = transcriptionRecords.find(r => r.jobId === selectedTranscriptionId);
+    pendingDeleteJobId = selectedTranscriptionId;
+
+    const nameEl = document.getElementById('deleteTranscriptionName');
+    if (nameEl) {
+        nameEl.textContent = record && !isUnnamedRecord(record)
+            ? record.displayName
+            : (record?.jobName || 'this transcription');
+    }
+    const awsCheckbox = document.getElementById('deleteTranscriptionFromAws');
+    if (awsCheckbox) awsCheckbox.checked = false;   // never pre-armed
+
+    new bootstrap.Modal(document.getElementById('deleteTranscriptionModal')).show();
+}
+
+async function confirmDeleteTranscription() {
+    if (!pendingDeleteJobId) return;
+    const alsoAws = !!document.getElementById('deleteTranscriptionFromAws')?.checked;
+
+    try {
+        await window.electronAPI.invoke('transcription-delete', {
+            jobId: pendingDeleteJobId,
+            deleteFromAws: alsoAws,
+        });
+        showSuccessToast(alsoAws ? 'Transcription deleted from Hive and AWS' : 'Transcription removed from Hive');
+    } catch (err) {
+        console.error('Delete failed:', err);
+        showErrorToast('Could not delete that transcription.');
+    } finally {
+        bootstrap.Modal.getInstance(document.getElementById('deleteTranscriptionModal'))?.hide();
+        pendingDeleteJobId = null;
+        selectedTranscriptionId = null;
+        resetTranscriptionUI();
+        showLiveTranscriptionPane();
+        await refreshTranscriptionList();
+    }
+}
+
+let transcribeSidebarInitialised = false;
+
+function initTranscribeSidebar() {
+    // Idempotent: wiring the same controls twice would double every handler, so
+    // a toggle would fire twice and appear not to work at all.
+    if (transcribeSidebarInitialised) {
+        refreshTranscriptionList();
+        return;
+    }
+    transcribeSidebarInitialised = true;
+
+    document.getElementById('transcribeSidebarToggle')?.addEventListener('click', () => {
+        transcribeLayout()?.classList.toggle('sidebar-collapsed');
+    });
+
+    document.getElementById('newTranscriptionBtn')?.addEventListener('click', () => {
+        if (transcriptionInFlight) {
+            showWarningToast('A transcription is already running. Cancel it first or wait for it to finish.');
+            return;
+        }
+        resetTranscriptionUI();
+        showLiveTranscriptionPane();
+    });
+
+    const search = document.getElementById('transcriptionSearch');
+    const searchClear = document.getElementById('transcriptionSearchClear');
+    search?.addEventListener('input', () => {
+        searchClear?.classList.toggle('d-none', !search.value);
+        renderTranscriptionList(search.value);
+    });
+    searchClear?.addEventListener('click', () => {
+        search.value = '';
+        searchClear.classList.add('d-none');
+        search.focus();
+        renderTranscriptionList();
+    });
+
+    document.getElementById('transcribeRenameBtn')?.addEventListener('click', renameCurrentTranscription);
+    document.getElementById('transcribeDeleteBtn')?.addEventListener('click', promptDeleteTranscription);
+    document.getElementById('deleteTranscriptionConfirmBtn')?.addEventListener('click', confirmDeleteTranscription);
+
+    refreshTranscriptionList();
+}
+
 // ── Transcription IPC listeners ──────────────────────────────────────────
 // Registered at module scope rather than inside DOMContentLoaded: these
 // resolve their DOM nodes lazily when called, and registering early means an
@@ -717,11 +1042,18 @@ async function loadPromptTemplates() {
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', async () => {
+    // First, and guarded. Everything below is a single unguarded chain — one
+    // throw strands whatever follows — and the Transcribe history sidebar is the
+    // user's only route back to past transcripts, so it must not depend on
+    // unrelated setup succeeding.
+    try { initTranscribeSidebar(); } catch (e) { console.error('Transcribe sidebar init failed:', e); }
+
     loadPromptTemplates();
     loadBedrockModels();
     window.loadBedrockModels = loadBedrockModels;
     setupFileUpload();
     setupCustomPromptsManagement();
+
     await renderConversationList();
 
     // Initialize tabs independently so one failure doesn't block the others
@@ -1147,7 +1479,10 @@ function renderTranscriptionProgress(message, displayName = '') {
     const nameInput = document.getElementById('transcriptionNameInput');
     if (nameInput) {
         nameInput.value = displayName || '';
-        nameInput.addEventListener('change', () => commitTranscriptionName(nameInput.value));
+        nameInput.addEventListener('change', () => {
+            commitTranscriptionName(nameInput.value);
+            renderTranscriptionList(document.getElementById('transcriptionSearch')?.value || '');
+        });
         nameInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
         });
@@ -1232,6 +1567,9 @@ function finishTranscription() {
     activeTranscriptionJobId = null;
     transcriptionInFlight = false;
     setTranscribeNavBusy(false);
+    // The registry only gains the record on completion, so the list is stale
+    // until now.
+    refreshTranscriptionList();
 }
 
 function showTranscriptionCancelled() {
@@ -1318,6 +1656,7 @@ async function uploadFile(file) {
 
         const response = await window.electronAPI.invoke('transcribe-media', { file: fileData });
         activeTranscriptionJobId = response?.jobId || null;
+        renderTranscriptionList(document.getElementById('transcriptionSearch')?.value || '');
     } catch (error) {
         // A rejection here means the job never started — offline, unconfigured
         // buckets, or one already running. A failure *during* the job arrives

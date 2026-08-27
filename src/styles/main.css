@@ -76,6 +76,118 @@ html[data-theme] {
     --info: #60a5fa;
 }
 
+/* ── Transcribe tab layout ───────────────────────────────────────────────
+   Sidebar + content, mirroring the Chat tab's arrangement so the tabs with
+   lists are consistent. The sidebar is collapsible because three panes at the
+   default 1200px window is tight — collapsing it returns the content to the
+   original full-width two-pane layout. */
+.transcribe-layout {
+    display: flex;
+    height: calc(100vh - 56px);
+    overflow: hidden;
+}
+
+.transcribe-sidebar {
+    flex: 0 0 260px;
+    transition: margin-left 0.15s ease-out;
+}
+
+/* Collapsed: slid out rather than removed, so the list keeps its scroll
+   position and the content reflows without a layout jump. */
+.transcribe-layout.sidebar-collapsed .transcribe-sidebar {
+    margin-left: -260px;
+}
+
+.transcribe-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 1rem 1.5rem;
+}
+
+.transcribe-topbar {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.transcribe-view-header {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.transcribe-view-title-row {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.transcribe-view-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Viewing a saved transcript: no player, because the local media file the
+   player was given is long gone by then. The transcript takes the full width. */
+.transcribe-layout.viewing-saved #transcribePlayerPane {
+    display: none;
+}
+
+.transcribe-layout.viewing-saved #transcribeTranscriptPane {
+    flex: 0 0 100%;
+    max-width: 100%;
+}
+
+.transcribe-layout.viewing-saved #transcribeTranscriptTitle {
+    display: none;
+}
+
+/* List item extras beyond the shared .conv-item styling */
+.transcription-item-meta {
+    font-size: 0.75rem;
+    opacity: 0.7;
+    margin-top: 2px;
+}
+
+.transcription-item-snippet {
+    font-size: 0.75rem;
+    opacity: 0.65;
+    margin-top: 3px;
+    font-style: italic;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.transcription-item-status {
+    display: inline-block;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    margin-right: 0.4rem;
+    vertical-align: baseline;
+}
+
+.transcription-item-status.is-running {
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: navJobSpin 0.75s linear infinite;
+    background: none;
+}
+
+.transcription-item-status.is-paused { background: var(--warning, #f59e0b); }
+.transcription-item-status.is-failed { background: var(--danger, #ef4444); }
+.transcription-item-status.is-abandoned { background: var(--warning, #f59e0b); opacity: 0.6; }
+
+.transcription-item-unnamed {
+    font-style: italic;
+    opacity: 0.75;
+}
+
 /* Offline banner — persistent and non-dismissible while offline, since
    dismissing it would hide a condition the user has no other indicator for. */
 .offline-banner {
