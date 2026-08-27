@@ -76,6 +76,18 @@ global.bootstrap = {
 // Mock setTimeout for polling tests
 jest.useFakeTimers();
 
+// The main process owns transcription jobs and addresses events by jobId, so
+// tests drive outcomes through the event channels rather than by resolving the
+// transcribe-media promise.
+const JOB_ID = 'job-test-1';
+
+/** Invokes the renderer's handler for a given receive channel. */
+function emitTranscriptionEvent(channel, payload) {
+    const call = mockElectronAPI.receive.mock.calls.find(([ch]) => ch === channel);
+    if (!call) throw new Error(`No listener registered for ${channel}`);
+    call[1](payload);
+}
+
 describe('Renderer Index.js', () => {
     beforeEach(() => {
         // Reset all mocks
@@ -425,6 +437,18 @@ describe('Renderer Index.js', () => {
             return { resolveInvoke };
         }
 
+        const STARTED = { status: 'STARTED', jobId: JOB_ID, displayName: 'test', sourceFile: 'test.mp4' };
+
+        /**
+         * Starts a job the way the app does now: `transcribe-media` resolves as
+         * soon as the job is running, and the outcome arrives later as an event.
+         */
+        async function startJob() {
+            mockElectronAPI.invoke.mockResolvedValue(STARTED);
+            await window.uploadFile(mockFile());
+            await Promise.resolve();
+        }
+
         beforeEach(() => {
             require('../../src/renderer/index.js');
         });
@@ -446,16 +470,16 @@ describe('Renderer Index.js', () => {
         });
 
         test('toggles the Transcribe nav spinner for the duration of the job', async () => {
+            // The spinner now clears on the terminal *event*, not on the
+            // resolution of transcribe-media — that resolves as soon as the job
+            // starts.
             const spinner = document.getElementById('navTranscribeSpinner');
             expect(spinner.classList.contains('d-none')).toBe(true);
 
-            const { resolveInvoke } = deferredInvoke();
-            const upload = window.uploadFile(mockFile());
-            await Promise.resolve();
+            await startJob();
             expect(spinner.classList.contains('d-none')).toBe(false);
 
-            resolveInvoke({ status: 'CANCELLED' });
-            await upload;
+            emitTranscriptionEvent('transcription-cancelled', { jobId: JOB_ID });
             expect(spinner.classList.contains('d-none')).toBe(true);
         });
 
@@ -492,10 +516,10 @@ describe('Renderer Index.js', () => {
             await upload;
         });
 
-        test('a CANCELLED result resets the pane without showing transcript actions', async () => {
-            mockElectronAPI.invoke.mockResolvedValue({ status: 'CANCELLED' });
+        test('a CANCELLED event resets the pane without showing transcript actions', async () => {
+            await startJob();
 
-            await window.uploadFile(mockFile());
+            emitTranscriptionEvent('transcription-cancelled', { jobId: JOB_ID });
 
             expect(document.getElementById('transcriptionText').textContent).toContain('Transcription cancelled');
             expect(document.getElementById('downloadTranscript').classList.contains('d-none')).toBe(true);
@@ -544,6 +568,84 @@ describe('Renderer Index.js', () => {
             const errEl = document.getElementById('transcriptionErrorText');
             expect(errEl.querySelector('img')).toBeNull();
             expect(errEl.textContent).toBe('<img src=x onerror=alert(1)>');
+        });
+
+        // The reason for the whole change: the outcome used to be the resolved
+        // value of transcribe-media, so any renderer teardown between starting a
+        // job and its completion discarded a transcript the main process had
+        // already retrieved.
+        test('uploadFile returns as soon as the job starts, without awaiting the outcome', async () => {
+            mockElectronAPI.invoke.mockResolvedValue(STARTED);
+
+            await window.uploadFile(mockFile());
+
+            // Still showing progress — nothing terminal has happened yet.
+            expect(document.getElementById('transcriptionText').querySelector('.transcribe-progress')).not.toBeNull();
+            expect(document.getElementById('navTranscribeSpinner').classList.contains('d-none')).toBe(false);
+        });
+
+        test('a completion event renders the transcript and reveals the actions', async () => {
+            await startJob();
+
+            emitTranscriptionEvent('transcription-complete', {
+                jobId: JOB_ID,
+                transcript: [{ startTime: 0, endTime: 1, speaker: '1', text: 'Hello there' }],
+            });
+
+            expect(document.getElementById('transcriptionText').textContent).toContain('Hello there');
+            expect(document.getElementById('downloadTranscript').classList.contains('d-none')).toBe(false);
+            expect(document.getElementById('copyTranscript').classList.contains('d-none')).toBe(false);
+            expect(document.getElementById('navTranscribeSpinner').classList.contains('d-none')).toBe(true);
+        });
+
+        test('a failure event shows the inline alert', async () => {
+            await startJob();
+
+            emitTranscriptionEvent('transcription-failed', { jobId: JOB_ID, error: 'Unsupported media format' });
+
+            const pane = document.getElementById('transcriptionText');
+            expect(pane.querySelector('.alert-danger')).not.toBeNull();
+            expect(pane.textContent).toContain('Unsupported media format');
+        });
+
+        test('ignores a terminal event for a different job', async () => {
+            // A stale outcome must not overwrite whatever the user is looking at.
+            await startJob();
+
+            emitTranscriptionEvent('transcription-complete', {
+                jobId: 'job-someone-else',
+                transcript: [{ startTime: 0, endTime: 1, speaker: '1', text: 'Wrong job' }],
+            });
+
+            const pane = document.getElementById('transcriptionText');
+            expect(pane.textContent).not.toContain('Wrong job');
+            expect(pane.querySelector('.transcribe-progress')).not.toBeNull();
+        });
+
+        test('ignores progress for a different job', async () => {
+            await startJob();
+
+            emitTranscriptionEvent('transcription-progress', {
+                jobId: 'job-someone-else',
+                status: 'IN_PROGRESS',
+                message: 'Someone else\'s job',
+            });
+
+            expect(document.getElementById('inlineTranscriptionStatus').textContent)
+                .not.toContain("Someone else's job");
+        });
+
+        test('a start failure is reported inline — the job never began', async () => {
+            // Distinct from a job failure: offline, unconfigured buckets, or one
+            // already running all reject the invoke itself.
+            mockElectronAPI.invoke.mockRejectedValue(new Error('Transcription is not configured: Output S3 Bucket is not set.'));
+
+            await window.uploadFile(mockFile());
+
+            const pane = document.getElementById('transcriptionText');
+            expect(pane.querySelector('.alert-danger')).not.toBeNull();
+            expect(pane.textContent).toContain('Output S3 Bucket is not set');
+            expect(document.getElementById('navTranscribeSpinner').classList.contains('d-none')).toBe(true);
         });
 
         test('clicking the completion notification switches to the Transcribe tab', () => {
@@ -599,20 +701,117 @@ describe('Renderer Index.js', () => {
             await upload;
         });
 
-        test('an ABANDONED result names the still-running AWS job instead of implying lost work', async () => {
-            mockElectronAPI.invoke.mockResolvedValue({
-                status: 'ABANDONED',
+        test('an ABANDONED event names the still-running AWS job instead of implying lost work', async () => {
+            await startJob();
+
+            emitTranscriptionEvent('transcription-abandoned', {
+                jobId: JOB_ID,
                 jobName: 'transcription-1730000000000',
                 message: 'Transcription paused for too long waiting for a connection. The job "transcription-1730000000000" is still running on AWS.',
             });
-
-            await window.uploadFile(mockFile());
 
             const pane = document.getElementById('transcriptionText');
             expect(pane.querySelector('.alert-warning')).not.toBeNull();
             expect(pane.querySelector('.alert-danger')).toBeNull();
             expect(pane.textContent).toContain('still running on AWS');
             expect(pane.textContent).toContain('Start over');
+        });
+    });
+
+    /**
+     * A renderer that reloaded mid-job (the credential-expiry navigation, a
+     * manual reload, a crash) previously had no way to discover the job still
+     * running behind it: the pane sat empty and the eventual transcript went
+     * nowhere. It now asks the main process on load.
+     */
+    describe('Re-attaching to a job in flight', () => {
+        test('restores the progress pane for a job already running', async () => {
+            mockElectronAPI.invoke.mockImplementation((channel) => {
+                if (channel === 'get-transcription-state') {
+                    return Promise.resolve({
+                        active: true,
+                        jobId: JOB_ID,
+                        displayName: 'keynote v4',
+                        sourceFile: 'keynote-v4.mp4',
+                        status: 'IN_PROGRESS',
+                        message: 'Processing audio... (35s elapsed)',
+                    });
+                }
+                return Promise.resolve(undefined);
+            });
+
+            require('../../src/renderer/index.js');
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(document.getElementById('transcriptionText').querySelector('.transcribe-progress')).not.toBeNull();
+            expect(document.getElementById('inlineTranscriptionStatus').textContent)
+                .toBe('Processing audio... (35s elapsed)');
+            expect(document.getElementById('navTranscribeSpinner').classList.contains('d-none')).toBe(false);
+        });
+
+        test('re-attaches to a paused job with the paused presentation', async () => {
+            mockElectronAPI.invoke.mockImplementation((channel) => {
+                if (channel === 'get-transcription-state') {
+                    return Promise.resolve({
+                        active: true,
+                        jobId: JOB_ID,
+                        status: 'PAUSED',
+                        pauseReason: 'network',
+                        message: 'Waiting for a connection — your transcription is still running on AWS.',
+                    });
+                }
+                return Promise.resolve(undefined);
+            });
+
+            require('../../src/renderer/index.js');
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(document.getElementById('transcribeProgressTitle').textContent).toMatch(/Paused/i);
+            expect(document.getElementById('transcribeSpinner').classList.contains('text-warning')).toBe(true);
+        });
+
+        test('a re-attached renderer receives the eventual outcome', async () => {
+            // The transcript survives the teardown that used to lose it.
+            mockElectronAPI.invoke.mockImplementation((channel) => {
+                if (channel === 'get-transcription-state') {
+                    return Promise.resolve({ active: true, jobId: JOB_ID, status: 'IN_PROGRESS', message: 'Processing…' });
+                }
+                return Promise.resolve(undefined);
+            });
+
+            require('../../src/renderer/index.js');
+            await Promise.resolve();
+            await Promise.resolve();
+
+            emitTranscriptionEvent('transcription-complete', {
+                jobId: JOB_ID,
+                transcript: [{ startTime: 0, endTime: 1, speaker: '1', text: 'Recovered after reload' }],
+            });
+
+            expect(document.getElementById('transcriptionText').textContent).toContain('Recovered after reload');
+        });
+
+        test('shows nothing special when no job is running', async () => {
+            mockElectronAPI.invoke.mockResolvedValue({ active: false });
+
+            require('../../src/renderer/index.js');
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(document.getElementById('navTranscribeSpinner').classList.contains('d-none')).toBe(true);
+            expect(document.getElementById('transcriptionText').querySelector('.transcribe-progress')).toBeNull();
+        });
+
+        test('a failed state lookup does not break startup', async () => {
+            mockElectronAPI.invoke.mockRejectedValue(new Error('ipc exploded'));
+
+            expect(() => require('../../src/renderer/index.js')).not.toThrow();
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(document.getElementById('navTranscribeSpinner').classList.contains('d-none')).toBe(true);
         });
     });
 

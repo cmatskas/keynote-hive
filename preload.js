@@ -190,6 +190,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
     'save-settings', 'save-skill-content', 'select-directory', 'send-to-bedrock', 'splash-ready', 'toggle-skill',
     'show:save', 'show:saveAs', 'show:open', 'show:openPath', 'show:listRecent', 'show:clearRecent',
     'create-skill', 'delete-skill', 'transcribe-media', 'cancel-transcription',
+    'get-transcription-state', 'rename-transcription',
     'get-connectivity-status', 'renderer-connectivity-hint',
     'update-custom-prompt', 'validate-credentials', 'work-history-delete', 'work-history-list',
     'work-history-load', 'work-history-rename', 'work-history-save', 'work-history-star', 'work-cleanup-session',
@@ -199,7 +200,10 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
 const ALLOWED_RECEIVE_CHANNELS = new Set([
     'agent-status', 'agent-stream-chunk', 'bedrock-stream-chunk', 'bedrock-stream-complete',
     'credential-expiry-warning', 'connectivity-changed',
-    'transcription-progress', 'transcription-focus-request', 'app-before-quit', 'show-settings', 'update-available', 'update-downloaded',
+    'transcription-progress', 'transcription-focus-request',
+    'transcription-complete', 'transcription-failed', 'transcription-cancelled',
+    'transcription-abandoned',
+    'app-before-quit', 'show-settings', 'update-available', 'update-downloaded',
     'swarm-agent-started', 'swarm-agent-chunk', 'swarm-agent-done',
     'swarm-review-pause', 'swarm-input-request', 'swarm-pipeline-done', 'swarm-error',
 ]);

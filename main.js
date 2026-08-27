@@ -10,6 +10,7 @@ const { autoUpdater } = require('electron-updater');
 const AppContext = require('./src/main/appContext');
 const CredentialMonitor = require('./src/main/models/credentialMonitor');
 const ConnectivityMonitor = require('./src/main/models/connectivityMonitor');
+const transcriptionRunner = require('./src/main/models/transcriptionRunner');
 const { resolveStartupRoute } = require('./src/main/startupRoute');
 
 // IPC handler modules
@@ -101,7 +102,7 @@ function handleConnectivityChange(online) {
 
   // Deletes for jobs cancelled while offline couldn't reach AWS at the time.
   // Retry them now so a cancellation during an outage still stops the billing.
-  bedrockIPC.flushPendingTranscriptionDeletes(ctx)
+  transcriptionRunner.flushPendingTranscriptionDeletes(ctx)
     .catch(err => logger.warn('[connectivity] flushing queued job deletes failed:', err.message));
 }
 

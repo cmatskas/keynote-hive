@@ -11,6 +11,14 @@ let currentConversation = null; // active conversation object
 let selectedFiles = []; // attached documents for Bedrock
 let credentialsVerified = false; // lazy credential check — once per session
 
+// ── Transcription pane state ─────────────────────────────────────────────
+// Declared up here because restoreTranscriptionState() runs at module scope,
+// well before the transcription helpers further down the file.
+let transcriptionInFlight = false;
+// Hive-side id of the job this pane is tracking. The main process owns the job,
+// so events must be matched against this rather than assumed to be ours.
+let activeTranscriptionJobId = null;
+
 function showSuccessToast(message) {
     window.electronAPI.showToast(message, 'success');
 }
@@ -198,13 +206,48 @@ if (window.OfflineGuard) {
     window.OfflineGuard.init().catch(err => console.error('OfflineGuard init failed:', err));
 }
 
-// ── Transcription IPC listeners ──────────────────────────────────────────// Registered at module scope rather than inside DOMContentLoaded: both
-// handlers resolve their DOM nodes lazily when called, and registering early
-// means a progress event can't arrive before anyone is listening.
+// ── Transcription IPC listeners ──────────────────────────────────────────
+// Registered at module scope rather than inside DOMContentLoaded: these
+// resolve their DOM nodes lazily when called, and registering early means an
+// event can't arrive before anyone is listening.
+
+/**
+ * Ignore events for a job we aren't tracking. The main process owns the job, so
+ * a terminal event can outlive the pane that started it — without this filter a
+ * stale outcome could overwrite whatever the user is looking at now.
+ */
+function isForActiveJob(payload) {
+    if (!payload || !payload.jobId) return true;   // pre-jobId events / unscoped
+    if (!activeTranscriptionJobId) return false;
+    return payload.jobId === activeTranscriptionJobId;
+}
 
 // Progress updates streamed from the main process during a transcription job.
 window.electronAPI.receive('transcription-progress', (progressData) => {
+    if (!isForActiveJob(progressData)) return;
     updateTranscriptionProgress(progressData.message, progressData.status);
+});
+
+// Terminal outcomes. These can arrive long after uploadFile() returned, or in a
+// renderer that reloaded mid-job and re-attached.
+window.electronAPI.receive('transcription-complete', (payload) => {
+    if (!isForActiveJob(payload)) return;
+    showTranscriptionComplete(payload.transcript);
+});
+
+window.electronAPI.receive('transcription-cancelled', (payload) => {
+    if (!isForActiveJob(payload)) return;
+    showTranscriptionCancelled();
+});
+
+window.electronAPI.receive('transcription-abandoned', (payload) => {
+    if (!isForActiveJob(payload)) return;
+    showTranscriptionAbandoned(payload.message);
+});
+
+window.electronAPI.receive('transcription-failed', (payload) => {
+    if (!isForActiveJob(payload)) return;
+    showTranscriptionFailure(payload.error);
 });
 
 // Clicking the completion/failure OS notification focuses the window; bring
@@ -213,8 +256,33 @@ window.electronAPI.receive('transcription-focus-request', () => {
     showTranscribePage();
 });
 
+/**
+ * Re-attach to a job already running in the main process.
+ *
+ * A renderer that reloaded mid-job (credential-expiry navigation, a manual
+ * reload, a crash) previously had no way to discover the job still running
+ * behind it, so the pane sat empty and the eventual transcript went nowhere.
+ */
+async function restoreTranscriptionState() {
+    try {
+        const state = await window.electronAPI.invoke('get-transcription-state');
+        if (!state || !state.active) return;
+
+        activeTranscriptionJobId = state.jobId;
+        transcriptionInFlight = true;
+        setTranscribeNavBusy(true);
+        renderTranscriptionProgress(state.message || 'Transcribing…');
+        updateTranscriptionProgress(state.message || 'Transcribing…', state.status);
+    } catch (err) {
+        console.error('Could not restore transcription state:', err);
+    }
+}
+
+restoreTranscriptionState();
+
 document.getElementById('nav-analyze')?.addEventListener('click', showAnalyzePage);
-document.getElementById('nav-transcribe')?.addEventListener('click', showTranscribePage);document.getElementById('nav-work')?.addEventListener('click', showWorkPage);
+document.getElementById('nav-transcribe')?.addEventListener('click', showTranscribePage);
+document.getElementById('nav-work')?.addEventListener('click', showWorkPage);
 document.getElementById('nav-swarm')?.addEventListener('click', showSwarmPage);
 document.getElementById('nav-settings')?.addEventListener('click', showSettingsPage);
 document.getElementById('nav-showflow')?.addEventListener('click', () => {
@@ -1034,7 +1102,6 @@ function performClearTranscription() {
 // `transcription-progress` — so progress now renders inline in the transcript
 // pane instead, the Transcribe nav item shows a spinner from any tab, and
 // completion/failure raise an OS notification.
-let transcriptionInFlight = false;
 
 function setTranscribeNavBusy(busy) {
     document.getElementById('navTranscribeSpinner')?.classList.toggle('d-none', !busy);
@@ -1107,6 +1174,80 @@ function resetUploadZone() {
     fileInput.value = '';
 }
 
+// ── Terminal-state rendering ─────────────────────────────────────────────
+// Split out of uploadFile() because the outcome no longer arrives as that
+// call's return value — it arrives as an event, which may land long after
+// uploadFile() returned, or in a renderer that has since reloaded. Re-attach
+// reuses these too.
+
+function finishTranscription() {
+    activeTranscriptionJobId = null;
+    transcriptionInFlight = false;
+    setTranscribeNavBusy(false);
+}
+
+function showTranscriptionCancelled() {
+    transcriptionText.innerHTML = '<div class="text-gray-500 text-center">Transcription cancelled. Upload a file to try again.</div>';
+    resetUploadZone();
+    showInfoToast('Transcription cancelled');
+    finishTranscription();
+}
+
+function showTranscriptionAbandoned(message) {
+    // Paused too long waiting for a connection or credentials. The job is
+    // still alive on AWS, so don't imply the work was lost — name it so it's
+    // identifiable once the job registry lands.
+    transcriptionText.innerHTML = `<div class="alert alert-warning" role="alert">
+        <i class="bi bi-pause-circle me-2"></i>
+        <strong>Transcription paused too long:</strong> <span id="transcriptionAbandonedText"></span>
+        <div class="mt-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="resetTranscriptionUI()">
+                <i class="bi bi-arrow-counterclockwise me-1"></i>Start over
+            </button>
+        </div>
+    </div>`;
+    const el = document.getElementById('transcriptionAbandonedText');
+    if (el) el.textContent = message || 'The job is still running on AWS.';
+    resetUploadZone();
+    finishTranscription();
+}
+
+function showTranscriptionComplete(transcript) {
+    displayTranscript(transcript);
+    document.getElementById('downloadTranscript').classList.remove('d-none');
+    document.getElementById('copyTranscript').classList.remove('d-none');
+    document.getElementById('clearTranscriptionBtn').classList.remove('d-none');
+    showSuccessToast('Transcription completed successfully!');
+    finishTranscription();
+}
+
+function showTranscriptionFailure(message) {
+    // Single failure surface: an inline alert with a retry button. The main
+    // process already raises an OS notification for failures, so a toast (and
+    // the old modal error state) would be the same news three times over.
+    transcriptionText.innerHTML = `<div class="alert alert-danger" role="alert">
+        <i class="bi bi-exclamation-triangle me-2"></i>
+        <strong>Transcription Failed:</strong> <span id="transcriptionErrorText"></span>
+        <div class="mt-2">
+            <button class="btn btn-sm btn-outline-danger" onclick="resetTranscriptionUI()">
+                <i class="bi bi-arrow-counterclockwise me-1"></i>Try again
+            </button>
+        </div>
+    </div>`;
+    const errEl = document.getElementById('transcriptionErrorText');
+    if (errEl) errEl.textContent = message || 'An unexpected error occurred';
+    resetUploadZone();
+    finishTranscription();
+}
+
+/**
+ * Start a transcription. Returns as soon as the job is running — the outcome
+ * arrives as a terminal event, so this deliberately does not await it.
+ *
+ * That's the point of the change: the result used to be this call's return
+ * value, so any renderer teardown between here and completion discarded a
+ * transcript the main process had already retrieved.
+ */
 async function uploadFile(file) {
     if (transcriptionInFlight) {
         showWarningToast('A transcription is already running. Cancel it first or wait for it to finish.');
@@ -1127,67 +1268,14 @@ async function uploadFile(file) {
             size: file.size
         };
 
-        // Call the transcription service with the uploaded data
         const response = await window.electronAPI.invoke('transcribe-media', { file: fileData });
-
-        if (response.status === 'CANCELLED') {
-            transcriptionText.innerHTML = '<div class="text-gray-500 text-center">Transcription cancelled. Upload a file to try again.</div>';
-            resetUploadZone();
-            showInfoToast('Transcription cancelled');
-        } else if (response.status === 'ABANDONED') {
-            // Paused too long waiting for a connection or credentials. The job
-            // is still alive on AWS, so don't imply the work was lost — name it
-            // so it's identifiable once the tabled job registry lands.
-            transcriptionText.innerHTML = `<div class="alert alert-warning" role="alert">
-                <i class="bi bi-pause-circle me-2"></i>
-                <strong>Transcription paused too long:</strong> <span id="transcriptionAbandonedText"></span>
-                <div class="mt-2">
-                    <button class="btn btn-sm btn-outline-secondary" onclick="resetTranscriptionUI()">
-                        <i class="bi bi-arrow-counterclockwise me-1"></i>Start over
-                    </button>
-                </div>
-            </div>`;
-            const el = document.getElementById('transcriptionAbandonedText');
-            if (el) el.textContent = response.message || 'The job is still running on AWS.';
-            resetUploadZone();
-        } else if (response.status === 'COMPLETED') {
-            // Display the transcript with timestamps and speaker details
-            displayTranscript(response.transcript);
-
-            // Show transcript action buttons
-            document.getElementById('downloadTranscript').classList.remove('d-none');
-            document.getElementById('copyTranscript').classList.remove('d-none');
-            document.getElementById('clearTranscriptionBtn').classList.remove('d-none');
-
-            showSuccessToast('Transcription completed successfully!');
-        } else {
-            throw new Error('Transcription did not complete successfully');
-        }
-
+        activeTranscriptionJobId = response?.jobId || null;
     } catch (error) {
+        // A rejection here means the job never started — offline, unconfigured
+        // buckets, or one already running. A failure *during* the job arrives
+        // as a transcription-failed event instead.
         console.error('Transcription error:', error);
-
-        // Single failure surface: an inline alert with a retry button. The
-        // main process already raises an OS notification for failures, so a
-        // toast (and the old modal error state) would be the same news three
-        // times over.
-        transcriptionText.innerHTML = `<div class="alert alert-danger" role="alert">
-            <i class="bi bi-exclamation-triangle me-2"></i>
-            <strong>Transcription Failed:</strong> <span id="transcriptionErrorText"></span>
-            <div class="mt-2">
-                <button class="btn btn-sm btn-outline-danger" onclick="resetTranscriptionUI()">
-                    <i class="bi bi-arrow-counterclockwise me-1"></i>Try again
-                </button>
-            </div>
-        </div>`;
-        const errEl = document.getElementById('transcriptionErrorText');
-        if (errEl) errEl.textContent = error.message || 'An unexpected error occurred';
-
-        // Restore upload zone so the user can retry immediately
-        resetUploadZone();
-    } finally {
-        transcriptionInFlight = false;
-        setTranscribeNavBusy(false);
+        showTranscriptionFailure(error.message);
     }
 }
 function displayTranscript(timestampedTranscript) {
