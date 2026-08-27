@@ -103,11 +103,13 @@ If either constant ever needs to change (e.g. the admin account changes, or the 
 
 Hive stays usable without a connection. Everything it stores — conversations, Work tab history, skills, showflows, settings — lives in plain files in the app's data directory, so none of it needs AWS to read or write.
 
+Hive remembers its window size and position between launches (and won't restore onto a monitor you've since unplugged).
+
 **Works offline:** browsing, searching, loading and deleting conversations; Work tab history; creating and editing skills; saving settings; showflow new/open/save/import/export; downloading and copying an existing transcript; switching theme.
 
 **Paused until the connection returns:** sending messages (Work, Chat), running Swarm pipelines, transcription, Save & Test Credentials, Setup Check, AgentCore Memory operations, and web search.
 
-While offline you'll see a banner below the navbar, and the controls that need AWS are disabled with a tooltip explaining why. Both clear automatically on reconnect — there's nothing to retry by hand.
+While offline you'll see a banner below the navbar, and the controls that need AWS are disabled with a tooltip explaining why. Both clear automatically on reconnect, and the banner has a **Retry now** button if you'd rather not wait for the next check. If AWS has actually rejected your credentials — rather than the network being down — the banner says so and points you at Settings, since that's the part you can fix.
 
 Two behaviours worth knowing:
 
