@@ -142,6 +142,83 @@ class TranscriptionRegistry {
   }
 
   /**
+   * Search names, source files and **transcript bodies**.
+   *
+   * Body search is the point: months later you remember a phrase from the
+   * recording, not what you called the file. Filtering names alone — which is
+   * all the Chat sidebar does — doesn't answer that.
+   *
+   * Runs here rather than in the renderer because the transcripts are on disk
+   * next to us; shipping every one over IPC on each keystroke would be
+   * wasteful. Callers are expected to debounce. Each query reads the transcript
+   * files, which is fine at the volumes a single user accumulates — if that ever
+   * stops being true, the fix is a persisted inverted index, not caching whole
+   * transcripts in memory.
+   *
+   * A record matching only by name still appears, just without a snippet.
+   * Results stay in newest-first order rather than by relevance, so the list
+   * doesn't reorder unpredictably as you type.
+   *
+   * @param {string} query
+   * @param {object} [opts]
+   * @param {number} [opts.contextChars] characters of context either side of a hit
+   * @returns {Promise<Array<{jobId, matchCount, snippet, snippetStartTime}>>}
+   */
+  async search(query, { contextChars = 60 } = {}) {
+    const needle = (query || '').trim().toLowerCase();
+    if (!needle) return [];
+
+    const records = await this.list();
+    const results = [];
+
+    for (const record of records) {
+      const nameHit = (record.displayName || '').toLowerCase().includes(needle)
+        || (record.sourceFile || '').toLowerCase().includes(needle)
+        || (record.jobName || '').toLowerCase().includes(needle);
+
+      let matchCount = 0;
+      let snippet = null;
+      let snippetStartTime = null;
+
+      if (record.hasTranscript) {
+        const transcript = await this.getTranscript(record.jobId);
+        for (const segment of transcript || []) {
+          const text = segment?.text;
+          if (typeof text !== 'string') continue;
+          const at = text.toLowerCase().indexOf(needle);
+          if (at === -1) continue;
+          matchCount++;
+          if (snippet === null) {
+            snippet = TranscriptionRegistry.buildSnippet(text, at, needle.length, contextChars);
+            snippetStartTime = Number.isFinite(Number(segment.startTime))
+              ? Number(segment.startTime)
+              : null;
+          }
+        }
+      }
+
+      if (nameHit || matchCount > 0) {
+        results.push({ jobId: record.jobId, matchCount, snippet, snippetStartTime });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * A readable window around a hit. Returned as plain text — the renderer
+   * inserts it with textContent, so transcript content can never become markup.
+   */
+  static buildSnippet(text, at, needleLength, contextChars) {
+    const from = Math.max(0, at - contextChars);
+    const to = Math.min(text.length, at + needleLength + contextChars);
+    let snippet = text.slice(from, to).trim();
+    if (from > 0) snippet = `…${snippet}`;
+    if (to < text.length) snippet = `${snippet}…`;
+    return snippet;
+  }
+
+  /**
    * Remove the local copy. Deliberately local-only: the transcript in the user's
    * output bucket is the durable copy and deleting it is irreversible, so that
    * has to be an explicit, separate choice.

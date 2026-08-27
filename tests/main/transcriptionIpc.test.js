@@ -90,6 +90,7 @@ function buildHarness({ online = true } = {}) {
         }
         : null)),
       remove: jest.fn(async () => {}),
+      search: jest.fn(async () => [{ jobId: 'job-old', matchCount: 2, snippet: '…keynote…', snippetStartTime: 12 }]),
     },
     isOnline: () => state.online,
     assertOnline: (action = 'This action') => {
@@ -359,6 +360,15 @@ describe('re-attach and companion handlers', () => {
   test('transcription-get returns null for an unknown job', async () => {
     const { handlers } = buildHarness();
     await expect(handlers['transcription-get'](fakeEvent(), 'nope')).resolves.toBeNull();
+  });
+
+  test('transcription-search delegates to the registry, which owns the transcripts', async () => {
+    const { handlers, ctx } = buildHarness();
+
+    await expect(handlers['transcription-search'](fakeEvent(), 'keynote')).resolves.toEqual([
+      { jobId: 'job-old', matchCount: 2, snippet: '…keynote…', snippetStartTime: 12 },
+    ]);
+    expect(ctx.transcriptionRegistry.search).toHaveBeenCalledWith('keynote');
   });
 
   test('rename-transcription delegates to the runner with the job id and name', async () => {

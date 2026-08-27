@@ -1,5 +1,25 @@
 # Release Notes
 
+## v3.9.0
+
+### New Features
+- **Search now reads transcript bodies, not just names.** The rest of step 4. This is the capability that makes the history worth having months later: you remember a phrase from the recording, not what you called the file, and a name-only filter — which is all the Chat sidebar does — cannot answer that.
+  - Matching runs in the **main process**, because the transcripts are on disk there. Shipping every transcript over IPC on each keystroke would be wasteful, so `registry.search()` scans the files and returns only `{ jobId, matchCount, snippet, snippetStartTime }`.
+  - Results show **how many times the phrase occurs** and **a snippet with its timestamp**, windowed around the hit with ellipses. Snippets are inserted with `textContent`, so transcript content can never become markup.
+  - Name, source file and AWS job name still match — so a legacy entry stays findable — just without a snippet.
+  - Results stay **newest-first rather than ranked by relevance**, so the list doesn't reshuffle unpredictably as you type.
+  - The renderer **debounces at 250ms** and shows metadata matches immediately in the meantime, so typing feels responsive while body search catches up. A response for a query the user has already moved on from is discarded, and a failed search falls back to metadata matching rather than emptying the list.
+
+### Tests
+- Added 15 tests to `transcriptionRegistry.test.js` (now 37): finding a transcription by words spoken in it, counting occurrences across segments, case-insensitivity, snippet content and timestamp, name/source-file/job-name matching without a snippet, newest-first ordering, records with no transcript, empty and whitespace queries, a phrase that appears nowhere, a corrupt transcript not breaking the search, segments with no usable text, plus `buildSnippet` windowing and its ellipsis edges.
+- Added 10 tests to `transcribeSidebar.test.js` (now 35): finding by spoken words, the snippet and its timestamp rendered, match counts including the singular case, snippet text inserted as text rather than markup, the debounce firing once with the final query, metadata matches shown before body results arrive, a stale response discarded when the query has moved on, fallback to metadata matching on failure, and clearing restoring the full list.
+- Added a `transcription-search` handler test.
+
+### Fixes
+- **The Transcribe sidebar tests were flaky under parallel load, for two real reasons worth recording.** First, each `require()` of the renderer registered another `DOMContentLoaded` listener on the shared jsdom document, so dispatching that event ran *every* accumulated listener — each closed over its own module instance — wiring the same controls repeatedly and making handler-count assertions depend on how many tests had run before. The suite now calls the exposed `initTranscribeSidebar()` directly instead of dispatching. Second, the new debounce left a live 250ms timer whenever a test typed into the search box, which fired during a *later* test and re-rendered the shared list from stale state; the suite now uses fake timers with an explicit `flushDebounce()` helper and clears pending timers in `afterEach`. Verified stable across four consecutive full runs.
+- `initTranscribeSidebar()` is idempotent per module instance, so re-entry refreshes the list rather than double-wiring handlers.
+
+
 ## v3.8.0
 
 ### New Features
@@ -158,7 +178,7 @@
   1. ~~**Main-owned job state.**~~ **Done in v3.6.0.** The main process owns the job and emits progress/terminal events; the renderer subscribes and can re-attach after a reload. This fixed (b) on its own and was a hard prerequisite — selecting a past transcript mid-job is exactly the navigation that would otherwise kill the job. The pausable job state from v3.4.0 sits underneath unchanged; it was a change to result *delivery* only. `jobId`, `displayName` and the media S3 key are now recorded on each job, ready for the registry.
   2. ~~**Registry + sidecar writes + derived naming at job start.**~~ **Done in v3.7.0.** Local registry under `userData/transcriptions/` (metadata and transcript in separate files so listing stays cheap), sidecar `<jobName>.hive.json` in the output bucket, derived-and-editable display names, abandoned jobs recorded. This is where (a) stopped.
   3. ~~**Sidebar list, select-to-view, New Transcription.**~~ **Done in v3.8.0.** Collapsible sidebar reusing the Chat tab's idiom, entries showing name/date/duration and job state, legacy entries shown with a naming prompt, no player for saved transcripts, and two-level delete (local by default, AWS opt-in).
-  4. **Rename, then search.** Rename and name/source-file filtering shipped in v3.8.0; **full-text search over transcript bodies is still to do** — that's what makes retrieval work months later when you remember a phrase but not the file name.
+  4. ~~**Rename, then search.**~~ **Done in v3.8.0 (rename, name/source filtering) and v3.9.0 (full-text over transcript bodies, with match counts and timestamped snippets).**
   5. **Reconciliation** — backfill pre-existing jobs from `ListTranscriptionJobs` and `ListObjectsV2`.
 
   **Also outstanding:**

@@ -235,3 +235,137 @@ describe('durationOf', () => {
     expect(TranscriptionRegistry.durationOf([{ text: 'no times' }])).toBeNull();
   });
 });
+
+/**
+ * Full-text search over transcript bodies. Runs here rather than in the renderer
+ * because the transcripts are on disk next to us — shipping every one over IPC
+ * per keystroke would be wasteful.
+ *
+ * This is the capability that makes the history useful months later, when you
+ * remember a phrase from the recording but not what you named the file. A
+ * name-only filter, which is all the Chat sidebar does, cannot answer that.
+ */
+describe('search', () => {
+  const KEYNOTE = [
+    { startTime: 0, endTime: 6, speaker: '1', text: 'Good morning and welcome to the keynote.' },
+    { startTime: 6, endTime: 14, speaker: '2', text: 'Today we are talking about quarterly revenue growth.' },
+    { startTime: 14, endTime: 20, speaker: '1', text: 'Quarterly numbers are up across every region.' },
+  ];
+  const INTERVIEW = [
+    { startTime: 0, endTime: 5, speaker: '1', text: 'Tell me about your migration to the new platform.' },
+  ];
+
+  beforeEach(async () => {
+    await registry.save(record({
+      jobId: 'job-keynote', displayName: 'Keynote Draft 3', sourceFile: 'keynote-v4.mp4',
+      createdAt: '2026-06-02T10:00:00.000Z',
+    }), KEYNOTE);
+    await registry.save(record({
+      jobId: 'job-interview', displayName: 'Customer interview', sourceFile: 'interview.m4a',
+      createdAt: '2026-05-28T10:00:00.000Z',
+    }), INTERVIEW);
+    await registry.save(record({
+      jobId: 'job-abandoned', displayName: 'Board review', sourceFile: 'board.mp4',
+      status: 'ABANDONED', createdAt: '2026-05-01T10:00:00.000Z',
+    }), null);
+  });
+
+  test('finds a transcription by words spoken in it', async () => {
+    // "quarterly" appears in neither name nor file name.
+    const hits = await registry.search('quarterly');
+    expect(hits.map(h => h.jobId)).toEqual(['job-keynote']);
+  });
+
+  test('counts every occurrence across segments', async () => {
+    const [hit] = await registry.search('quarterly');
+    expect(hit.matchCount).toBe(2);
+  });
+
+  test('is case-insensitive', async () => {
+    expect((await registry.search('QUARTERLY')).map(h => h.jobId)).toEqual(['job-keynote']);
+    expect((await registry.search('Migration')).map(h => h.jobId)).toEqual(['job-interview']);
+  });
+
+  test('returns a snippet with the timestamp of the first hit', async () => {
+    const [hit] = await registry.search('quarterly');
+    expect(hit.snippet).toContain('quarterly revenue growth');
+    expect(hit.snippetStartTime).toBe(6);
+  });
+
+  test('still matches on name and source file, without a snippet', async () => {
+    const byName = await registry.search('Board review');
+    expect(byName.map(h => h.jobId)).toEqual(['job-abandoned']);
+    expect(byName[0].snippet).toBeNull();
+
+    const byFile = await registry.search('interview.m4a');
+    expect(byFile.map(h => h.jobId)).toEqual(['job-interview']);
+  });
+
+  test('matches the AWS job name too, so a legacy entry is still findable', async () => {
+    const hits = await registry.search('transcription-1730000000000');
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  test('returns results newest-first rather than by relevance', async () => {
+    // Predictable ordering: the list must not reshuffle as you type.
+    const hits = await registry.search('the');
+    const ids = hits.map(h => h.jobId);
+    expect(ids.indexOf('job-keynote')).toBeLessThan(ids.indexOf('job-interview'));
+  });
+
+  test('copes with a record that has no transcript', async () => {
+    const hits = await registry.search('board');
+    expect(hits.map(h => h.jobId)).toEqual(['job-abandoned']);
+    expect(hits[0].matchCount).toBe(0);
+  });
+
+  test('returns nothing for an empty or whitespace query', async () => {
+    expect(await registry.search('')).toEqual([]);
+    expect(await registry.search('   ')).toEqual([]);
+    expect(await registry.search(null)).toEqual([]);
+  });
+
+  test('returns nothing when the phrase appears nowhere', async () => {
+    expect(await registry.search('helicopter')).toEqual([]);
+  });
+
+  test('a corrupt transcript does not break the search', async () => {
+    await fs.writeFile(path.join(dir, 'job-keynote.transcript.json'), '{ not json');
+
+    const hits = await registry.search('migration');
+    expect(hits.map(h => h.jobId)).toEqual(['job-interview']);
+  });
+
+  test('tolerates segments without usable text', async () => {
+    await registry.save(record({ jobId: 'job-odd', displayName: 'Odd', createdAt: '2026-04-01T00:00:00.000Z' }), [
+      { startTime: 0, endTime: 1 },
+      { startTime: 1, endTime: 2, text: null },
+      { startTime: 2, endTime: 3, text: 'findable phrase here' },
+    ]);
+
+    const hits = await registry.search('findable');
+    expect(hits.map(h => h.jobId)).toEqual(['job-odd']);
+  });
+});
+
+describe('buildSnippet', () => {
+  const TEXT = 'The quick brown fox jumps over the lazy dog and then keeps on running for quite a while afterwards';
+
+  test('windows around the hit with ellipses', () => {
+    const at = TEXT.indexOf('lazy');
+    const snippet = TranscriptionRegistry.buildSnippet(TEXT, at, 4, 10);
+    expect(snippet).toContain('lazy');
+    expect(snippet.startsWith('…')).toBe(true);
+    expect(snippet.endsWith('…')).toBe(true);
+  });
+
+  test('omits the leading ellipsis when the hit is at the start', () => {
+    const snippet = TranscriptionRegistry.buildSnippet(TEXT, 0, 3, 10);
+    expect(snippet.startsWith('…')).toBe(false);
+  });
+
+  test('omits the trailing ellipsis when the window reaches the end', () => {
+    const snippet = TranscriptionRegistry.buildSnippet(TEXT, TEXT.length - 10, 10, 40);
+    expect(snippet.endsWith('…')).toBe(false);
+  });
+});

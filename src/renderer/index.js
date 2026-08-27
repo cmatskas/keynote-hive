@@ -121,6 +121,11 @@ if (typeof window !== 'undefined') {
     window.clearTranscription = clearTranscription;
     window.resetTranscriptionUI = resetTranscriptionUI;
     window.cancelTranscription = cancelTranscription;
+    // Exposed so tests can wire the sidebar directly. Dispatching
+    // DOMContentLoaded instead would run every listener accumulated by earlier
+    // require() calls in the same file, wiring the same controls repeatedly.
+    window.initTranscribeSidebar = initTranscribeSidebar;
+    window.refreshTranscriptionList = refreshTranscriptionList;
 
     // Expose currentAnalysis as a getter/setter to keep it synchronized
     Object.defineProperty(window, 'currentAnalysis', {
@@ -216,6 +221,11 @@ if (window.OfflineGuard) {
 let transcriptionRecords = [];       // metadata only; transcripts load on demand
 let selectedTranscriptionId = null;  // a saved transcript being viewed
 let pendingDeleteJobId = null;
+// Search results keyed by jobId. Null means "not searching" — distinct from an
+// empty map, which means "searched and found nothing".
+let transcriptionSearchHits = null;
+let transcriptionSearchQuery = '';
+let transcriptionSearchTimer = null;
 
 function transcribeLayout() {
     return document.querySelector('.transcribe-layout');
@@ -264,12 +274,23 @@ function renderTranscriptionList(filter = '') {
     const list = document.getElementById('transcriptionList');
     if (!list) return;
 
-    const query = filter.trim().toLowerCase();
-    const matches = query
-        ? transcriptionRecords.filter(r =>
-            (r.displayName || '').toLowerCase().includes(query) ||
-            (r.sourceFile || '').toLowerCase().includes(query))
-        : transcriptionRecords;
+    const query = filter.trim();
+
+    // While searching, the main process decides what matches — it can see
+    // transcript bodies, which the renderer deliberately never loads in bulk.
+    let matches;
+    if (query && transcriptionSearchHits) {
+        matches = transcriptionRecords.filter(r => transcriptionSearchHits.has(r.jobId));
+    } else if (query) {
+        // Results haven't arrived yet: fall back to the metadata the sidebar
+        // already holds, so typing feels immediate rather than blank.
+        const lower = query.toLowerCase();
+        matches = transcriptionRecords.filter(r =>
+            (r.displayName || '').toLowerCase().includes(lower) ||
+            (r.sourceFile || '').toLowerCase().includes(lower));
+    } else {
+        matches = transcriptionRecords;
+    }
 
     list.innerHTML = '';
 
@@ -289,7 +310,42 @@ function renderTranscriptionList(filter = '') {
         return;
     }
 
-    matches.forEach(record => list.appendChild(buildTranscriptionRow(record)));
+    matches.forEach(record => list.appendChild(
+        buildTranscriptionRow(record, transcriptionSearchHits?.get(record.jobId))
+    ));
+}
+
+/**
+ * Run a search in the main process, debounced. Body search reads transcript
+ * files, so firing on every keystroke would be wasteful; the list meanwhile
+ * shows metadata matches so typing still feels responsive.
+ */
+function scheduleTranscriptionSearch(query) {
+    clearTimeout(transcriptionSearchTimer);
+    transcriptionSearchQuery = query;
+
+    if (!query.trim()) {
+        transcriptionSearchHits = null;
+        renderTranscriptionList('');
+        return;
+    }
+
+    renderTranscriptionList(query);   // immediate metadata-only pass
+
+    transcriptionSearchTimer = setTimeout(async () => {
+        const forQuery = query;
+        try {
+            const hits = await window.electronAPI.invoke('transcription-search', forQuery);
+            // Ignore a stale response: the user may have typed on while this was
+            // in flight.
+            if (forQuery !== transcriptionSearchQuery) return;
+            transcriptionSearchHits = new Map((hits || []).map(h => [h.jobId, h]));
+        } catch (err) {
+            console.error('Transcription search failed:', err);
+            transcriptionSearchHits = null;   // fall back to metadata matching
+        }
+        renderTranscriptionList(transcriptionSearchQuery);
+    }, 250);
 }
 
 function buildRunningTranscriptionRow() {
@@ -316,7 +372,7 @@ function buildRunningTranscriptionRow() {
     return row;
 }
 
-function buildTranscriptionRow(record) {
+function buildTranscriptionRow(record, hit = null) {
     const row = document.createElement('div');
     row.className = 'conv-item';
     if (record.jobId === selectedTranscriptionId) row.classList.add('active');
@@ -346,9 +402,25 @@ function buildTranscriptionRow(record) {
     if (duration) bits.push(duration);
     if (record.status === 'ABANDONED') bits.push('still on AWS');
     if (isUnnamedRecord(record)) bits.push('name this');
+    if (hit && hit.matchCount > 0) {
+        bits.push(`${hit.matchCount} match${hit.matchCount === 1 ? '' : 'es'}`);
+    }
     meta.textContent = bits.filter(Boolean).join(' · ');
 
     row.append(title, meta);
+
+    // A body match shows where it was found — that's the difference between a
+    // filter and something you can actually search.
+    if (hit && hit.snippet) {
+        const snippet = document.createElement('div');
+        snippet.className = 'transcription-item-snippet';
+        // textContent: transcript content must never be able to become markup.
+        snippet.textContent = hit.snippetStartTime !== null && hit.snippetStartTime !== undefined
+            ? `${formatTimestamp(hit.snippetStartTime)} — ${hit.snippet}`
+            : hit.snippet;
+        row.appendChild(snippet);
+    }
+
     row.addEventListener('click', () => openTranscription(record.jobId));
     return row;
 }
@@ -515,13 +587,13 @@ function initTranscribeSidebar() {
     const searchClear = document.getElementById('transcriptionSearchClear');
     search?.addEventListener('input', () => {
         searchClear?.classList.toggle('d-none', !search.value);
-        renderTranscriptionList(search.value);
+        scheduleTranscriptionSearch(search.value);
     });
     searchClear?.addEventListener('click', () => {
         search.value = '';
         searchClear.classList.add('d-none');
         search.focus();
-        renderTranscriptionList();
+        scheduleTranscriptionSearch('');
     });
 
     document.getElementById('transcribeRenameBtn')?.addEventListener('click', renameCurrentTranscription);

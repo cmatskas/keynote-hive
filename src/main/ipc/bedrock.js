@@ -161,6 +161,14 @@ function register(ipcMain, ctx) {
   });
 
   /**
+   * Search names, source files and transcript bodies. Runs in the main process
+   * because the transcripts are on disk there — see registry.search().
+   */
+  ipcMain.handle('transcription-search', async (_event, query) => {
+    return await ctx.transcriptionRegistry.search(query);
+  });
+
+  /**
    * Delete a transcription. Local-only by default.
    *
    * `deleteFromAws` additionally removes the transcript object, its sidecar, and

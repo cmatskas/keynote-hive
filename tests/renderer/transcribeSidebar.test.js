@@ -139,10 +139,25 @@ function buildDom() {
 }
 
 /** Loads index.js with the transcription registry responding as configured. */
-function loadRenderer({ records = RECORDS, getEntry = null, state = { active: false } } = {}) {
+/**
+ * Default search stand-in: matches name and source file only, the way a plain
+ * filter would. Body-search tests pass their own `searchHits` so they can return
+ * snippets.
+ */
+function defaultSearchHits(records, query) {
+  const needle = (query || '').toLowerCase();
+  return records
+    .filter(r => (r.displayName || '').toLowerCase().includes(needle)
+      || (r.sourceFile || '').toLowerCase().includes(needle))
+    .map(r => ({ jobId: r.jobId, matchCount: 0, snippet: null, snippetStartTime: null }));
+}
+
+function loadRenderer({ records = RECORDS, getEntry = null, state = { active: false }, searchHits = null } = {}) {
   mockElectronAPI.invoke.mockImplementation((channel, payload) => {
     switch (channel) {
       case 'transcription-list': return Promise.resolve(records);
+      case 'transcription-search':
+        return Promise.resolve(searchHits ? searchHits(payload) : defaultSearchHits(records, payload));
       case 'transcription-get': {
         if (getEntry) return Promise.resolve(getEntry(payload));
         const record = records.find(r => r.jobId === payload);
@@ -168,16 +183,39 @@ function loadRenderer({ records = RECORDS, getEntry = null, state = { active: fa
   require('../../src/renderer/index.js');
 }
 
-/** Runs the DOMContentLoaded work that wires the sidebar. */
+/**
+ * Wires the sidebar directly rather than dispatching DOMContentLoaded.
+ * Dispatching would run every listener accumulated by earlier require() calls in
+ * this file — each closed over its own module instance — wiring the same controls
+ * several times and making handler-count assertions non-deterministic.
+ */
 async function initSidebar() {
-  document.dispatchEvent(new Event('DOMContentLoaded'));
+  window.initTranscribeSidebar();
   await flush();
 }
 
+// Fake timers throughout. Body search is debounced, so a test that types into
+// the search box would otherwise leave a live 250ms timer that fires during a
+// later test — re-rendering the shared list from stale state and making results
+// depend on machine load. Fake timers make the debounce explicit and let
+// afterEach guarantee nothing is left armed.
+jest.useFakeTimers();
+
+/** Drains microtasks only — most handlers here are async but timer-free. */
 const flush = async () => {
-  for (let i = 0; i < 8; i++) await Promise.resolve();
-  await new Promise(resolve => setTimeout(resolve, 0));
+  for (let i = 0; i < 10; i++) await Promise.resolve();
 };
+
+/** Drains microtasks, then runs the debounce, then drains again. */
+const flushDebounce = async (ms = 300) => {
+  await flush();
+  jest.advanceTimersByTime(ms);
+  await flush();
+};
+
+afterEach(() => {
+  jest.clearAllTimers();
+});
 
 const rows = () => Array.from(document.querySelectorAll('#transcriptionList .conv-item'));
 const rowTitles = () => rows().map(r => r.querySelector('.conv-item-title').textContent.trim());
@@ -250,6 +288,7 @@ describe('search', () => {
     const search = document.getElementById('transcriptionSearch');
     search.value = 'keynote';
     search.dispatchEvent(new Event('input'));
+    await flushDebounce();
 
     expect(rowTitles()).toEqual(['Keynote Draft 3']);
   });
@@ -261,6 +300,7 @@ describe('search', () => {
     const search = document.getElementById('transcriptionSearch');
     search.value = 'interview.m4a';
     search.dispatchEvent(new Event('input'));
+    await flushDebounce();
 
     expect(rowTitles()).toEqual(['Customer interview']);
   });
@@ -272,6 +312,7 @@ describe('search', () => {
     const search = document.getElementById('transcriptionSearch');
     search.value = 'nothing like this';
     search.dispatchEvent(new Event('input'));
+    await flushDebounce();
 
     expect(document.getElementById('transcriptionList').textContent).toContain('No transcriptions found');
   });
@@ -283,12 +324,175 @@ describe('search', () => {
     const search = document.getElementById('transcriptionSearch');
     search.value = 'keynote';
     search.dispatchEvent(new Event('input'));
+    await flushDebounce();
     expect(rows()).toHaveLength(1);
 
     document.getElementById('transcriptionSearchClear').click();
+    await flush();
 
     expect(rows()).toHaveLength(4);
     expect(search.value).toBe('');
+  });
+});
+
+/**
+ * Full-text search over transcript bodies. This is what makes the history
+ * genuinely useful months later, when you remember a phrase from the recording
+ * but not what you called the file — a name-only filter can't answer that.
+ */
+describe('full-text search', () => {
+  const bodyHit = (jobId, snippet, startTime = 252, matchCount = 3) =>
+    () => [{ jobId, matchCount, snippet, snippetStartTime: startTime }];
+
+  test('finds a transcription by words spoken in it', async () => {
+    // "quarterly" appears nowhere in the name or file name.
+    loadRenderer({ searchHits: bodyHit('job-2', '…and the quarterly numbers were up…') });
+    await initSidebar();
+
+    const search = document.getElementById('transcriptionSearch');
+    search.value = 'quarterly';
+    search.dispatchEvent(new Event('input'));
+    await flushDebounce();
+
+    expect(rowTitles()).toEqual(['Customer interview']);
+  });
+
+  test('shows the matching snippet with its timestamp', async () => {
+    loadRenderer({ searchHits: bodyHit('job-2', '…and the quarterly numbers were up…') });
+    await initSidebar();
+
+    const search = document.getElementById('transcriptionSearch');
+    search.value = 'quarterly';
+    search.dispatchEvent(new Event('input'));
+    await flushDebounce();
+
+    const snippet = rows()[0].querySelector('.transcription-item-snippet');
+    expect(snippet).not.toBeNull();
+    expect(snippet.textContent).toContain('quarterly numbers');
+    expect(snippet.textContent).toMatch(/04:12/);   // 252s
+  });
+
+  test('reports how many times the phrase occurs', async () => {
+    loadRenderer({ searchHits: bodyHit('job-2', '…quarterly…', 0, 7) });
+    await initSidebar();
+
+    const search = document.getElementById('transcriptionSearch');
+    search.value = 'quarterly';
+    search.dispatchEvent(new Event('input'));
+    await flushDebounce();
+
+    expect(rows()[0].querySelector('.transcription-item-meta').textContent).toContain('7 matches');
+  });
+
+  test('uses the singular for one match', async () => {
+    loadRenderer({ searchHits: bodyHit('job-2', '…quarterly…', 0, 1) });
+    await initSidebar();
+
+    const search = document.getElementById('transcriptionSearch');
+    search.value = 'quarterly';
+    search.dispatchEvent(new Event('input'));
+    await flushDebounce();
+
+    expect(rows()[0].querySelector('.transcription-item-meta').textContent).toContain('1 match');
+  });
+
+  test('inserts snippet text as text, never as markup', async () => {
+    loadRenderer({ searchHits: bodyHit('job-2', '<img src=x onerror=alert(1)>') });
+    await initSidebar();
+
+    const search = document.getElementById('transcriptionSearch');
+    search.value = 'img';
+    search.dispatchEvent(new Event('input'));
+    await flushDebounce();
+
+    const snippet = rows()[0].querySelector('.transcription-item-snippet');
+    expect(snippet.querySelector('img')).toBeNull();
+    expect(snippet.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
+
+  test('debounces rather than searching on every keystroke', async () => {
+    loadRenderer();
+    await initSidebar();
+    const search = document.getElementById('transcriptionSearch');
+
+    for (const value of ['k', 'ke', 'key', 'keyn']) {
+      search.value = value;
+      search.dispatchEvent(new Event('input'));
+      await flush();
+    }
+    // Nothing yet — the debounce hasn't elapsed.
+    let searches = mockElectronAPI.invoke.mock.calls.filter(([c]) => c === 'transcription-search');
+    expect(searches).toHaveLength(0);
+
+    await flushDebounce();
+
+    searches = mockElectronAPI.invoke.mock.calls.filter(([c]) => c === 'transcription-search');
+    expect(searches).toHaveLength(1);
+    expect(searches[0][1]).toBe('keyn');
+  });
+
+  test('shows metadata matches immediately, before the body results arrive', async () => {
+    // Typing should feel responsive even though body search is debounced.
+    loadRenderer();
+    await initSidebar();
+
+    const search = document.getElementById('transcriptionSearch');
+    search.value = 'keynote';
+    search.dispatchEvent(new Event('input'));
+    await flush();   // debounce deliberately not advanced
+
+    expect(rowTitles()).toEqual(['Keynote Draft 3']);
+  });
+
+  test('ignores a stale response when the query has moved on', async () => {
+    let resolveFirst;
+    loadRenderer({
+      searchHits: () => new Promise(resolve => { resolveFirst = resolve; }),
+    });
+    await initSidebar();
+    const search = document.getElementById('transcriptionSearch');
+
+    search.value = 'first';
+    search.dispatchEvent(new Event('input'));
+    await flushDebounce();
+
+    // User types on; then the first response finally lands.
+    search.value = 'keynote';
+    search.dispatchEvent(new Event('input'));
+    await flush();
+    resolveFirst([{ jobId: 'job-4', matchCount: 1, snippet: 'stale', snippetStartTime: 0 }]);
+    await flush();
+
+    // The stale hit for job-4 ("Board review") must not be shown.
+    expect(rowTitles()).not.toContain('Board review');
+  });
+
+  test('falls back to metadata matching when the search fails', async () => {
+    loadRenderer({ searchHits: () => Promise.reject(new Error('read error')) });
+    await initSidebar();
+
+    const search = document.getElementById('transcriptionSearch');
+    search.value = 'keynote';
+    search.dispatchEvent(new Event('input'));
+    await flushDebounce();
+
+    expect(rowTitles()).toEqual(['Keynote Draft 3']);
+  });
+
+  test('clearing the search restores the full list', async () => {
+    loadRenderer({ searchHits: bodyHit('job-2', '…quarterly…') });
+    await initSidebar();
+    const search = document.getElementById('transcriptionSearch');
+
+    search.value = 'quarterly';
+    search.dispatchEvent(new Event('input'));
+    await flushDebounce();
+    expect(rows()).toHaveLength(1);
+
+    document.getElementById('transcriptionSearchClear').click();
+    await flush();
+
+    expect(rows()).toHaveLength(4);
   });
 });
 
