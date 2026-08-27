@@ -201,7 +201,7 @@ Audio and video transcription powered by AWS Transcribe.
 - Timestamps per segment
 - Export transcription as text
 
-Past transcriptions are kept in a sidebar you can search, rename and reopen. Search looks inside the transcripts themselves, not just the names — so you can find a recording by a phrase someone said in it, and each result shows the matching line with its timestamp — so a transcript you've already paid for never has to be re-run. Each one is stored locally (so the list works offline) and mirrored alongside the transcript in your own output bucket, which means the history can be rebuilt from AWS even if Hive's local data is lost. Names default to the media file name and are editable while the job runs or any time afterwards.
+Past transcriptions are kept in a sidebar you can search, rename and reopen — drag its inner edge to widen it if names are getting truncated, and hover any entry for its full details. Search looks inside the transcripts themselves, not just the names — so you can find a recording by a phrase someone said in it, and each result shows the matching line with its timestamp — so a transcript you've already paid for never has to be re-run. Each one is stored locally (so the list works offline) and mirrored alongside the transcript in your own output bucket, which means the history can be rebuilt from AWS even if Hive's local data is lost. Names default to the media file name and are editable while the job runs or any time afterwards.
 
 Opening a past transcript shows the transcript only — no player. The player is handed the local file you dropped in, and by the time you reopen a transcript that file may have moved or gone, so the header names the source file instead.
 

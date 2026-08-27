@@ -249,12 +249,40 @@ function formatTranscriptDate(iso) {
 }
 
 /**
- * A legacy job has no display name of its own — it predates naming. Show the
- * bare job name and invite naming rather than hiding it, since it is still a
- * real transcript the user may want.
+ * A legacy job has no display name of its own — it predates naming, or was
+ * imported from AWS where only the job name exists. Showing the raw
+ * `transcription-<timestamp>` as a title tells the user nothing.
  */
 function isUnnamedRecord(record) {
     return !record.displayName || /^transcription-\d+$/.test(record.displayName);
+}
+
+/**
+ * Whether the source file is worth showing alongside the name.
+ *
+ * A default name *is* the file name minus its extension, so showing both would
+ * just repeat itself. It only carries information once the entry has been
+ * renamed — at which point the original file is otherwise invisible.
+ */
+function sourceFileWorthShowing(record) {
+    if (!record.sourceFile) return false;
+    if (isUnnamedRecord(record)) return true;
+    const stem = record.sourceFile.replace(/\.[^.]+$/, '');
+    return record.displayName !== stem;
+}
+
+/** Everything about an entry, for the row's tooltip — no competition for space. */
+function transcriptionTooltip(record) {
+    const lines = [isUnnamedRecord(record) ? 'Not yet named' : record.displayName];
+    if (record.sourceFile) lines.push(`File: ${record.sourceFile}`);
+    const date = formatTranscriptDate(record.createdAt);
+    if (date) lines.push(`Recorded: ${date}`);
+    const duration = formatTranscriptDuration(record.durationSeconds);
+    if (duration) lines.push(`Duration: ${duration}`);
+    if (record.language) lines.push(`Language: ${record.language}`);
+    if (record.jobName) lines.push(`Job: ${record.jobName}`);
+    if (record.status && record.status !== 'COMPLETED') lines.push(`Status: ${record.status}`);
+    return lines.join('\n');
 }
 
 async function refreshTranscriptionList() {
@@ -372,10 +400,20 @@ function buildRunningTranscriptionRow() {
     return row;
 }
 
+/**
+ * One row. The name is the only thing that competes for attention; everything
+ * else is either one short secondary line or lives in the tooltip.
+ *
+ * The row used to carry up to five middot-separated facts under the title, which
+ * made the list hard to scan for the one thing you're actually looking for.
+ */
 function buildTranscriptionRow(record, hit = null) {
+    const searching = !!hit;
+
     const row = document.createElement('div');
     row.className = 'conv-item';
     if (record.jobId === selectedTranscriptionId) row.classList.add('active');
+    row.title = transcriptionTooltip(record);
 
     const title = document.createElement('div');
     title.className = 'conv-item-title';
@@ -388,29 +426,34 @@ function buildTranscriptionRow(record, hit = null) {
 
     const label = document.createElement('span');
     if (isUnnamedRecord(record)) {
+        // A human placeholder beats an opaque job id. The id is in the tooltip.
         label.className = 'transcription-item-unnamed';
-        label.textContent = record.jobName || 'Untitled';
+        label.textContent = 'Untitled recording';
     } else {
         label.textContent = record.displayName;
     }
     title.appendChild(label);
+    row.appendChild(title);
 
-    const meta = document.createElement('div');
-    meta.className = 'transcription-item-meta';
-    const bits = [formatTranscriptDate(record.createdAt)];
-    const duration = formatTranscriptDuration(record.durationSeconds);
-    if (duration) bits.push(duration);
-    if (record.status === 'ABANDONED') bits.push('still on AWS');
-    if (isUnnamedRecord(record)) bits.push('name this');
-    if (hit && hit.matchCount > 0) {
-        bits.push(`${hit.matchCount} match${hit.matchCount === 1 ? '' : 'es'}`);
+    // While searching, the matching line is what matters — date and duration
+    // would only push it further down.
+    const bits = [];
+    if (searching) {
+        if (hit.matchCount > 0) bits.push(`${hit.matchCount} match${hit.matchCount === 1 ? '' : 'es'}`);
+    } else {
+        const date = formatTranscriptDate(record.createdAt);
+        if (date) bits.push(date);
+        if (sourceFileWorthShowing(record)) bits.push(record.sourceFile);
     }
-    meta.textContent = bits.filter(Boolean).join(' · ');
+    if (record.status === 'ABANDONED') bits.push('still on AWS');
 
-    row.append(title, meta);
+    if (bits.length) {
+        const meta = document.createElement('div');
+        meta.className = 'transcription-item-meta';
+        meta.textContent = bits.join(' · ');
+        row.appendChild(meta);
+    }
 
-    // A body match shows where it was found — that's the difference between a
-    // filter and something you can actually search.
     if (hit && hit.snippet) {
         const snippet = document.createElement('div');
         snippet.className = 'transcription-item-snippet';
@@ -453,8 +496,10 @@ async function openTranscription(jobId) {
         header?.classList.remove('d-none');
         const titleEl = document.getElementById('transcribeViewTitle');
         if (titleEl) {
-            titleEl.textContent = isUnnamedRecord(entry) ? (entry.jobName || 'Untitled') : entry.displayName;
+            titleEl.textContent = isUnnamedRecord(entry) ? 'Untitled recording' : entry.displayName;
+            titleEl.classList.toggle('transcription-item-unnamed', isUnnamedRecord(entry));
         }
+        cancelRenameCurrentTranscription();   // never open on a stale edit
         const metaEl = document.getElementById('transcribeViewMeta');
         if (metaEl) {
             const bits = [
@@ -493,24 +538,59 @@ async function openTranscription(jobId) {
     }
 }
 
-/** Rename the transcript on screen — the saved one, or the live job. */
-async function renameCurrentTranscription() {
+/**
+ * Rename the transcript on screen, edited in place.
+ *
+ * Deliberately not `prompt()`. Electron does not implement it — Chromium refuses
+ * the call and returns `undefined`, which slipped past a `=== null` cancel guard
+ * and then threw on `.trim()`, so the button silently did nothing. Inline editing
+ * also matches the name field already used while a job runs.
+ */
+function beginRenameCurrentTranscription() {
     const jobId = selectedTranscriptionId || activeTranscriptionJobId;
     if (!jobId) return;
 
-    const current = selectedTranscriptionId
-        ? (transcriptionRecords.find(r => r.jobId === jobId)?.displayName || '')
-        : (document.getElementById('transcriptionNameInput')?.value || '');
+    const titleEl = document.getElementById('transcribeViewTitle');
+    const input = document.getElementById('transcribeViewTitleInput');
+    if (!titleEl || !input) return;
 
-    const next = prompt('Name this transcription', current);
-    if (next === null) return;
-    if (!next.trim()) {
+    const record = transcriptionRecords.find(r => r.jobId === jobId);
+    // An imported entry's "name" is an opaque job id — start from empty rather
+        // than making the user delete it first.
+    const current = record && !isUnnamedRecord(record) ? record.displayName : '';
+
+    input.value = current;
+    input.dataset.jobId = jobId;
+    input.classList.remove('d-none');
+    titleEl.classList.add('d-none');
+    try { input.focus(); input.select(); } catch { /* not focusable in tests */ }
+}
+
+function cancelRenameCurrentTranscription() {
+    const titleEl = document.getElementById('transcribeViewTitle');
+    const input = document.getElementById('transcribeViewTitleInput');
+    if (!titleEl || !input) return;
+    input.classList.add('d-none');
+    delete input.dataset.jobId;
+    titleEl.classList.remove('d-none');
+}
+
+async function commitRenameCurrentTranscription() {
+    const input = document.getElementById('transcribeViewTitleInput');
+    if (!input || input.classList.contains('d-none')) return;
+
+    const jobId = input.dataset.jobId;
+    const displayName = (input.value || '').trim();
+    cancelRenameCurrentTranscription();
+
+    if (!jobId) return;
+    if (!displayName) {
         showWarningToast('A name cannot be empty.');
         return;
     }
 
     try {
-        await window.electronAPI.invoke('rename-transcription', { jobId, displayName: next.trim() });
+        await window.electronAPI.invoke('rename-transcription', { jobId, displayName });
         await refreshTranscriptionList();
         if (selectedTranscriptionId === jobId) await openTranscription(jobId);
     } catch (err) {
@@ -606,6 +686,23 @@ async function reconcileTranscriptions() {
     }
 }
 
+/**
+ * Make every list sidebar resizable. Centralised here because all three elements
+ * are static in the page, and one call site is easier to keep honest than three
+ * tabs each remembering to opt in.
+ */
+function initResizableSidebars() {
+    if (!window.SidebarResize) return;
+    [
+        { selector: '#transcribeSidebar', key: 'hive.sidebarWidth.transcribe', defaultWidth: 260 },
+        { selector: '#analyze-page .conv-sidebar', key: 'hive.sidebarWidth.chat', defaultWidth: 240 },
+        { selector: '#workSidebar', key: 'hive.sidebarWidth.work', defaultWidth: 260 },
+    ].forEach(({ selector, key, defaultWidth }) => {
+        const el = document.querySelector(selector);
+        if (el) window.SidebarResize.enable({ el, storageKey: key, defaultWidth });
+    });
+}
+
 function initTranscribeSidebar() {
     // Idempotent: wiring the same controls twice would double every handler, so
     // a toggle would fire twice and appear not to work at all.
@@ -642,7 +739,24 @@ function initTranscribeSidebar() {
     });
 
     document.getElementById('transcriptionReconcileBtn')?.addEventListener('click', reconcileTranscriptions);
-    document.getElementById('transcribeRenameBtn')?.addEventListener('click', renameCurrentTranscription);
+    document.getElementById('transcribeRenameBtn')?.addEventListener('click', beginRenameCurrentTranscription);
+    // The title itself is the more discoverable affordance; the pencil is the
+    // explicit one.
+    document.getElementById('transcribeViewTitle')?.addEventListener('click', beginRenameCurrentTranscription);
+
+    const titleInput = document.getElementById('transcribeViewTitleInput');
+    titleInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            commitRenameCurrentTranscription();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            cancelRenameCurrentTranscription();
+        }
+    });
+    // Clicking away commits rather than discarding — losing a typed name to a
+    // stray click is worse than an unintended rename, which is trivially undone.
+    titleInput?.addEventListener('blur', () => commitRenameCurrentTranscription());
     document.getElementById('transcribeDeleteBtn')?.addEventListener('click', promptDeleteTranscription);
     document.getElementById('deleteTranscriptionConfirmBtn')?.addEventListener('click', confirmDeleteTranscription);
 
@@ -1165,6 +1279,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // user's only route back to past transcripts, so it must not depend on
     // unrelated setup succeeding.
     try { initTranscribeSidebar(); } catch (e) { console.error('Transcribe sidebar init failed:', e); }
+    try { initResizableSidebars(); } catch (e) { console.error('Sidebar resize init failed:', e); }
 
     loadPromptTemplates();
     loadBedrockModels();

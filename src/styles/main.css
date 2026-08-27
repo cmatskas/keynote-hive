@@ -76,6 +76,51 @@ html[data-theme] {
     --info: #60a5fa;
 }
 
+/* ── Resizable sidebars ──────────────────────────────────────────────────
+   All three list sidebars (Chat, Work, Transcribe) were fixed-width, which
+   forced rows to truncate names. The handle sits on the inner edge; it is
+   keyboard-reachable because a drag-only control would exclude keyboard users
+   entirely. */
+.sidebar-resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 5;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:focus-visible {
+    background: var(--accent-primary, #3b82f6);
+    opacity: 0.35;
+    outline: none;
+}
+
+/* The sidebars are positioned so the handle can anchor to their edge. */
+.conv-sidebar,
+.work-sidebar,
+.transcribe-sidebar {
+    position: relative;
+}
+
+/* Width transitions lag the cursor mid-drag, and text selection fights it. */
+.is-resizing {
+    transition: none !important;
+}
+
+body.sidebar-resizing {
+    cursor: col-resize;
+    user-select: none;
+}
+
+/* Nothing to grab while the sidebar is slid out of view. */
+.transcribe-layout.sidebar-collapsed .sidebar-resize-handle {
+    display: none;
+}
+
 /* ── Transcribe tab layout ───────────────────────────────────────────────
    Sidebar + content, mirroring the Chat tab's arrangement so the tabs with
    lists are consistent. The sidebar is collapsible because three panes at the

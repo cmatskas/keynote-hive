@@ -136,6 +136,7 @@ describe('Renderer Index.js', () => {
                         <button id="transcribeSidebarToggle"></button>
                         <div id="transcribeViewHeader" class="d-none">
                             <h5 id="transcribeViewTitle"></h5>
+            <input type="text" id="transcribeViewTitleInput" class="d-none" />
                             <button id="transcribeRenameBtn"></button>
                             <button id="transcribeDeleteBtn"></button>
                             <div id="transcribeViewMeta"></div>

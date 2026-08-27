@@ -82,6 +82,7 @@ function buildDom() {
           <button id="transcribeSidebarToggle"></button>
           <div id="transcribeViewHeader" class="d-none">
             <h5 id="transcribeViewTitle"></h5>
+            <input type="text" id="transcribeViewTitleInput" class="d-none" />
             <button id="transcribeRenameBtn"></button>
             <button id="transcribeDeleteBtn"></button>
             <div id="transcribeViewMeta"></div>
@@ -233,25 +234,68 @@ beforeEach(() => {
 });
 
 describe('rendering the list', () => {
-  test('lists recorded transcriptions with date and duration', async () => {
+  test('leads with the name and keeps the secondary line short', async () => {
+    // The row used to carry up to five middot-separated facts under the title,
+    // which made the list hard to scan for the one thing you're looking for.
     loadRenderer();
     await initSidebar();
 
     expect(rowTitles()).toEqual([
-      'Keynote Draft 3', 'Customer interview', 'transcription-1715000000000', 'Board review',
+      'Keynote Draft 3', 'Customer interview', 'Untitled recording', 'Board review',
     ]);
     const meta = rows()[0].querySelector('.transcription-item-meta').textContent;
-    expect(meta).toContain('42 min');
     expect(meta).toMatch(/Jun/);
+    // Duration lives in the tooltip now, not the row.
+    expect(meta).not.toContain('42 min');
   });
 
-  test('shows a legacy unnamed job rather than hiding it, and invites naming', async () => {
+  test('puts the full detail in a tooltip rather than on the row', async () => {
+    loadRenderer();
+    await initSidebar();
+
+    const tip = rows()[0].title;
+    expect(tip).toContain('Keynote Draft 3');
+    expect(tip).toContain('keynote-v4.mp4');
+    expect(tip).toContain('42 min');
+    expect(tip).toContain('en-US');
+    expect(tip).toContain('transcription-1717000000000');
+  });
+
+  test('shows a human placeholder for a legacy entry, not an opaque job id', async () => {
+    // "transcription-1715000000000" tells the user nothing about what it is.
     loadRenderer();
     await initSidebar();
 
     const legacy = rows()[2];
-    expect(legacy.querySelector('.transcription-item-unnamed')).not.toBeNull();
-    expect(legacy.querySelector('.transcription-item-meta').textContent).toContain('name this');
+    expect(legacy.querySelector('.transcription-item-unnamed').textContent).toBe('Untitled recording');
+    expect(legacy.title).toContain('Not yet named');
+    expect(legacy.title).toContain('transcription-1715000000000');
+  });
+
+  test('shows the source file only when it differs from the name', async () => {
+    // A default name *is* the file name minus its extension, so showing both
+    // would just repeat itself.
+    loadRenderer({
+      records: [
+        { jobId: 'a', jobName: 'transcription-1', displayName: 'holiday', sourceFile: 'holiday.mp4',
+          status: 'COMPLETED', createdAt: '2026-06-01T00:00:00.000Z' },
+        { jobId: 'b', jobName: 'transcription-2', displayName: 'Board review', sourceFile: 'raw-0042.mp4',
+          status: 'COMPLETED', createdAt: '2026-05-01T00:00:00.000Z' },
+      ],
+    });
+    await initSidebar();
+
+    // Name matches the file stem — no point repeating it.
+    expect(rows()[0].querySelector('.transcription-item-meta').textContent).not.toContain('holiday.mp4');
+    // Renamed, so the original file is otherwise invisible.
+    expect(rows()[1].querySelector('.transcription-item-meta').textContent).toContain('raw-0042.mp4');
+  });
+
+  test('still flags an abandoned entry on the row', async () => {
+    loadRenderer();
+    await initSidebar();
+
+    expect(rows()[3].querySelector('.transcription-item-meta').textContent).toContain('still on AWS');
   });
 
   test('marks an abandoned job as still being on AWS', async () => {
@@ -284,6 +328,168 @@ describe('rendering the list', () => {
     await initSidebar();
 
     expect(document.getElementById('transcriptionList').textContent).toContain('No transcriptions yet');
+  });
+});
+
+/**
+ * The rename button was broken on release: it used window.prompt(), which
+ * Electron does not implement — Chromium refuses the call and returns undefined,
+ * which slipped past a `=== null` cancel guard and then threw on .trim(). No test
+ * covered the button itself, only the name field used during a live job and the
+ * rename IPC, which is why it shipped.
+ */
+describe('renaming a saved transcript', () => {
+  async function openFirstAndEdit() {
+    rows()[0].click();
+    await flush();
+    document.getElementById('transcribeRenameBtn').click();
+    return document.getElementById('transcribeViewTitleInput');
+  }
+
+  test('the pencil opens an inline editor pre-filled with the current name', async () => {
+    loadRenderer();
+    await initSidebar();
+
+    const input = await openFirstAndEdit();
+
+    expect(input.classList.contains('d-none')).toBe(false);
+    expect(document.getElementById('transcribeViewTitle').classList.contains('d-none')).toBe(true);
+    expect(input.value).toBe('Keynote Draft 3');
+  });
+
+  test('clicking the title opens it too', async () => {
+    loadRenderer();
+    await initSidebar();
+    rows()[0].click();
+    await flush();
+
+    document.getElementById('transcribeViewTitle').click();
+
+    expect(document.getElementById('transcribeViewTitleInput').classList.contains('d-none')).toBe(false);
+  });
+
+  test('Enter commits the new name', async () => {
+    loadRenderer();
+    await initSidebar();
+    const input = await openFirstAndEdit();
+    mockElectronAPI.invoke.mockClear();
+
+    input.value = 'Board review';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+
+    expect(mockElectronAPI.invoke).toHaveBeenCalledWith('rename-transcription', {
+      jobId: 'job-1', displayName: 'Board review',
+    });
+  });
+
+  test('Escape abandons the edit without renaming', async () => {
+    loadRenderer();
+    await initSidebar();
+    const input = await openFirstAndEdit();
+    mockElectronAPI.invoke.mockClear();
+
+    input.value = 'Discarded';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await flush();
+
+    expect(mockElectronAPI.invoke).not.toHaveBeenCalledWith('rename-transcription', expect.anything());
+    expect(input.classList.contains('d-none')).toBe(true);
+    expect(document.getElementById('transcribeViewTitle').classList.contains('d-none')).toBe(false);
+  });
+
+  test('clicking away commits rather than discarding a typed name', async () => {
+    // Losing a typed name to a stray click is worse than an unintended rename,
+    // which is trivially undone.
+    loadRenderer();
+    await initSidebar();
+    const input = await openFirstAndEdit();
+    mockElectronAPI.invoke.mockClear();
+
+    input.value = 'Committed on blur';
+    input.dispatchEvent(new Event('blur'));
+    await flush();
+
+    expect(mockElectronAPI.invoke).toHaveBeenCalledWith('rename-transcription', {
+      jobId: 'job-1', displayName: 'Committed on blur',
+    });
+  });
+
+  test('trims surrounding whitespace', async () => {
+    loadRenderer();
+    await initSidebar();
+    const input = await openFirstAndEdit();
+    mockElectronAPI.invoke.mockClear();
+
+    input.value = '   Board review   ';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+
+    expect(mockElectronAPI.invoke).toHaveBeenCalledWith('rename-transcription', {
+      jobId: 'job-1', displayName: 'Board review',
+    });
+  });
+
+  test('refuses an empty name and says why', async () => {
+    loadRenderer();
+    await initSidebar();
+    const input = await openFirstAndEdit();
+    mockElectronAPI.invoke.mockClear();
+
+    input.value = '   ';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+
+    expect(mockElectronAPI.invoke).not.toHaveBeenCalledWith('rename-transcription', expect.anything());
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/cannot be empty/i), 'warning'
+    );
+  });
+
+  test('starts from an empty field for an entry that has no real name yet', async () => {
+    // Otherwise the user has to delete an opaque job id first.
+    loadRenderer();
+    await initSidebar();
+    rows()[2].click();          // the legacy entry
+    await flush();
+    document.getElementById('transcribeRenameBtn').click();
+
+    expect(document.getElementById('transcribeViewTitleInput').value).toBe('');
+  });
+
+  test('reports a failed rename instead of failing silently', async () => {
+    loadRenderer();
+    await initSidebar();
+    const input = await openFirstAndEdit();
+    mockElectronAPI.invoke.mockRejectedValue(new Error('registry unavailable'));
+
+    input.value = 'Board review';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/Could not rename/), 'error'
+    );
+  });
+
+  test('does nothing when no transcript is open', async () => {
+    loadRenderer();
+    await initSidebar();
+
+    document.getElementById('transcribeRenameBtn').click();
+
+    expect(document.getElementById('transcribeViewTitleInput').classList.contains('d-none')).toBe(true);
+  });
+
+  test('opening another transcript closes a half-finished edit', async () => {
+    loadRenderer();
+    await initSidebar();
+    await openFirstAndEdit();
+
+    rows()[1].click();
+    await flush();
+
+    expect(document.getElementById('transcribeViewTitleInput').classList.contains('d-none')).toBe(true);
   });
 });
 

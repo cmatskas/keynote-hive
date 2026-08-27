@@ -1,5 +1,24 @@
 # Release Notes
 
+## v3.11.0
+
+### Fixes
+- **The rename button on a saved transcript did nothing.** It used `window.prompt()`, which **Electron does not implement** — Chromium refuses the call and returns `undefined`, which slipped past a `=== null` cancel guard and then threw a `TypeError` on `.trim()`. Renaming is now edited in place: click the pencil or the title, Enter commits, Escape abandons, and clicking away commits rather than discarding a typed name (losing a name to a stray click is worse than an unintended rename, which is trivially undone). An entry with no real name yet starts from an empty field instead of making the user delete an opaque job id first. No test covered the button itself — only the name field used during a live job and the rename IPC — which is why it shipped broken; there are now eleven.
+
+### Improvements
+- **Sidebar rows are far easier to scan.** A row carried up to five middot-separated facts under its title, so the one thing you were looking for competed with everything else.
+  - The name is now the only thing that competes for attention, with at most one short secondary line beneath it. Duration, language, job name and status moved into a row tooltip, where they cost nothing.
+  - **Imported and pre-naming entries show "Untitled recording"** instead of an opaque `transcription-<timestamp>`, which told the user nothing about what the recording was. The job name is in the tooltip.
+  - **The source file appears only when it differs from the name.** A default name *is* the file name minus its extension, so showing both just repeated itself; it now surfaces exactly when the entry has been renamed and the original file would otherwise be invisible.
+  - While searching, date and duration drop away so the row is name, match count and the matching line — when you are searching, the matched text is the useful part.
+- **All three sidebars are horizontally resizable.** Chat, Work and Transcribe were fixed-width, which is what forced rows to truncate in the first place — trimming a row helps, but letting the user decide how much room the list gets removes the constraint. Drag the inner edge, or use the keyboard: the handle is a focusable `separator`, with arrows to nudge, Home/End for the bounds, and double-click to reset. Width is clamped between 180px and 560px and remembered per sidebar. One shared helper (`src/renderer/sidebarResize.js`) serves all three, rather than three implementations that would drift.
+  - Widths persist to `localStorage` rather than `settings.json` — it is per-machine UI state, not user configuration needing validation or sync, and a monitor-shaped preference doesn't belong in the settings file.
+
+### Tests
+- Added `tests/renderer/sidebarResize.test.js` (23 tests): handle creation and idempotence, keyboard affordances, drag widening/narrowing, width/min-width/flex-basis pinned together, clamping at both default and custom bounds, transitions and text selection suppressed only for the drag, tracking stopped after release, persistence and restore, a stored width clamped when out of bounds, a corrupt stored value ignored, each sidebar independent, storage being unavailable, arrow/Home/End keys, and double-click reset.
+- Added 11 rename tests and rewrote the row-rendering tests for the new contract in `transcribeSidebar.test.js` (now 56): the tooltip carrying full detail, the "Untitled recording" placeholder, the source file shown only when it differs, the abandoned flag kept on the row, and Enter/Escape/blur/empty-name/failure behaviour for the inline editor.
+
+
 ## v3.10.0
 
 ### New Features
