@@ -374,10 +374,27 @@
     btn.textContent = 'Creating…';
     try {
       const result = await window.electronAPI.invoke('setup-wizard-create-item', itemId);
-      row.querySelector('.badge').className = 'badge bg-success mb-1';
-      row.querySelector('.badge').textContent = 'Ready';
-      row.querySelector('small').textContent = result.detail;
-      btn.remove();
+
+      // For the Gateway item, "role created" is not the same as "web search
+      // works" — the handler now reports whether it actually came up, and a
+      // green "Ready" tick while it is still down is exactly what hid a
+      // new-install failure previously.
+      const partial = itemId === 'webSearchGateway' && result.webSearchReady === false;
+      const badge = row.querySelector('.badge');
+      badge.className = partial ? 'badge bg-warning text-dark mb-1' : 'badge bg-success mb-1';
+      badge.textContent = partial ? 'Needs attention' : 'Ready';
+      row.querySelector('small').textContent = partial
+        ? `${result.detail} — web search did not start: ${result.webSearchError || 'unknown reason'}`
+        : result.detail;
+
+      if (partial) {
+        // Leave a way to try again without hunting for it.
+        btn.disabled = false;
+        btn.textContent = 'Retry';
+      } else {
+        btn.remove();
+      }
+
       if (itemId === 'webSearchGateway') {
         refreshWebSearchStatus();
         // The IPC handler already persisted webSearchGatewayRoleArn to

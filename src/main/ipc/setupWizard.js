@@ -62,7 +62,50 @@ function register(ipcMain, ctx) {
         const merged = { ...settings, webSearchGatewayRoleArn: arn };
         await ctx.settingsManager.saveSettings(merged);
         ctx.currentSettings = merged;
-        return { success: true, detail: `Created role: ${arn}`, arn };
+
+        // Bring web search up now, rather than leaving it down until the next
+        // launch.
+        //
+        // The ARN is persisted via settingsManager directly, deliberately
+        // bypassing the 'save-settings' IPC handler — but that handler is where
+        // the web-search re-initialisation trigger lives. So on a brand-new
+        // install the role would be created, the ARN stored, and
+        // webSearchManager would stay exactly as it failed at startup
+        // ("roleArn required to create web search gateway") for the rest of the
+        // session, with a green tick beside it in Setup Check.
+        //
+        // That failure is invisible from the UI: the agent silently falls back
+        // to writing its own HTTP/scraping code via execute_code, which looks
+        // identical to web search working. Recovering needed either an app
+        // restart or finding the retry button in Settings → Web Search.
+        //
+        // Measured against real AWS: a freshly created role is accepted by
+        // CreateGateway immediately (first attempt, ~0.2s after CreateRole), so
+        // no IAM propagation delay needs handling here.
+        let webSearchReady = false;
+        let webSearchError = null;
+        if (typeof ctx.initializeWebSearch === 'function') {
+          try {
+            await ctx.initializeWebSearch();
+          } catch (err) {
+            // initializeWebSearch records its own error; this is belt and braces.
+            webSearchError = err.message;
+          }
+          webSearchReady = !!ctx.webSearchManager?.ready;
+          webSearchError = webSearchError || ctx.webSearchInitError || null;
+        }
+
+        // Report what actually happened. Claiming success while web search is
+        // still down is the specific thing that made this bug invisible.
+        return {
+          success: true,
+          detail: webSearchReady
+            ? `Created role and activated web search: ${arn}`
+            : `Created role: ${arn}`,
+          arn,
+          webSearchReady,
+          webSearchError,
+        };
       }
       case 'transcriptionBucket':
       case 'transcriptionOutputBucket': {

@@ -292,3 +292,130 @@ describe('Settings tab bucket suggestions', () => {
     expect(document.getElementById('outputBucketName').value).toBe('');
   });
 });
+
+
+/**
+ * Regression: Setup Check showed a green "Ready" tick for the Web Search Gateway
+ * as soon as the IAM role was created, regardless of whether web search actually
+ * came up. On a brand-new install it did not — the role ARN was persisted in a way
+ * that skipped the re-initialisation trigger — and the agent then silently fell
+ * back to scraping via execute_code, which looks exactly like web search working.
+ *
+ * The handler now reports webSearchReady, and the row must reflect it.
+ */
+describe('Setup Check: web search gateway row', () => {
+  const setupStatus = {
+    webSearchGateway: { status: 'missing', detail: 'No Gateway or execution role found' },
+  };
+
+  /**
+   * Render the Setup Check list, then click the row's Create button.
+   *
+   * loadSettingsTab() installs its own invoke mock, so the Setup Check channels
+   * have to be layered on afterwards or they get overwritten.
+   */
+  async function renderRowsAndCreate(status, createResult) {
+    loadSettingsTab();
+    await flush();
+
+    mockElectronAPI.invoke.mockImplementation((channel) => {
+      switch (channel) {
+        case 'load-settings': return Promise.resolve({ bucketName: 'b', outputBucketName: 'o' });
+        case 'load-credentials': return Promise.resolve(null);
+        case 'get-web-search-status': return Promise.resolve({ ready: false, error: null });
+        case 'memory-list': return Promise.resolve([]);
+        case 'setup-wizard-check-status': return Promise.resolve(status);
+        case 'setup-wizard-create-item': return Promise.resolve(createResult);
+        default: return Promise.resolve(undefined);
+      }
+    });
+
+    document.getElementById('setupCheckRefreshBtn').click();
+    await flush();
+
+    const row = document.getElementById('setupCheckList').firstElementChild;
+    row.querySelector('button').click();
+    await flush();
+    return { row };
+  }
+
+  const clickCreate = (createResult) => renderRowsAndCreate(setupStatus, createResult);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    buildDom();
+    // jsdom does not implement confirm(); _createSetupItem gates on it.
+    window.confirm = jest.fn(() => true);
+  });
+
+  test('shows Ready when web search actually came up', async () => {
+    const { row } = await clickCreate({
+      success: true,
+      detail: 'Created role and activated web search: arn:aws:iam::1:role/r',
+      arn: 'arn:aws:iam::1:role/r',
+      webSearchReady: true,
+      webSearchError: null,
+    });
+
+    const badge = row.querySelector('.badge');
+    expect(badge.textContent).toBe('Ready');
+    expect(badge.className).toContain('bg-success');
+    expect(row.querySelector('button')).toBeNull();   // nothing left to do
+  });
+
+  test('does not claim Ready when web search did not start', async () => {
+    const { row } = await clickCreate({
+      success: true,
+      detail: 'Created role: arn:aws:iam::1:role/r',
+      arn: 'arn:aws:iam::1:role/r',
+      webSearchReady: false,
+      webSearchError: 'gateway CREATE_FAILED',
+    });
+
+    const badge = row.querySelector('.badge');
+    expect(badge.textContent).toBe('Needs attention');
+    expect(badge.className).toContain('bg-warning');
+    expect(badge.className).not.toContain('bg-success');
+  });
+
+  test('names the reason web search did not start', async () => {
+    const { row } = await clickCreate({
+      success: true, detail: 'Created role: arn', arn: 'arn',
+      webSearchReady: false, webSearchError: 'gateway CREATE_FAILED',
+    });
+
+    expect(row.querySelector('small').textContent).toContain('gateway CREATE_FAILED');
+  });
+
+  test('leaves a retry button when web search did not start', async () => {
+    const { row } = await clickCreate({
+      success: true, detail: 'Created role: arn', arn: 'arn',
+      webSearchReady: false, webSearchError: 'boom',
+    });
+
+    const btn = row.querySelector('button');
+    expect(btn).not.toBeNull();
+    expect(btn.textContent).toBe('Retry');
+    expect(btn.disabled).toBe(false);
+  });
+
+  test('still fills the role ARN field in Configuration', async () => {
+    await clickCreate({
+      success: true, detail: 'Created role: arn:aws:iam::1:role/r', arn: 'arn:aws:iam::1:role/r',
+      webSearchReady: true, webSearchError: null,
+    });
+
+    expect(document.getElementById('webSearchGatewayRoleArn').value).toBe('arn:aws:iam::1:role/r');
+  });
+
+  test('other items are unaffected by the web-search-specific handling', async () => {
+    // A bucket result carries no webSearchReady at all; it must still go green.
+    const { row } = await renderRowsAndCreate(
+      { transcriptionBucket: { status: 'missing', detail: 'absent' } },
+      { success: true, detail: 'Created bucket: b', bucketName: 'b' },
+    );
+
+    expect(row.querySelector('.badge').textContent).toBe('Ready');
+    expect(row.querySelector('.badge').className).toContain('bg-success');
+  });
+});
