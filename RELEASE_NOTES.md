@@ -1,5 +1,22 @@
 # Release Notes
 
+## v3.12.1
+
+### Fixes
+- **Web search stayed dead for the whole session on a brand-new install, behind a green tick.** A second failure, hidden behind the one v3.12.0 fixed: because the em-dash description bug blocked the step before it, nobody had ever got this far on a new install.
+  - Setup Check persists the Gateway role ARN by calling `settingsManager.saveSettings()` directly, which bypasses the `save-settings` IPC handler — and that handler is the only place that re-initialises web search when the role ARN changes. So the role was created, the ARN was stored, and `webSearchManager` stayed exactly as it had failed at startup (`roleArn required to create web search gateway`) until the app was restarted.
+  - The failure was invisible: the agent silently falls back to writing its own HTTP/scraping code via `execute_code`, which from the outside is indistinguishable from web search working. The only recoveries were restarting Hive or finding the retry button in Settings → Web Search.
+  - Setup Check now re-initialises web search itself, after the ARN is saved so the new role is the one used. Verified against real AWS that this is safe to do immediately: a freshly created role is accepted by `CreateGateway` on the first attempt, roughly 0.2s after `CreateRole`, so there is no IAM propagation delay to work around. The rest of the path was measured too — gateway `READY` in ~3.2s, web-search target accepted in ~0.2s — confirming nothing else downstream was broken.
+  - **The result no longer overstates itself.** Previously the item returned plain success and the row went green as soon as the role existed. It now reports whether web search actually came up; if it did not, the row reads "Needs attention", names the reason, and keeps a Retry button instead of removing it. A green tick over a dead feature is what made this bug invisible in the first place.
+
+### Tests
+- **Added a manual live AWS test for Setup Check** (`tests/integration/setup-check-live.js`, `npm run test:integration:aws`). v3.12.0 fixed a validation failure that stopped a brand-new install from creating the Web Search Gateway, but that bug reached a user because nothing exercises Setup Check against real AWS: every unit test mocks the SDK, so they can confirm Hive sends what Hive intends to send and never that AWS still accepts it. This closes that gap for the two Setup Check paths that send free-text metadata — `CreateRole` and `CreateMemory` — by calling the real functions rather than reimplementing them. The transcription buckets are excluded deliberately: `CreateBucket` has no free-text field, so there is nothing to catch, and throwaway buckets would pollute a global namespace.
+  - Pre-existence is checked first and anything already present is verified but never deleted, since testing the real path means using the real hardcoded resource names. Only resources the run created are cleaned up, inline policies before the role. Creation requires `ALLOW_AWS_WRITES=1` on top of working credentials, and the Memory check requires `INCLUDE_MEMORY=1` because it is billable and deletes asynchronously.
+  - Credentials come from the environment, never Hive's encrypted store — `safeStorage` is bound to the signed app's identity. Exits 0 with an explanation when unconfigured so it never blocks development; `REQUIRE_AWS_CREDS=1` makes that a hard failure if it is ever wired into CI.
+  - Manual by design, following the same plain-Node-script conventions as `mantle-live.js`. Not added to any workflow.
+- Added 7 tests to `setupWizardIpc.test.js` covering the re-initialisation: that it happens, that it happens *after* the ARN is saved, that a failure to come up is reported rather than hidden, that the role is still reported created when web search fails (it was), that a throwing `initializeWebSearch` does not fail the whole item, and that a context with no web search wiring still works. Mutation-verified: reverting to the shipped behaviour fails 5.
+- Added 6 tests to `settingsTab.test.js` for the row's honesty — green only when web search is genuinely up, "Needs attention" plus the reason and a Retry button when it is not, the role ARN field still populated, and other Setup Check items unaffected. Mutation-verified: restoring the always-green badge fails 3.
+
 ## v3.12.0
 
 ### Fixes

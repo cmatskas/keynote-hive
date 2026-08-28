@@ -70,6 +70,8 @@ The first time you launch Hive after saving AWS credentials, it checks your acco
 - **AgentCore Memory**: creates a Memory resource with semantic + summarization strategies for Work tab conversation memory.
 - **Code Interpreter Permission**: verifies your current AWS credentials can start an AgentCore Code Interpreter session (needed for Work/Swarm code execution and document attachments), by attempting a real, immediately-stopped session. Unlike the other items, there's nothing for Hive to *create* here — a failure means your own IAM role/user is missing a permission, not that a resource doesn't exist yet. If this reports "Action Required," click **View Instructions** for a ready-to-copy command that runs [`scripts/grant-hive-permissions.sh`](scripts/grant-hive-permissions.sh) — see [AWS Permissions Required](#aws-permissions-required) above for what it grants and why Hive doesn't attempt this automatically.
 
+Creating the Web Search Gateway item also starts web search straight away rather than waiting for the next launch, and the row only turns green if it genuinely came up — if it didn't, it says so, names the reason, and offers a retry.
+
 Re-run it anytime via Settings → Configuration → **Run Setup Check**. It's safe to run repeatedly — every item is checked before anything is created, so re-running never duplicates existing resources.
 
 Web search is currently only available in `us-east-1` — Hive always creates and calls the Gateway in that region regardless of your configured `region` setting. If Gateway creation or search calls fail after Setup Check reports it as ready, check Settings → Web Search for the current status and a retry button — the underlying error (permissions, throttling, region mismatch) is surfaced there.
@@ -266,6 +268,48 @@ Run it with `MANTLE_API_KEY=<your key> npm run test:integration`. It exits clean
 **In CI**, this runs in two places, both requiring the `MANTLE_API_KEY` repository secret to be configured in GitHub Settings → Secrets:
 - **Release pipeline** (`.github/workflows/release.yml`) — a `test` job (unit tests + this check) gates both the macOS and Windows build/publish jobs. A release cannot ship if Mantle routing is broken.
 - **Scheduled tests** (`.github/workflows/scheduled-tests.yml`) — runs daily (07:00 UTC) independently of any push or release, so a Mantle routing change is caught within a day even between releases. Also runnable on demand from the Actions tab.
+
+### Live AWS Setup Check test (manual)
+
+`tests/integration/setup-check-live.js` calls Setup Check's real resource-creation
+functions against real AWS. Like the Mantle check above, it exists because the unit
+tests mock the AWS SDK entirely — they verify Hive sends what Hive *intends* to send,
+but never that AWS still accepts it. That gap let a real failure reach a user: on a
+brand-new install, creating the Web Search Gateway died on
+`ValidationError: Value at 'description' failed to satisfy constraint`, because the
+IAM role's description contained an em dash (AWS permits only printable ASCII and
+Latin-1 in that field).
+
+It covers the two Setup Check paths that send free-text metadata to AWS — the IAM
+role (`CreateRole`) and AgentCore Memory (`CreateMemory`) — since those are the only
+ones exposed to that class of bug. The transcription buckets are excluded: `CreateBucket`
+has no free-text field, and throwaway buckets would pollute a global namespace for no
+coverage gain.
+
+```bash
+npm run test:integration:aws                     # dry run — reports what it would do, creates nothing
+ALLOW_AWS_WRITES=1 npm run test:integration:aws  # actually create, verify, and clean up
+ALLOW_AWS_WRITES=1 INCLUDE_MEMORY=1 npm run test:integration:aws   # also test Memory (billable)
+```
+
+Credentials come from the environment (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`,
+optionally `AWS_SESSION_TOKEN`), never from Hive's own encrypted store — `safeStorage`
+is bound to the signed app's identity, and a test has no business decrypting it. It
+exits 0 with an explanation if credentials are absent, so it never blocks normal
+development; set `REQUIRE_AWS_CREDS=1` to make that a hard failure instead.
+
+**Safety.** Testing the real path means using the real, hardcoded resource names, so
+pre-existence is checked first: anything that already exists is verified and reported
+but never deleted, and only resources this run created are cleaned up. Creation
+additionally requires `ALLOW_AWS_WRITES=1`, so nothing is provisioned by accident. If
+interrupted between create and delete, the leftover is exactly the role Setup Check
+would have created legitimately, and the next run treats it as pre-existing.
+
+Needs `iam:CreateRole`, `iam:PutRolePolicy`, `iam:GetRole`, `iam:DeleteRole`,
+`iam:DeleteRolePolicy`, plus `bedrock-agentcore:CreateMemory`/`DeleteMemory` for the
+memory check. Unlike the Mantle check, this is **not** wired into CI — it is manual by
+design, though adding it to the daily `scheduled-tests.yml` would cost nothing when
+nothing is broken, since the IAM path is free.
 
 ### Project Structure
 
