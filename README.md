@@ -111,10 +111,15 @@ Hive remembers its window size and position between launches (and won't restore 
 
 **Paused until the connection returns:** sending messages (Work, Chat), running Swarm pipelines, transcription, Save & Test Credentials, Setup Check, AgentCore Memory operations, and web search.
 
-While offline you'll see a banner below the navbar, and the controls that need AWS are disabled with a tooltip explaining why. Both clear automatically on reconnect, and the banner has a **Retry now** button if you'd rather not wait for the next check. If AWS has actually rejected your credentials — rather than the network being down — the banner says so and points you at Settings, since that's the part you can fix.
+While offline you'll see a banner below the navbar, and the controls that need AWS are disabled with a tooltip explaining why. Both clear automatically on reconnect, and the banner has a **Retry now** button if you'd rather not wait for the next check.
+
+The same applies when AWS rejects your credentials rather than the network being down: the banner says so and points you at Settings, and the AWS controls are disabled just as they are offline — the call would fail either way, so it's better to stop it than to lose a long prompt or a queued pipeline to it. The exception is the controls you need to *fix* it: Save & Test Credentials and Setup Check stay available. Hive keeps checking in the background and clears everything automatically once your new credentials work, so there's nothing to dismiss or restart.
+
+Hive does not warn you *before* credentials expire. It used to try, by reading an expiry out of the session token, but AWS session tokens are opaque blobs with no readable expiry and no API that returns one — so that warning never actually fired. Instead Hive checks once a minute and tells you promptly when they've gone, rather than pretending to predict it.
 
 Two behaviours worth knowing:
 
+- **Expired credentials no longer throw you out of the app.** Hive used to replace the whole UI with the credentials page a few seconds after noticing, which meant losing your tab, your scroll position and anything you had typed. It now tells you, disables what can't work, and leaves you where you were.
 - **Launching offline still opens the main app.** If credentials are already saved, Hive can't verify them without a connection, but it no longer treats that as "your credentials are bad" and sends you to the credentials page. You get the full UI with your work available.
 - **An in-flight transcription is not lost.** A job already accepted by AWS runs to completion server-side regardless of what Hive is doing, so losing the connection — or having your credentials expire mid-job — pauses Hive's polling rather than failing the job. It resumes automatically when the connection returns or when you save new credentials, and the transcript arrives as normal. Cancelling while offline still works: the job deletion is queued and sent on reconnect so it stops billing.
 

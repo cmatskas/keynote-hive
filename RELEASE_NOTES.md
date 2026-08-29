@@ -1,5 +1,30 @@
 # Release Notes
 
+## v3.12.2
+
+### Fixes
+- **Expired credentials no longer throw you out of the app.** Hive replaced the entire renderer with the credentials page about three seconds after noticing, discarding your current tab, your scroll position, any attachments and anything you had typed — in order to tell you something the banner was already saying. It now notifies, marks the credentials rejected, disables what cannot work, and leaves you exactly where you were. Startup routing is unchanged: launching with already-dead credentials still opens the credentials page, because at that point there is no work to lose.
+  - Removing the navigation also removed everything that existed to make it survivable: `_canNavigateNow()`, `_navigationDeferred`, `retryDeferredNavigation()` and the `shouldDeferNavigation` veto (which existed so a transcription mid-job wouldn't lose its result) are all gone.
+  - The monitor now keeps polling after expiry instead of stopping. That is what makes not navigating safe — it is the only thing that will notice the credentials being fixed, and it clears the banner and re-enables the controls automatically. Previously stopping was survivable only because the app navigated away and restarted the monitor on save.
+
+- **Controls that need AWS are now disabled when credentials are rejected, not just when offline.** `offlineGuard` gated purely on connectivity, so with a working network and dead credentials every AWS control stayed clickable — you could write a long prompt or queue a pipeline and lose it to a request that was never going to succeed. Gating is now on `awsAvailable()`, which means online **and** credentials not rejected.
+  - **The controls that fix credentials deliberately stay enabled** — Save & Test Credentials, Run Setup Check, and its refresh. Disabling those would have left the user reading a banner telling them to do something the UI had just prevented. They are still disabled when genuinely offline, where they cannot work either way.
+  - Tooltips name the real cause instead of blaming the network, and `setCredentialState()` now re-gates the controls rather than only repainting the banner.
+  - `requireAws(action)` replaces `requireOnline(action)` with a cause-appropriate message; `requireOnline` remains as an alias so existing call sites keep working, and now refuses for rejected credentials too.
+
+### Removals
+- **Deleted the advance-warning machinery, which had never worked.** `AWSValidator.parseTokenExpiry()` tried to base64-decode the STS session token as JSON and read an `exp` or `Expiration` field. AWS session tokens are opaque, encrypted blobs — not JWTs, not base64 JSON — and no API takes a token and returns its lifetime. So the parse failed on every real credential, every launch logged `could not parse token expiry — poll only`, and the T-15min and T-2min warning paths (`WARN_15_MS`, `WARN_2_MS`, `_handleWarn15`, `_handleWarn2`) were dead code that had never fired once in production.
+  - Predicting expiry needs a timestamp from outside the token: parsed from the credential paste, entered by the user, learned from history, or manufactured by re-minting the session via `AssumeRole` (which caps at 1 hour and would shorten a 12-hour Isengard session). None of those are free, so rather than leave broken prediction in place looking functional, prediction is gone and detection got better.
+
+### Improvements
+- **Credential checks now run once a minute instead of once every ten.** `GetCallerIdentity` is free and fast, so this bounds how long a dead credential can go unnoticed to about a minute. It is detection, not prediction — the call cannot report when a token *will* expire, only that it already has.
+- The credential banner is no longer dismissible while credentials are rejected, since everything needing AWS is disabled until it's fixed and hiding the only explanation would leave the UI inexplicable. It disappears by itself on recovery.
+
+### Tests
+- `credentialMonitor.test.js` rewritten around the new behaviour (16 tests): polling continues after expiry so recovery is noticed, recovery clears the warning, expiry is announced once however many polls confirm it, expiry/recovery/expiry cycles report correctly, a throwing `onExpired` doesn't break the monitor, and the poll interval is one minute. The five deferred-navigation tests were deleted along with the machinery they covered.
+- 15 tests added to `offlineGuard.test.js` for credential gating: AWS controls disabled on rejection, the fix-credentials carve-out enabled on rejection but disabled when offline, tooltips naming credentials rather than the network, the upload zone blocked, `setCredentialState()` gating controls, `awsAvailable()` reflecting both causes, a control disabled for its own reasons never wrongly re-enabled, and `requireAws`/`requireOnline` messages.
+- Mutation-verified all three load-bearing changes: gating on connectivity alone fails 8 tests, stopping the monitor on expiry fails 3, restoring the 10-minute poll fails 1.
+
 ## v3.12.1
 
 ### Fixes
