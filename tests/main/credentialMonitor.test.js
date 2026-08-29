@@ -1,16 +1,19 @@
 /**
- * Tests for CredentialMonitor's offline handling.
+ * Tests for CredentialMonitor.
  *
- * The behaviour under test is the one that used to destroy user work.
- * `_handleExpired()` replaces the renderer with the credentials page, throwing
- * away unsaved Work tab state and any in-flight UI. The 10-minute poll used to
- * reach that conclusion from any `valid: false`, and `quickValidate()` reported
- * a DNS failure as `valid: false` — so closing a laptop lid or switching
- * networks could silently wipe the user's work within 10 minutes, with no
- * action on their part.
+ * Two histories converge here.
  *
- * A transport failure must therefore pause the poll, never escalate to expiry;
- * and even a genuine expiry must not navigate while doing so would lose work.
+ * The poll used to conclude expiry from any `valid: false`, and quickValidate()
+ * reports a DNS failure that way — so closing a laptop lid could escalate to
+ * "your credentials expired" and, back when expiry replaced the renderer with
+ * the credentials page, silently wipe unsaved work. A transport failure must
+ * pause the poll, never escalate.
+ *
+ * Expiry itself is now reported rather than acted on: no navigation, and the
+ * monitor keeps polling afterwards so it can notice the credentials being fixed.
+ * The advance-warning paths (T-15min, T-2min) are gone — they depended on
+ * decoding an expiry out of the STS session token, which is an opaque blob, so
+ * they never fired once in production.
  */
 
 jest.mock('electron-log/main', () => ({
@@ -27,7 +30,6 @@ jest.mock('../../src/main/models/awsValidator', () => {
   const MockValidator = jest.fn().mockImplementation(() => ({
     quickValidate: mockQuickValidate,
   }));
-  MockValidator.parseTokenExpiry = jest.fn(() => null);
   return MockValidator;
 });
 
@@ -36,15 +38,14 @@ const CredentialMonitor = require('../../src/main/models/credentialMonitor');
 
 const CREDS = { accessKeyId: 'AKIA', secretAccessKey: 'secret', region: 'us-east-1' };
 
-function build({ online = true, deferNavigation = false } = {}) {
-  const state = { online, deferNavigation };
+function build({ online = true } = {}) {
+  const state = { online };
   const onExpired = jest.fn();
   const send = jest.fn();
   const monitor = new CredentialMonitor({
     getCredentials: () => CREDS,
     getMainWindow: () => ({ isDestroyed: () => false, webContents: { send } }),
     isOnline: () => state.online,
-    shouldDeferNavigation: () => state.deferNavigation,
     onExpired,
   });
   return { monitor, onExpired, send, state };
@@ -61,7 +62,6 @@ describe('CredentialMonitor offline handling', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
-    AWSValidator.parseTokenExpiry.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -158,11 +158,9 @@ describe('CredentialMonitor offline handling', () => {
     await monitor._runPollCheck();
 
     expect(bannerLevels(send)).toContain('expired');
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Session Expired' }));
-
-    // Navigation is deliberately delayed to let the renderer show the banner.
-    expect(onExpired).not.toHaveBeenCalled();
-    jest.advanceTimersByTime(3000);
+    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({ title: 'AWS Credentials Expired' }));
+    // Reported immediately — there is no longer a delay to let the user see a
+    // banner before the app navigated away, because it no longer navigates.
     expect(onExpired).toHaveBeenCalled();
   });
 
@@ -196,7 +194,7 @@ describe('CredentialMonitor offline handling', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Session Expired' }));
+    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({ title: 'AWS Credentials Expired' }));
   });
 
   test('resumeAfterOffline is a no-op when the monitor was never paused', async () => {
@@ -225,70 +223,104 @@ describe('CredentialMonitor offline handling', () => {
   });
 });
 
-describe('CredentialMonitor deferred navigation', () => {
+describe('CredentialMonitor expiry is non-destructive', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
-    AWSValidator.parseTokenExpiry.mockReturnValue(null);
   });
 
-  afterEach(() => {
-    jest.useRealTimers();
-  });
+  afterEach(() => jest.useRealTimers());
 
-  test('does not navigate while offline — the user is told, but keeps their work', async () => {
-    // Offline, the user can't validate new credentials anyway, so replacing the
-    // renderer would cost them their work for no benefit.
+  test('keeps polling after expiry, so recovery can be noticed', async () => {
+    // Previously _handleExpired() called stop(). That was only safe because the
+    // app navigated to the credentials page and restarted the monitor on save.
+    // With no navigation, stopping would leave a stale "expired" banner forever.
     mockQuickValidate.mockResolvedValue({ valid: false, offline: false, errors: ['Invalid'] });
-    const { monitor, onExpired, send, state } = build({ online: true });
+    const { monitor } = build();
+    monitor.start();
 
-    state.online = false;
-    monitor._handleExpired();
+    await monitor._runPollCheck();
+    expect(monitor.getCredentialState()).toBe('rejected');
 
+    mockQuickValidate.mockClear();
+    await monitor._runPollCheck();
+
+    expect(mockQuickValidate).toHaveBeenCalled();
+    monitor.stop();
+  });
+
+  test('clears the warning when the credentials work again', async () => {
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: false, errors: ['Invalid'] });
+    const { monitor, send } = build();
+    monitor.start();
+    await monitor._runPollCheck();
     expect(bannerLevels(send)).toContain('expired');
-    jest.advanceTimersByTime(10000);
-    expect(onExpired).not.toHaveBeenCalled();
+
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    await monitor._runPollCheck();
+
+    expect(bannerLevels(send)).toContain('ok');
+    expect(monitor.getCredentialState()).toBe('valid');
+    monitor.stop();
   });
 
-  test('runs the deferred navigation once connectivity returns', () => {
-    const { monitor, onExpired, state } = build({ online: false });
+  test('announces expiry only once, however many polls confirm it', async () => {
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: false, errors: ['Invalid'] });
+    const { monitor, send } = build();
+    monitor.start();
 
-    monitor._handleExpired();
-    expect(onExpired).not.toHaveBeenCalled();
+    await monitor._runPollCheck();
+    await monitor._runPollCheck();
+    await monitor._runPollCheck();
 
-    state.online = true;
-    monitor.resumeAfterOffline();
-
-    expect(onExpired).toHaveBeenCalled();
+    expect(bannerLevels(send).filter(l => l === 'expired')).toHaveLength(1);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    monitor.stop();
   });
 
-  test('a caller can veto navigation — e.g. a transcription mid-job', () => {
-    // Navigating would discard a transcript the main process is about to
-    // retrieve successfully.
-    const { monitor, onExpired, state } = build({ online: true, deferNavigation: true });
+  test('can report expiry, recovery, and expiry again', async () => {
+    const { monitor, send } = build();
+    monitor.start();
 
-    monitor._handleExpired();
-    jest.advanceTimersByTime(10000);
-    expect(onExpired).not.toHaveBeenCalled();
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: false, errors: ['Invalid'] });
+    await monitor._runPollCheck();
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    await monitor._runPollCheck();
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: false, errors: ['Invalid'] });
+    await monitor._runPollCheck();
 
-    // Once the transcription finishes, the veto lifts.
-    state.deferNavigation = false;
-    monitor.retryDeferredNavigation();
-    expect(onExpired).toHaveBeenCalled();
+    expect(bannerLevels(send)).toEqual(['expired', 'ok', 'expired']);
+    monitor.stop();
   });
 
-  test('retryDeferredNavigation does nothing when no navigation is outstanding', () => {
-    const { monitor, onExpired } = build();
-    monitor.retryDeferredNavigation();
-    expect(onExpired).not.toHaveBeenCalled();
+  test('a throwing onExpired does not break the monitor', async () => {
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: false, errors: ['Invalid'] });
+    const monitor = new CredentialMonitor({
+      getCredentials: () => CREDS,
+      getMainWindow: () => ({ isDestroyed: () => false, webContents: { send: jest.fn() } }),
+      onExpired: () => { throw new Error('boom'); },
+    });
+    monitor.start();
+
+    await expect(monitor._runPollCheck()).resolves.toBeUndefined();
+    expect(monitor.getCredentialState()).toBe('rejected');
+    monitor.stop();
   });
 
-  test('retryDeferredNavigation stays deferred while the veto holds', () => {
-    const { monitor, onExpired } = build({ online: true, deferNavigation: true });
-    monitor._handleExpired();
+  test('polls once a minute, so a dead credential is noticed promptly', async () => {
+    // Detection, not prediction: GetCallerIdentity cannot say when a token will
+    // expire, only that it already has, so the interval bounds the delay.
+    expect(CredentialMonitor.POLL_INTERVAL_MS).toBe(60 * 1000);
 
-    monitor.retryDeferredNavigation();
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    const { monitor } = build();
+    monitor.start();
+    mockQuickValidate.mockClear();
 
-    expect(onExpired).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(60 * 1000);
+    await Promise.resolve();
+
+    expect(mockQuickValidate).toHaveBeenCalledTimes(1);
+    monitor.stop();
   });
 });
