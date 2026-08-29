@@ -25,7 +25,6 @@ jest.mock('../../src/main/models/awsValidator', () => {
   const MockValidator = jest.fn().mockImplementation(() => ({
     quickValidate: mockQuickValidate,
   }));
-  MockValidator.parseTokenExpiry = jest.fn(() => null);
   return MockValidator;
 });
 
