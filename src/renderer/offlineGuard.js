@@ -40,10 +40,16 @@
     // Transcription
     { id: 'uploadZone',           reason: 'Transcription needs an internet connection.' },
     { id: 'fileInput',            reason: 'Transcription needs an internet connection.' },
-    // Credentials + setup
-    { id: 'saveCredBtn',          reason: 'Credentials can only be tested online.' },
-    { id: 'runSetupCheckBtn',     reason: 'Setup Check needs an internet connection.' },
-    { id: 'setupCheckRefreshBtn', reason: 'Setup Check needs an internet connection.' },
+    // Credentials + setup.
+    //
+    // `fixesCredentials` marks the controls that are how you RECOVER from
+    // rejected credentials. Disabling those when AWS has rejected your keys
+    // would leave the user staring at a banner telling them to do something the
+    // UI had just prevented. They are still disabled when genuinely offline,
+    // where they cannot work either way.
+    { id: 'saveCredBtn',          reason: 'Credentials can only be tested online.', fixesCredentials: true },
+    { id: 'runSetupCheckBtn',     reason: 'Setup Check needs an internet connection.', fixesCredentials: true },
+    { id: 'setupCheckRefreshBtn', reason: 'Setup Check needs an internet connection.', fixesCredentials: true },
     { id: 'webSearchRetryBtn',    reason: 'Web search setup needs an internet connection.' },
     { id: 'transcriptionReconcileBtn', reason: 'Looking for past transcriptions needs an internet connection.' },
     // AgentCore Memory
@@ -60,6 +66,9 @@
     'Hive is offline. Your conversations, work history, skills and showflows are all stored ' +
     'locally and remain fully available. Anything that calls AWS — sending messages, running ' +
     'pipelines, and transcription — is paused until the connection returns.';
+
+  const CREDENTIALS_REJECTED_REASON =
+    'AWS rejected your credentials. Update them in Settings > Credentials.';
 
   let online = true;
   // 'valid' | 'rejected' | 'unknown' — reported by the main process so the banner
@@ -157,18 +166,37 @@
 
   // ── Control gating ───────────────────────────────────────────────────────
 
+  /**
+   * Can Hive actually reach AWS successfully right now?
+   *
+   * Rejected credentials are just as disqualifying as no network: the request
+   * will fail either way. Gating on connectivity alone meant that with valid
+   * network and dead credentials every AWS control stayed clickable, so a
+   * long-typed prompt or a queued pipeline could be lost to a request that was
+   * never going to succeed.
+   */
+  function awsAvailable() {
+    return online && credentialState !== 'rejected';
+  }
+
   function applyToControls() {
-    NETWORK_CONTROLS.forEach(({ id, reason }) => {
+    const blockedByCredentials = online && credentialState === 'rejected';
+
+    NETWORK_CONTROLS.forEach(({ id, reason, fixesCredentials }) => {
       const el = document.getElementById(id);
       if (!el) return; // not every control exists on every page
 
-      if (!online) {
+      // The way out of a credentials problem must stay open.
+      const block = blockedByCredentials ? !fixesCredentials : !online;
+      const why = blockedByCredentials ? CREDENTIALS_REJECTED_REASON : reason;
+
+      if (block) {
         // Don't touch (or later restore) something already disabled elsewhere.
         if (el.disabled || el.classList.contains('offline-disabled')) return;
         el.disabled = true;
         el.classList.add('offline-disabled');
         if (el.title) el.dataset.offlinePrevTitle = el.title;
-        el.title = reason;
+        el.title = why;
         disabledByUs.add(id);
       } else if (disabledByUs.has(id)) {
         el.disabled = false;
@@ -186,7 +214,7 @@
     // The upload zone is a div, so `disabled` means nothing to it — block the
     // click affordance explicitly.
     const uploadZone = document.getElementById('uploadZone');
-    if (uploadZone) uploadZone.classList.toggle('offline-blocked', !online);
+    if (uploadZone) uploadZone.classList.toggle('offline-blocked', !awsAvailable());
   }
 
   function setOnline(next) {
@@ -211,7 +239,13 @@
     setCredentialState(next) {
       credentialState = next || 'unknown';
       renderBanner();
+      // Previously this only repainted the banner, so rejected credentials
+      // changed the wording while leaving every AWS control clickable.
+      applyToControls();
     },
+
+    /** True when a request to AWS could actually succeed right now. */
+    awsAvailable,
 
     retryNow,
 
@@ -225,11 +259,21 @@
      * Guard an action that needs the network. Returns true when it's safe to
      * proceed; otherwise shows a toast explaining why and returns false.
      */
-    requireOnline(action = 'This action') {
-      if (online) return true;
-      const message = `${action} needs an internet connection — Hive is offline.`;
+    requireAws(action = 'This action') {
+      if (awsAvailable()) return true;
+      const message = online
+        ? `${action} needs working AWS credentials — update them in Settings > Credentials.`
+        : `${action} needs an internet connection — Hive is offline.`;
       if (window.electronAPI?.showToast) window.electronAPI.showToast(message, 'warning');
       return false;
+    },
+
+    /**
+     * Older name, kept so existing call sites keep working. Now refuses for
+     * rejected credentials too, which is the point.
+     */
+    requireOnline(action = 'This action') {
+      return OfflineGuard.requireAws(action);
     },
 
     /** Re-apply gating — call after injecting controls that render late. */
@@ -251,7 +295,10 @@
 
       window.electronAPI.receive('connectivity-changed', (payload) => {
         if (payload && payload.credentialState) credentialState = payload.credentialState;
+        // setOnline() only notifies listeners when `online` itself changed, but
+        // the credential verdict can change on its own — so re-gate explicitly.
         setOnline(payload?.online !== false);
+        applyToControls();
       });
 
       // The browser's own events fire sooner than the main process's recheck

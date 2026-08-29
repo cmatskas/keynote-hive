@@ -863,22 +863,30 @@ document.getElementById('nav-showflow')?.addEventListener('click', () => {
   const dismissBtn = document.getElementById('credentialWarningDismiss');
   if (!banner) return;
 
-  window.electronAPI.receive('credential-expiry-warning', ({ level, minsLeft }) => {
-    banner.className = 'alert mb-0 rounded-0 align-items-center py-2 px-3';
-    if (level === 'expired') {
-      banner.classList.add('alert-danger');
-      text.textContent = 'Your AWS credentials have expired. Please update them to continue.';
-      dismissBtn.style.display = 'none';
-    } else if (level === 'critical') {
-      banner.classList.add('alert-danger');
-      text.textContent = `Your AWS credentials expire in ~${minsLeft} minute${minsLeft !== 1 ? 's' : ''}. Update now to avoid interruption.`;
-      dismissBtn.style.display = '';
-    } else {
-      banner.classList.add('alert-warning');
-      text.textContent = `Your AWS credentials expire in ~${minsLeft} minutes.`;
-      dismissBtn.style.display = '';
+  // Only two levels now. The T-15min and T-2min warnings are gone: they relied
+  // on decoding an expiry out of the STS session token, which is an opaque blob,
+  // so they never fired once in production. 'ok' exists because the monitor
+  // keeps polling after expiry and can tell us the credentials work again —
+  // previously the app navigated away instead, so there was nothing to clear.
+  window.electronAPI.receive('credential-expiry-warning', ({ level }) => {
+    if (level === 'ok') {
+      banner.style.display = 'none';
+      window.OfflineGuard?.setCredentialState('valid');
+      return;
     }
+
+    banner.className = 'alert mb-0 rounded-0 align-items-center py-2 px-3 alert-danger';
+    text.textContent =
+      'AWS rejected your credentials. Update them in Settings > Credentials to continue — '
+      + 'your conversations, work history and settings are all safe.';
+    // Not dismissible: everything that needs AWS is disabled until this is
+    // fixed, so hiding the only explanation would leave the UI inexplicable.
+    dismissBtn.style.display = 'none';
     banner.style.display = 'flex';
+
+    // Disable the controls that would fail, so a long prompt or a queued
+    // pipeline isn't lost to a request that cannot succeed.
+    window.OfflineGuard?.setCredentialState('rejected');
   });
 
   updateBtn.addEventListener('click', () => {

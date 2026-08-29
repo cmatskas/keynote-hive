@@ -141,13 +141,17 @@ function createCredentialsWindow() {
  * has to happen on reconnect. Everything here is best-effort: a failure in one
  * reconnect task must not prevent the others or the banner update.
  */
-function handleConnectivityChange(online) {
+function broadcastConnectivity(online = ctx.isOnline()) {
   if (ctx.mainWindow && !ctx.mainWindow.isDestroyed()) {
     ctx.mainWindow.webContents.send('connectivity-changed', {
       online,
       credentialState: ctx.credentialState(),
     });
   }
+}
+
+function handleConnectivityChange(online) {
+  broadcastConnectivity(online);
 
   if (!online) return;
 
@@ -190,21 +194,17 @@ ctx.startCredentialMonitor = function () {
     // Veto the destructive navigation while a transcription is mid-flight:
     // the job's result would be lost with the renderer, and the user is far
     // better served by the banner plus Settings → Credentials in place.
-    shouldDeferNavigation: () => !!ctx.transcriptionJob,
     // A real answer from AWS proves the network works, whatever the connectivity
     // monitor currently believes — so let it re-check rather than staying wrong.
     onReachedAws: () => ctx.connectivityMonitor?.recheck().catch(() => {}),
+    // Expiry is reported, not acted on. This used to tear down the main window
+    // and load the credentials page, discarding unsaved Work tab state and
+    // attachments in order to tell the user something the banner already says.
+    // The renderer now disables everything that needs AWS and points at
+    // Settings > Credentials, and the monitor keeps polling so recovery is
+    // picked up automatically.
     onExpired: () => {
-      if (ctx.credentialMonitor) { ctx.credentialMonitor.stop(); ctx.credentialMonitor = null; }
-      if (ctx.mainWindow && !ctx.mainWindow.isDestroyed()) {
-        const credsSaved = windowState.load('credentials', CREDS_MIN);
-        const credsSize = credsSaved || fitToScreen(CREDS_PREFERRED, CREDS_MIN);
-        ctx.mainWindow.setMinimumSize(CREDS_MIN.width, CREDS_MIN.height);
-        ctx.mainWindow.setSize(credsSize.width, credsSize.height);
-        if (credsSaved) ctx.mainWindow.setPosition(credsSaved.x, credsSaved.y);
-        else ctx.mainWindow.center();
-        ctx.mainWindow.loadFile('src/pages/credentials.html');
-      }
+      broadcastConnectivity();
     },
   });
   ctx.credentialMonitor.start();

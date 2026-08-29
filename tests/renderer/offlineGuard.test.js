@@ -432,3 +432,180 @@ describe('OfflineGuard OS event forwarding', () => {
     expect(mockElectronAPI.invoke).toHaveBeenCalledWith('renderer-connectivity-hint');
   });
 });
+
+
+/**
+ * Rejected credentials must disable the same AWS controls that being offline
+ * does — the request fails either way, and leaving them clickable meant a
+ * long-typed prompt or a queued pipeline could be lost to a call that was never
+ * going to succeed.
+ *
+ * The exception matters as much as the rule: the controls that are how you FIX
+ * credentials have to stay usable, or the banner tells the user to do something
+ * the UI has just prevented.
+ */
+describe('OfflineGuard gating on rejected credentials', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  /** Deliver a credential verdict the way the main process would. */
+  const reject = () => receiveHandler('connectivity-changed')({ online: true, credentialState: 'rejected' });
+  const accept = () => receiveHandler('connectivity-changed')({ online: true, credentialState: 'valid' });
+
+  const FIX_CREDENTIALS = ['saveCredBtn', 'runSetupCheckBtn', 'setupCheckRefreshBtn'];
+  const BLOCKED = NETWORK_BUTTONS.filter(id => !FIX_CREDENTIALS.includes(id));
+
+  test('disables AWS controls while online but rejected', async () => {
+    await loadGuard();
+    expect(document.getElementById('workSendBtn').disabled).toBe(false);
+
+    reject();
+
+    BLOCKED.forEach(id => {
+      expect(document.getElementById(id).disabled).toBe(true);
+    });
+  });
+
+  test('keeps the controls that fix credentials usable', async () => {
+    // Disabling these would trap the user: the banner says "update them in
+    // Settings" and the button to do it would be greyed out.
+    await loadGuard();
+
+    reject();
+
+    FIX_CREDENTIALS.forEach(id => {
+      expect(document.getElementById(id).disabled).toBe(false);
+    });
+  });
+
+  test('still disables those same controls when genuinely offline', async () => {
+    // They cannot work without a network either, so the carve-out is specific to
+    // the credentials case.
+    await loadGuard();
+
+    goOffline();
+
+    FIX_CREDENTIALS.forEach(id => {
+      expect(document.getElementById(id).disabled).toBe(true);
+    });
+  });
+
+  test('explains credentials rather than blaming the network', async () => {
+    await loadGuard();
+
+    reject();
+
+    const title = document.getElementById('workSendBtn').title;
+    expect(title).toMatch(/credentials/i);
+    expect(title).not.toMatch(/internet connection/i);
+  });
+
+  test('re-enables everything once the credentials work again', async () => {
+    await loadGuard();
+    reject();
+    expect(document.getElementById('workSendBtn').disabled).toBe(true);
+
+    accept();
+
+    NETWORK_BUTTONS.forEach(id => {
+      expect(document.getElementById(id).disabled).toBe(false);
+    });
+  });
+
+  test('leaves purely local controls alone', async () => {
+    await loadGuard();
+
+    reject();
+
+    LOCAL_CONTROLS.forEach(id => {
+      expect(document.getElementById(id).disabled).toBe(false);
+    });
+  });
+
+  test('blocks the upload zone, which is a div and ignores disabled', async () => {
+    await loadGuard();
+
+    reject();
+
+    expect(document.getElementById('uploadZone').classList.contains('offline-blocked')).toBe(true);
+  });
+
+  test('setCredentialState gates controls, not just the banner', async () => {
+    // This previously only repainted the banner, so the wording changed while
+    // every control stayed live.
+    const guard = await loadGuard();
+
+    guard.setCredentialState('rejected');
+
+    expect(document.getElementById('workSendBtn').disabled).toBe(true);
+  });
+
+  test('awsAvailable() reflects both causes', async () => {
+    const guard = await loadGuard();
+    expect(guard.awsAvailable()).toBe(true);
+
+    reject();
+    expect(guard.awsAvailable()).toBe(false);
+    expect(guard.isOnline()).toBe(true);   // connectivity itself is fine
+
+    accept();
+    expect(guard.awsAvailable()).toBe(true);
+
+    goOffline();
+    expect(guard.awsAvailable()).toBe(false);
+  });
+
+  test('does not re-enable a control that was disabled for its own reasons', async () => {
+    // e.g. a Send button disabled mid-request must stay disabled.
+    await loadGuard();
+    const btn = document.getElementById('workSendBtn');
+    btn.disabled = true;
+
+    reject();
+    accept();
+
+    expect(btn.disabled).toBe(true);
+  });
+});
+
+describe('OfflineGuard.requireAws', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('allows the action when AWS is reachable', async () => {
+    const guard = await loadGuard();
+    expect(guard.requireAws('Sending a message')).toBe(true);
+  });
+
+  test('refuses and names credentials when they are rejected', async () => {
+    const guard = await loadGuard();
+    receiveHandler('connectivity-changed')({ online: true, credentialState: 'rejected' });
+
+    expect(guard.requireAws('Sending a message')).toBe(false);
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/credentials/i),
+      'warning',
+    );
+  });
+
+  test('refuses and names the network when offline', async () => {
+    const guard = await loadGuard();
+    goOffline();
+
+    expect(guard.requireAws('Sending a message')).toBe(false);
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/internet connection/i),
+      'warning',
+    );
+  });
+
+  test('requireOnline still works and now covers rejected credentials too', async () => {
+    // Kept as an alias so existing call sites did not all have to change.
+    const guard = await loadGuard();
+    receiveHandler('connectivity-changed')({ online: true, credentialState: 'rejected' });
+
+    expect(guard.requireOnline('Sending a message')).toBe(false);
+  });
+});
