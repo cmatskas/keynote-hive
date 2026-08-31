@@ -8,7 +8,8 @@ An Electron desktop app that combines AI models served via Amazon Bedrock's Mant
 - 🐝 **Swarm Tab** — Multi-agent pipelines for articles, keynotes, speeches, and demo storyboards with quality rubric evaluation
 - 💬 **Chat Tab** — Conversational AI analysis with conversation history and file attachments
 - 🎵 **Transcribe Tab** — Audio/video transcription via AWS Transcribe with speaker labels, timestamps, and a searchable history of past transcripts
-- 🧠 **17 Agent Skills** — Copy editing, copywriting, research, marketing psychology, document creation, generative art, and more
+- 🎨 **StoryBrand Tab** — Upload a keynote script or outline and see every paragraph colour-coded against the seven StoryBrand elements, with a qualitative audit and self-contained HTML export
+- 🧠 **18 Agent Skills** — Copy editing, copywriting, research, marketing psychology, StoryBrand messaging, document creation, generative art, and more
 - 🎯 **Quality Rubrics** — Weighted criteria with penalty scoring, brief-specific adaptation, and adaptive learning from past runs
 - ⚙️ **Model Management** — Configure Mantle-served models and assign pipeline roles (creator/worker/formatter) from the UI
 - 📊 **Quality Analytics** — Dashboard showing pass rates, criteria heatmaps, and actionable insights across pipeline runs
@@ -107,9 +108,9 @@ Hive stays usable without a connection. Everything it stores — conversations, 
 
 Hive remembers its window size and position between launches (and won't restore onto a monitor you've since unplugged).
 
-**Works offline:** browsing, searching, loading and deleting conversations; Work tab history; creating and editing skills; saving settings; showflow new/open/save/import/export; downloading and copying an existing transcript; switching theme.
+**Works offline:** browsing, searching, loading and deleting conversations; Work tab history; creating and editing skills; saving settings; showflow new/open/save/import/export; downloading and copying an existing transcript; switching theme; reading a file into the StoryBrand tab, and opening, searching and exporting a saved StoryBrand analysis.
 
-**Paused until the connection returns:** sending messages (Work, Chat), running Swarm pipelines, transcription, Save & Test Credentials, Setup Check, AgentCore Memory operations, and web search.
+**Paused until the connection returns:** sending messages (Work, Chat), running Swarm pipelines, transcription, StoryBrand analysis, Save & Test Credentials, Setup Check, AgentCore Memory operations, and web search.
 
 While offline you'll see a banner below the navbar, and the controls that need AWS are disabled with a tooltip explaining why. Both clear automatically on reconnect, and the banner has a **Retry now** button if you'd rather not wait for the next check.
 
@@ -127,20 +128,21 @@ An in-flight Work or Swarm run is deliberately left to fail on its own rather th
 
 ## Which Tab Should I Use?
 
-| | **Work** | **Swarm** | **Chat** |
-|---|---|---|---|
-| **Best for** | One-off tasks with back-and-forth iteration | Polished, publication-ready content | Quick questions and document analysis |
-| **Agent count** | 1 (you + the agent) | 6–7 specialized agents | 1 (single model call) |
-| **Tools** | Code execution, web browsing, file I/O, image generation | Code execution, web browsing, file I/O, image generation | None — text only |
-| **Output files** | `.docx`, `.pptx`, `.xlsx`, images | `.docx`, `.pptx` (formatted by dedicated agent) | None |
-| **Iteration** | Unlimited — keep refining across messages | Guided — review points between agents | Conversational |
-| **Memory** | Persistent across conversations (via AgentCore Memory) | Per-pipeline only | Per-conversation only |
-| **Cost** | Medium (one model, multiple tool calls) | Higher (multiple models, 6–7 agent turns) | Lowest (single model call) |
+| | **Work** | **Swarm** | **Chat** | **StoryBrand** |
+|---|---|---|---|---|
+| **Best for** | One-off tasks with back-and-forth iteration | Polished, publication-ready content | Quick questions and document analysis | Diagnosing the story structure of a script you already have |
+| **Agent count** | 1 (you + the agent) | 6–7 specialized agents | 1 (single model call) | 1 (single model call) |
+| **Tools** | Code execution, web browsing, file I/O, image generation | Code execution, web browsing, file I/O, image generation | None — text only | None — text only |
+| **Output files** | `.docx`, `.pptx`, `.xlsx`, images | `.docx`, `.pptx` (formatted by dedicated agent) | None | Self-contained `.html` |
+| **Iteration** | Unlimited — keep refining across messages | Guided — review points between agents | Conversational | Revise the script elsewhere, re-upload as a new revision |
+| **Memory** | Persistent across conversations (via AgentCore Memory) | Per-pipeline only | Per-conversation only | Every analysis saved locally and searchable |
+| **Cost** | Medium (one model, multiple tool calls) | Higher (multiple models, 6–7 agent turns) | Lowest (single model call) | Lowest (single model call) |
 
 **Rules of thumb:**
 - "Create me a document / analyze this file / build something" → **Work**
 - "Write a polished article / keynote / speech from this brief" → **Swarm**
 - "What does this document say? / Explain X / Summarize Y" → **Chat**
+- "Does my keynote actually tell a story? / Where are the gaps?" → **StoryBrand**
 
 ## Work Tab
 
@@ -222,16 +224,30 @@ Transcription runs in the background — it doesn't block the UI. Progress appea
 
 If the connection drops or your credentials expire while a job is running, Hive pauses instead of failing — see [Working Offline](#working-offline).
 
+## StoryBrand Tab
+
+Upload a keynote script or a detailed outline and Hive classifies every paragraph against the seven [StoryBrand SB7](https://storybrand.com/) elements, then shows the script back to you colour-coded — Character in blue, Problem in red, Guide in green, Plan in gold, Call to Action in orange, Stakes in purple, Success in teal. A sticky card beside the text explains whichever element you're currently reading, and a Colour/Plain toggle drops the colours when you just want to read.
+
+Accepts `.txt`, `.md`, `.docx` and `.pptx`, or text pasted straight in. **Your text is read locally and never rewritten.** Extraction happens on your machine — no model and no sandbox is involved in splitting the document into paragraphs — and the analysis only ever returns a mapping of paragraph number to element. Every word displayed is the word you uploaded. PDF isn't supported; export to `.docx` or paste the text.
+
+Alongside the colours you get a qualitative **audit**: each element marked strong, weak or missing, with what was found, what's wrong, and a specific fix, plus what's working and the highest-impact changes. An outline's bullet and its sub-points are treated as one unit, so a nested list doesn't become a wall of one-line colour changes.
+
+**The view is read-only, and deliberately so.** Hive isn't a script editor — you revise in whatever you actually write in, then re-upload. Uploading a file Hive has analysed before automatically links the new analysis to the previous one and labels it "Revision 2 of 2", so you can see whether a rewrite fixed the section it was meant to. Pasted text is never chained, since it has no filename to match on. **Re-analyse** re-runs the model over the same text, which is useful for switching model or when a classification looks wrong.
+
+Analyses are saved locally, listed newest-first with a colour bar showing the shape of the story, and searchable by phrase — not just by name, so you can find a keynote by something said in it. Everything except the one analysis call works offline. **Export** writes a single self-contained HTML file with no external references, so it renders identically on someone else's machine or in two years.
+
+Classification is not deterministic, which is why each analysis is stored rather than recomputed: what you saw yesterday is what you see today. Re-analysing the same script can move a transitional paragraph between elements, and every paragraph is assigned one — there is no "unclassified" state, so a purely structural line like "Let's jump in." will land somewhere.
+
 ## Agent Skills
 
-17 bundled skills available in Settings → Skills:
+18 bundled skills available in Settings → Skills:
 
 | Category | Skills |
 |---|---|
 | Documents | `docx`, `pptx`, `xlsx`, `pdf` |
 | Writing | `copywriting`, `copy-editing`, `doc-coauthoring` |
 | Research | `research-first`, `customer-research`, `analysis-framework` |
-| Strategy | `task-planner`, `launch-strategy`, `marketing-psychology` |
+| Strategy | `task-planner`, `launch-strategy`, `marketing-psychology`, `storybrand` |
 | Creative | `algorithmic-art`, `demo-storyboard` |
 | Utility | `self-correction`, `web-browse` |
 
@@ -324,7 +340,7 @@ src/
 ├── renderer/          # Frontend: tab controllers, UI logic
 ├── pages/             # HTML
 └── styles/            # CSS
-skills/                # 17 bundled agent skills
+skills/                # 18 bundled agent skills
 tests/                 # Jest test suites
 ```
 
