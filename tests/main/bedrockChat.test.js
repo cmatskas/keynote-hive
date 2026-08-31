@@ -36,6 +36,10 @@ jest.mock('../../src/main/models/strandsAgentFactory', () => ({
 
 const mockBuildFileContentBlocks = jest.fn(async () => []);
 jest.mock('../../src/main/utils', () => ({
+  // Only the file-block builder is stubbed. collectStreamText is passed through
+  // deliberately: it is the shared stream accumulator, and these tests are the
+  // best coverage of it against real SDK event shapes.
+  ...jest.requireActual('../../src/main/utils'),
   buildFileContentBlocks: (...args) => mockBuildFileContentBlocks(...args),
 }));
 

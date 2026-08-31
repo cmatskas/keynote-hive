@@ -3,7 +3,7 @@ const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const transcriptionRunner = require('../models/transcriptionRunner');
 const transcriptionReconciler = require('../models/transcriptionReconciler');
 const { createAgent, isAnthropicModel } = require('../models/strandsAgentFactory');
-const { buildFileContentBlocks } = require('../utils');
+const { buildFileContentBlocks, collectStreamText } = require('../utils');
 const logger = require('electron-log/main');
 
 /**
@@ -67,18 +67,28 @@ async function invokeChatModel(ctx, model, prompt, conversationHistory, files = 
   try {
     // cancelSignal gives the SDK real cancellation: it aborts the in-flight
     // model HTTP request rather than waiting for the next stream event to
-    // arrive (which, for reasoning models, can be a long gap). The in-loop
-    // aborted check is kept as a cheap fallback.
-    for await (const streamEvent of agent.stream(userInput, { cancelSignal: signal ?? undefined })) {
-      if (signal?.aborted) break;
-      if (streamEvent.type === 'modelStreamUpdateEvent') {
-        const inner = streamEvent.event;
-        if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
-          fullText += inner.delta.text;
-          if (event) event.sender.send('bedrock-stream-chunk', inner.delta.text);
-        }
-      }
-    }
+    // arrive (which, for reasoning models, can be a long gap). The signal is
+    // also passed to the accumulator as a cheap in-loop fallback.
+    //
+    // Accumulation goes through the shared helper so this path and the
+    // StoryBrand analyzer cannot drift apart on the SDK's event shape. They did:
+    // the analyzer shipped with its own guessed-at shape and silently
+    // accumulated nothing, which surfaced as every model "not returning usable
+    // JSON".
+    // Accumulated via onDelta rather than from the return value, so a mid-stream
+    // throw keeps whatever arrived first. A user-requested stop surfaces as a
+    // thrown AbortError on some paths, and the partial answer is what the user
+    // asked to keep — taking the return value would discard it.
+    await collectStreamText(
+      agent.stream(userInput, { cancelSignal: signal ?? undefined }),
+      {
+        signal,
+        onDelta: (delta) => {
+          fullText += delta;
+          if (event) event.sender.send('bedrock-stream-chunk', delta);
+        },
+      },
+    );
   } catch (err) {
     // A user-requested stop can surface as a thrown AbortError on some
     // paths — treat it as a graceful stop (partial text, stream-complete

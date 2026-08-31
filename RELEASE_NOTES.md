@@ -1,5 +1,21 @@
 # Release Notes
 
+## v4.0.1
+
+### Fixes
+- **StoryBrand analysis failed on every model.** Reported against both Claude Fable 5 and Google Gemma with `The model did not return usable JSON`. The parse was never the problem: the analyzer read the model stream with a chunk shape it had invented, so it accumulated **zero characters** and then reported the empty string as unparseable. Two unrelated model families failing identically was the tell — that pattern points at the caller, not the models.
+  - The SDK's real event shape is three levels deep: `{ type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } } }`. Five existing call sites in the app all read it correctly; the analyzer was the sixth and got it wrong.
+  - **Why the tests did not catch it:** they mocked the same shape the implementation guessed at. A mock that encodes your own assumption verifies nothing — it will agree with the code no matter how wrong both are. The analyzer tests now emit the real shape, using the same event helper the Chat tests already used, and interleave the lifecycle, reasoning and tool events a real stream carries. Reverting to the shipped code now fails 14 of them.
+  - Accumulation moved into one shared helper, `collectStreamText` in `src/main/utils.js`, so a seventh call site cannot get it wrong. It lives in `utils` rather than beside `createAgent()` deliberately: it is pure async-iteration logic with no SDK dependency, and `strandsAgentFactory` imports the pure-ESM SDK, which makes anything requiring it unusable from a Jest test without mocking the package away. Keeping it SDK-free means the tests exercise the real accumulator instead of a mock of it.
+  - The Chat path now uses the same helper. Its existing tests immediately caught a regression that refactor introduced: taking the accumulated text from the return value loses it when the stream throws mid-way, and a user-requested stop is exactly the case where the partial answer is the thing worth keeping. Callers that need partial output accumulate via `onDelta`, which is now documented on the helper.
+
+### Improvements
+- **The failure messages are diagnosable now.** An empty response and an unparseable one are reported differently — conflating them is what sent this bug's diagnosis at the parser. An unparseable reply quotes the first 200 characters of what actually came back, and both messages name the model, so a bug report identifies it without the user having to remember.
+
+### Tests
+- 7 tests for `collectStreamText`: delta joining, ignoring the non-text events a real stream carries, empty streams, `onDelta`, abort mid-stream, partial text surviving a throw, and malformed events. Mutation-verified: accepting any delta type instead of only `textDelta` fails 2.
+- The Chat tests now pass the real accumulator through instead of stubbing all of `utils`, making them the best coverage of it against real event shapes.
+
 ## v4.0.0
 
 ### New Features
