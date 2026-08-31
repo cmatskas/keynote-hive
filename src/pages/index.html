@@ -85,6 +85,11 @@
                     <li class="nav-item">
                         <a id="nav-showflow" class="nav-link" href="#">Showflow</a>
                     </li>
+                    <li class="nav-item">
+                        <a id="nav-storyboard" class="nav-link" href="#">StoryBrand<span
+                                id="navStoryboardSpinner" class="nav-job-spinner d-none"
+                                title="Analysis in progress"></span></a>
+                    </li>
                 </ul>
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item">
@@ -1322,6 +1327,140 @@ Instructions for the agent go here.
         </div>
     </div>
 
+
+    <!-- ══ StoryBrand analysis ═══════════════════════════════════════════════
+         Upload a keynote script or outline, classify every paragraph against the
+         seven SB7 elements, and read it back colour-coded with a sticky
+         explanation rail. Read-only by design: revising happens in the tool the
+         script is actually written in, and a re-upload becomes a new revision. -->
+    <div id="storyboard-page" style="display:none; height:calc(100vh - 56px); overflow:hidden;">
+      <div class="sb-layout">
+
+        <!-- Saved analyses. Same sidebar idiom as Chat and Transcribe. -->
+        <div class="conv-sidebar sb-sidebar" id="storyboardSidebar">
+          <div class="conv-sidebar-header">
+            <button id="sbNewBtn" class="btn btn-primary btn-sm w-100">
+              <i class="bi bi-plus-lg me-1"></i> New Analysis
+            </button>
+            <div class="conv-search-wrap mt-2">
+              <i class="bi bi-search conv-search-icon"></i>
+              <input type="text" id="sbSearch" class="conv-search-input"
+                     placeholder="Search saved analyses...">
+              <button id="sbSearchClear" class="conv-search-clear d-none" title="Clear search">
+                <i class="bi bi-x"></i>
+              </button>
+            </div>
+          </div>
+          <div id="sbList" class="conv-list"></div>
+        </div>
+
+        <div class="sb-main" id="sbMain">
+          <div class="sb-topbar">
+            <button class="btn btn-sm btn-outline-secondary" id="sbSidebarToggle"
+                    title="Show/hide saved analyses">
+              <i class="bi bi-layout-sidebar"></i>
+            </button>
+            <div class="sb-topbar-title" id="sbTitle">StoryBrand</div>
+            <input type="text" id="sbTitleInput" class="form-control form-control-sm d-none"
+                   style="max-width:320px;" aria-label="Analysis name">
+            <span class="badge rounded-pill sb-revision d-none" id="sbRevision"
+                  title="Revision history"></span>
+            <div class="sb-topbar-actions">
+              <button class="btn btn-sm btn-outline-secondary d-none" id="sbReanalyzeBtn"
+                      title="Run the analysis again on the same text">
+                <i class="bi bi-arrow-repeat me-1"></i>Re-analyse
+              </button>
+              <button class="btn btn-sm btn-outline-secondary d-none" id="sbExportBtn"
+                      title="Save as a self-contained HTML file">
+                <i class="bi bi-download me-1"></i>Export
+              </button>
+            </div>
+          </div>
+
+          <!-- ── Input view ── -->
+          <div class="sb-input-view" id="sbInputView">
+            <div class="sb-input-card">
+              <h2 class="sb-display-heading">Analyse a keynote</h2>
+              <p class="sb-input-lede">
+                Upload a script or a detailed outline and every paragraph is classified
+                against the seven StoryBrand elements, then shown back to you
+                colour-coded. Your text is read locally and never rewritten.
+              </p>
+
+              <div class="sb-dropzone" id="sbDropzone">
+                <i class="bi bi-file-earmark-text sb-dropzone-icon"></i>
+                <div class="sb-dropzone-text">Drop a file here, or click to browse</div>
+                <div class="sb-dropzone-hint">.txt, .md, .docx, .pptx</div>
+                <input type="file" id="sbFileInput" accept=".txt,.md,.markdown,.docx,.pptx" hidden>
+              </div>
+
+              <div class="sb-or">or paste the script</div>
+              <textarea id="sbPasteInput" class="form-control sb-paste"
+                        rows="7" placeholder="Paste your keynote script or outline here..."></textarea>
+
+              <div class="sb-input-footer">
+                <div class="sb-input-meta" id="sbInputMeta"></div>
+                <div class="sb-input-controls">
+                  <select id="sbModelSelect" class="form-select form-select-sm sb-model-select"
+                          title="Model used for the analysis"></select>
+                  <button class="btn btn-primary" id="sbAnalyzeBtn" disabled>
+                    <i class="bi bi-stars me-1"></i>Analyse
+                  </button>
+                </div>
+              </div>
+              <div class="sb-input-error" id="sbInputError"></div>
+            </div>
+          </div>
+
+          <!-- ── Reading view ── -->
+          <div class="sb-reading-view" id="sbReadingView" style="display:none;">
+            <div class="sb-glassbar" id="sbGlassbar">
+              <div class="sb-legend" id="sbLegend"></div>
+              <div class="sb-segmented" role="group" aria-label="Colour coding">
+                <button class="sb-seg-btn is-active" id="sbSegColour" aria-pressed="true">Colour</button>
+                <button class="sb-seg-btn" id="sbSegPlain" aria-pressed="false">Plain</button>
+                <span class="sb-seg-thumb" id="sbSegThumb"></span>
+              </div>
+              <button class="btn btn-sm btn-outline-secondary sb-audit-toggle" id="sbAuditToggle">
+                <i class="bi bi-clipboard-check me-1"></i>Audit
+              </button>
+            </div>
+
+            <div class="sb-scroll" id="sbScroll">
+              <div class="sb-canvas">
+                <div class="sb-grid">
+                  <main class="sb-surface" id="sbSurface"></main>
+                  <aside class="sb-rail" id="sbRail" aria-live="polite">
+                    <div class="sb-info-card" id="sbInfoCard">
+                      <div class="sb-info-accent"></div>
+                      <div class="sb-info-body">
+                        <div class="sb-info-swatch" id="sbInfoSwatch"></div>
+                        <div class="sb-info-eyebrow" id="sbInfoEyebrow"></div>
+                        <div class="sb-info-title" id="sbInfoTitle"></div>
+                        <div class="sb-info-tagline" id="sbInfoTagline"></div>
+                        <ul class="sb-info-list" id="sbInfoList"></ul>
+                      </div>
+                    </div>
+                  </aside>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Audit panel ── -->
+          <div class="sb-audit-panel" id="sbAuditPanel" style="display:none;">
+            <div class="sb-audit-header">
+              <span class="sb-display-heading">Audit</span>
+              <button class="btn btn-sm btn-outline-secondary" id="sbAuditClose">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </div>
+            <div class="sb-audit-body" id="sbAuditBody"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="../../node_modules/sortablejs/Sortable.min.js"></script>
     <script src="../../node_modules/jszip/dist/jszip.js"></script>
@@ -1339,6 +1478,8 @@ Instructions for the agent go here.
     <script src="../renderer/showflowStore.js"></script>
     <script src="../renderer/showflowExport.js"></script>
     <script src="../renderer/showflowTab.js"></script>
+    <script src="../renderer/storyboardExport.js"></script>
+    <script src="../renderer/storyboardTab.js"></script>
 </body>
 
 </html>

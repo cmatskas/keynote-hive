@@ -2520,3 +2520,588 @@ body {
 .analytics-heat-green { color: #16a34a; }
 .analytics-heat-yellow { color: #d97706; }
 .analytics-heat-red { color: #dc2626; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   StoryBrand tab
+   ══════════════════════════════════════════════════════════════════════════
+
+   Built to the design in ~/Downloads/storyboard/prompt.md rather than to the
+   reference implementation beside it, which is considerably plainer than its own
+   spec describes: off-white canvas with gradient tints, an elevated reading
+   surface, a segmented pill toggle with a sliding thumb, a top-edge accent bar
+   on the explanation card, a haloed swatch, colour-dot bullets, and
+   prefers-reduced-motion support.
+
+   EVERYTHING IS SCOPED. The reference is a standalone page and resets `*` and
+   styles bare h1/h2/p; pasted in as-is it would restyle every other tab. All of
+   it therefore hangs off .sb-* classes or #storyboard-page.
+
+   Two deliberate departures from that spec:
+     - the reference's position:fixed legend and rail would float over Hive's
+       navbar, so they are sticky within the tab's own scroll container instead;
+     - the spec's serif/sans pairing (Newsreader + Inter from Google Fonts) is not
+       used. Hive declares no font-family of its own outside monospace for code —
+       every tab inherits Bootstrap's system UI stack — so a serif display face
+       here would have been the only serif in the app and read as a different
+       product. Heading hierarchy is carried by size and weight instead. It also
+       avoids a webfont that silently falls back when the network is down.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+#storyboard-page {
+  --sb-canvas: #F6F7F9;
+  --sb-surface: #ffffff;
+  --sb-ink: #222;
+  --sb-ink-soft: #555;
+  --sb-hairline: rgba(0, 0, 0, 0.08);
+  --sb-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.06);
+
+  /* The seven element colours. Kept as custom properties so the dark-theme block
+     below can re-point them without duplicating a single rule. */
+  --sb-blue: #1565C0;
+  --sb-red: #D32F2F;
+  --sb-green: #2E7D32;
+  --sb-gold: #C98A00;
+  --sb-orange: #E65100;
+  --sb-purple: #6A1B9A;
+  --sb-teal: #00796B;
+}
+
+/* Dark theme: the light palette is tuned for white and several entries (notably
+   blue and purple) fail contrast on Hive's dark background. Lightened variants
+   keep the hues recognisable rather than dimming the whole reading surface. */
+[data-theme="dark"] #storyboard-page {
+  --sb-canvas: #16181c;
+  --sb-surface: #1e2126;
+  --sb-ink: #e6e6e6;
+  --sb-ink-soft: #a8b0b8;
+  --sb-hairline: rgba(255, 255, 255, 0.10);
+  --sb-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+
+  --sb-blue: #64B5F6;
+  --sb-red: #E57373;
+  --sb-green: #81C784;
+  --sb-gold: #FFD54F;
+  --sb-orange: #FFB74D;
+  --sb-purple: #CE93D8;
+  --sb-teal: #4DB6AC;
+}
+
+.sb-layout { display: flex; height: 100%; overflow: hidden; }
+
+.sb-sidebar { flex: 0 0 auto; }
+
+.sb-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--sb-canvas);
+}
+
+/* ── Top bar ─────────────────────────────────────────────────────────────── */
+
+.sb-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--sb-hairline);
+  background: var(--sb-surface);
+}
+
+.sb-topbar-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--sb-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-topbar-actions { margin-left: auto; display: flex; gap: 8px; }
+
+/* ── Input view ──────────────────────────────────────────────────────────── */
+
+.sb-input-view {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 32px 24px 48px;
+  /* The subtle radial colour tints the design calls for, using two of the
+     element hues so the canvas hints at what the tab is for. */
+  background:
+    radial-gradient(60% 50% at 15% 0%, rgba(21, 101, 192, 0.06), transparent 70%),
+    radial-gradient(50% 40% at 85% 10%, rgba(230, 81, 0, 0.05), transparent 70%),
+    var(--sb-canvas);
+}
+
+.sb-input-card {
+  max-width: 720px;
+  margin: 0 auto;
+  background: var(--sb-surface);
+  border: 1px solid var(--sb-hairline);
+  border-radius: 14px;
+  box-shadow: var(--sb-shadow);
+  padding: 28px 30px 24px;
+}
+
+.sb-display-heading {
+  font-weight: 600;
+  color: var(--sb-ink);
+  font-size: 26px;
+  margin: 0 0 8px;
+  letter-spacing: -0.01em;
+}
+
+.sb-input-lede {
+  color: var(--sb-ink-soft);
+  font-size: 14.5px;
+  line-height: 1.6;
+  margin: 0 0 20px;
+}
+
+.sb-dropzone {
+  border: 1.5px dashed var(--sb-hairline);
+  border-radius: 12px;
+  padding: 30px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.25s ease, background 0.25s ease;
+}
+
+.sb-dropzone:hover,
+.sb-dropzone.is-dragover {
+  border-color: var(--sb-blue);
+  background: rgba(21, 101, 192, 0.04);
+}
+
+.sb-dropzone-icon { font-size: 26px; color: var(--sb-ink-soft); display: block; margin-bottom: 8px; }
+.sb-dropzone-text { font-size: 15px; color: var(--sb-ink); font-weight: 500; }
+.sb-dropzone-hint { font-size: 12.5px; color: var(--sb-ink-soft); margin-top: 4px; }
+
+.sb-or {
+  text-align: center;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sb-ink-soft);
+  margin: 18px 0 10px;
+}
+
+.sb-paste { font-size: 14px; line-height: 1.6; resize: vertical; }
+
+.sb-input-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.sb-input-meta { font-size: 13px; color: var(--sb-ink-soft); }
+.sb-input-controls { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.sb-model-select { width: auto; min-width: 190px; }
+
+.sb-input-error {
+  display: none;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(211, 47, 47, 0.08);
+  color: var(--sb-red);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.sb-input-error.is-visible { display: block; }
+
+/* ── Reading view ────────────────────────────────────────────────────────── */
+
+.sb-reading-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Glass bar. Sticky within the tab rather than fixed to the window, so it never
+   floats over Hive's navbar. The scroll shadow is applied by the controller. */
+.sb-glassbar {
+  flex: 0 0 auto;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--sb-surface) 82%, transparent);
+  backdrop-filter: saturate(180%) blur(12px);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--sb-hairline);
+  transition: box-shadow 0.25s ease;
+}
+
+.sb-glassbar.is-scrolled { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08); }
+
+.sb-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+
+.sb-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--sb-ink);
+  white-space: nowrap;
+}
+
+.sb-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+/* Segmented pill toggle with a sliding thumb — the design is explicit that this
+   is not a checkbox. */
+.sb-segmented {
+  position: relative;
+  margin-left: auto;
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sb-ink) 8%, transparent);
+  border: 1px solid var(--sb-hairline);
+}
+
+.sb-seg-btn {
+  position: relative;
+  z-index: 1;
+  border: 0;
+  background: transparent;
+  color: var(--sb-ink-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 4px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+
+.sb-seg-btn.is-active { color: var(--sb-ink); }
+
+.sb-seg-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  height: calc(100% - 6px);
+  border-radius: 999px;
+  background: var(--sb-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), width 0.28s ease;
+}
+
+.sb-audit-toggle { flex: 0 0 auto; }
+
+.sb-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+
+.sb-canvas {
+  background:
+    radial-gradient(55% 40% at 12% 0%, rgba(21, 101, 192, 0.05), transparent 70%),
+    radial-gradient(45% 35% at 88% 6%, rgba(106, 27, 154, 0.04), transparent 70%);
+  min-height: 100%;
+  padding: 34px 24px 90px;
+}
+
+.sb-grid {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 720px) 340px;
+  gap: 34px;
+  justify-content: center;
+  align-items: start;
+}
+
+/* The elevated reading surface the design asks for — the script sits on a card,
+   not directly on the canvas. */
+.sb-surface {
+  min-width: 0;
+  background: var(--sb-surface);
+  border: 1px solid var(--sb-hairline);
+  border-radius: 14px;
+  box-shadow: var(--sb-shadow);
+  padding: 40px 44px 44px;
+  color: var(--sb-ink);
+  font-size: 17.5px;
+  line-height: 1.65;
+}
+
+.sb-surface .sb-h1,
+.sb-surface .sb-h2,
+.sb-surface .sb-h3 {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.sb-surface .sb-h1 { font-size: 31px; line-height: 1.25; margin: 0 0 26px; }
+.sb-surface .sb-h2 { font-size: 23px; margin: 38px 0 14px; }
+.sb-surface .sb-h3 { font-size: 19px; margin: 26px 0 10px; }
+.sb-surface .sb-p { margin: 0 0 19px; }
+.sb-surface .sb-p:last-child { margin-bottom: 0; }
+
+.sb-surface .sb-children { margin: -8px 0 19px; padding-left: 20px; list-style: none; }
+.sb-surface .sb-children li { position: relative; margin-bottom: 6px; font-size: 16px; }
+
+/* Colour-dot bullet markers rather than default discs. */
+.sb-surface .sb-children li::before {
+  content: '';
+  position: absolute;
+  left: -14px;
+  top: 0.62em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+/* Element colours. `color` is inherited by the children list so a grouped
+   bullet's sub-points pick up the same hue automatically. */
+.sb-c-blue { color: var(--sb-blue); }
+.sb-c-red { color: var(--sb-red); }
+.sb-c-green { color: var(--sb-green); }
+.sb-c-gold { color: var(--sb-gold); }
+.sb-c-orange { color: var(--sb-orange); }
+.sb-c-purple { color: var(--sb-purple); }
+.sb-c-teal { color: var(--sb-teal); }
+
+/* Plain mode: colours off, rail hidden, surface reclaims the width. */
+.sb-reading-view.is-plain .sb-surface [class*="sb-c-"] { color: var(--sb-ink); }
+.sb-reading-view.is-plain .sb-rail { display: none; }
+.sb-reading-view.is-plain .sb-grid { grid-template-columns: minmax(0, 760px); }
+
+/* ── Explanation rail ────────────────────────────────────────────────────── */
+
+.sb-rail { position: sticky; top: 16px; align-self: start; }
+
+.sb-info-card {
+  position: relative;
+  background: var(--sb-surface);
+  border: 1px solid var(--sb-hairline);
+  border-radius: 14px;
+  box-shadow: var(--sb-shadow);
+  overflow: hidden;
+  transition: opacity 0.3s ease;
+}
+
+/* Top-edge accent bar, recoloured per element — not a left border. */
+.sb-info-accent {
+  height: 4px;
+  background: currentColor;
+  transition: background-color 0.4s ease;
+}
+
+.sb-info-body { padding: 18px 20px 20px; }
+
+/* Haloed swatch. */
+.sb-info-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 18%, transparent);
+  margin-bottom: 14px;
+  transition: background-color 0.4s ease, box-shadow 0.4s ease;
+}
+
+.sb-info-eyebrow {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  margin-bottom: 5px;
+  transition: color 0.4s ease;
+}
+
+.sb-info-title {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin-bottom: 6px;
+  transition: color 0.4s ease;
+}
+
+.sb-info-tagline {
+  font-size: 13.5px;
+  font-style: italic;
+  color: var(--sb-ink-soft);
+  line-height: 1.55;
+  margin-bottom: 14px;
+}
+
+.sb-info-list { margin: 0; padding: 0; list-style: none; }
+
+.sb-info-list li {
+  position: relative;
+  padding-left: 15px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--sb-ink);
+  margin-bottom: 9px;
+}
+
+.sb-info-list li:last-child { margin-bottom: 0; }
+
+/* The list item sets `color` to ink so the text stays readable, which also makes
+   currentColor resolve to ink here — hence the separate property, set on the card
+   by the controller, so the marker keeps the element's colour as the design
+   specifies. */
+.sb-info-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sb-el, currentColor);
+}
+
+/* Fade + slide when the active element changes. */
+.sb-info-card.is-swapping { opacity: 0; transform: translateY(6px); }
+
+/* Scroll reveal. */
+.sb-reveal { opacity: 0; transform: translateY(14px); transition: opacity 0.55s ease, transform 0.55s ease; }
+.sb-reveal.is-visible { opacity: 1; transform: none; }
+
+/* ── Audit panel ─────────────────────────────────────────────────────────── */
+
+.sb-audit-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(460px, 92%);
+  z-index: 20;
+  background: var(--sb-surface);
+  border-left: 1px solid var(--sb-hairline);
+  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+}
+
+.sb-audit-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--sb-hairline);
+}
+
+.sb-audit-header .sb-display-heading { font-size: 19px; margin: 0; }
+
+.sb-audit-body { flex: 1 1 auto; overflow-y: auto; padding: 16px; }
+
+.sb-audit-overall {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--sb-ink);
+  margin-bottom: 18px;
+}
+
+.sb-audit-element {
+  border: 1px solid var(--sb-hairline);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+
+.sb-audit-element-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+
+.sb-audit-element-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: currentColor;
+}
+
+.sb-audit-status {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.sb-audit-status.is-strong { background: rgba(46, 125, 50, 0.14); color: var(--sb-green); }
+.sb-audit-status.is-weak { background: rgba(201, 138, 0, 0.16); color: var(--sb-gold); }
+.sb-audit-status.is-missing { background: rgba(211, 47, 47, 0.13); color: var(--sb-red); }
+.sb-audit-status.is-unknown { background: rgba(128, 128, 128, 0.15); color: var(--sb-ink-soft); }
+
+.sb-audit-line { font-size: 13px; line-height: 1.55; color: var(--sb-ink-soft); margin-top: 4px; }
+.sb-audit-line strong { color: var(--sb-ink); font-weight: 600; }
+.sb-audit-quote { font-style: italic; }
+
+.sb-audit-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--sb-ink);
+  margin: 20px 0 8px;
+}
+
+.sb-audit-list { margin: 0; padding-left: 18px; }
+.sb-audit-list li { font-size: 13.5px; line-height: 1.6; color: var(--sb-ink); margin-bottom: 6px; }
+
+/* ── Sidebar list entries ────────────────────────────────────────────────── */
+
+.sb-entry-shape { display: flex; gap: 2px; margin-top: 6px; height: 4px; }
+.sb-entry-shape span { flex: 1 1 auto; border-radius: 2px; min-width: 2px; }
+.sb-entry-meta { font-size: 11.5px; opacity: 0.75; margin-top: 3px; }
+.sb-entry-match { font-size: 11.5px; opacity: 0.8; margin-top: 4px; font-style: italic; }
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 1180px) {
+  .sb-grid { grid-template-columns: minmax(0, 100%); }
+  .sb-canvas { padding-bottom: 130px; }
+  /* The rail becomes a compact bottom strip so the meaning stays visible. */
+  .sb-rail {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    z-index: 12;
+    padding: 8px 14px;
+    background: color-mix(in srgb, var(--sb-surface) 92%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-top: 1px solid var(--sb-hairline);
+  }
+  .sb-info-card { max-width: 760px; margin: 0 auto; border: 0; box-shadow: none; background: transparent; }
+  .sb-info-body { padding: 4px 8px; }
+  .sb-info-swatch, .sb-info-tagline, .sb-info-list { display: none; }
+  .sb-info-title { font-size: 16px; margin-bottom: 0; }
+  .sb-info-accent { display: none; }
+  .sb-surface { padding: 28px 26px 32px; font-size: 16.5px; }
+}
+
+/* Respect a reduced-motion preference: keep the colour changes, drop the
+   movement. */
+@media (prefers-reduced-motion: reduce) {
+  #storyboard-page .sb-reveal,
+  #storyboard-page .sb-info-card,
+  #storyboard-page .sb-seg-thumb {
+    transition: none;
+  }
+  #storyboard-page .sb-reveal { opacity: 1; transform: none; }
+  #storyboard-page .sb-info-card.is-swapping { opacity: 1; transform: none; }
+}
+
+/* Revision badge: shown only when an analysis supersedes an earlier one. */
+.sb-revision {
+  background: color-mix(in srgb, var(--sb-ink) 10%, transparent);
+  color: var(--sb-ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: help;
+}

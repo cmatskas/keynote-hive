@@ -37,6 +37,9 @@
     { id: 'swarmContinueBtn',     reason: 'Continuing a pipeline needs an internet connection.' },
     { id: 'swarmInputAnswerBtn',  reason: 'Continuing a pipeline needs an internet connection.' },
     { id: 'swarmInputDefaultBtn', reason: 'Continuing a pipeline needs an internet connection.' },
+    // StoryBrand analysis
+    { id: 'sbAnalyzeBtn',         reason: 'Analysing a script needs an internet connection.' },
+    { id: 'sbReanalyzeBtn',       reason: 'Re-analysing needs an internet connection.' },
     // Transcription
     { id: 'uploadZone',           reason: 'Transcription needs an internet connection.' },
     { id: 'fileInput',            reason: 'Transcription needs an internet connection.' },

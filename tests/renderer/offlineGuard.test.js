@@ -42,6 +42,7 @@ const NETWORK_BUTTONS = [
   'runSetupCheckBtn', 'setupCheckRefreshBtn', 'webSearchRetryBtn',
   'memoryConnectBtn', 'memoryDeleteBtn', 'memoryRefreshBtn',
   'adminRefreshStatusBtn', 'adminOpenWizardBtn', 'adminWizardApplyBtn',
+  'sbAnalyzeBtn', 'sbReanalyzeBtn',
 ];
 
 const LOCAL_CONTROLS = [

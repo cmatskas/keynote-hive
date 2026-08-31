@@ -1,0 +1,349 @@
+/**
+ * storyboardExport.js — write a colour-coded analysis out as one HTML file.
+ *
+ * Self-contained on purpose: no stylesheet link, no font request, no script from a
+ * CDN. The exported file is something you email to a co-presenter or open in two
+ * years, and either of those breaks the moment it depends on something external.
+ * That also means it renders identically offline, which matches how the rest of
+ * Hive behaves.
+ *
+ * The output deliberately follows the shape of the reference `keynote.html` — a
+ * legend bar, the script, and a sticky explanation rail — because that artifact is
+ * the known-good target. It uses the same system UI font stack as the app rather
+ * than the reference's serif pairing, so an export looks like the tab it came from. It carries the same seven-colour palette and the same
+ * Colour/Plain toggle, reimplemented standalone rather than by scraping the live
+ * DOM, so a change to the tab's markup cannot silently corrupt an export.
+ */
+(() => {
+  'use strict';
+
+  function esc(text) {
+    return String(text == null ? '' : text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  /** Filesystem-safe stem for the download. */
+  function safeFileName(name) {
+    const stem = String(name || 'storybrand-analysis')
+      .replace(/\.[a-z0-9]+$/i, '')
+      .replace(/[^\w\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-')
+      .toLowerCase();
+    return `${stem || 'storybrand-analysis'}.html`;
+  }
+
+  function buildStyles(elements) {
+    const vars = elements.map(e => `    --${e.slug}: ${e.hex};`).join('\n');
+    const colours = elements.map(e => `  .c-${e.slug} { color: var(--${e.slug}); }`).join('\n');
+    const cards = elements.map(e => `
+  .info-card.${e.slug} { color: var(--${e.slug}); --el: var(--${e.slug}); }`).join('');
+
+    return `  :root {
+${vars}
+    --canvas: #F6F7F9;
+    --surface: #ffffff;
+    --ink: #222;
+    --ink-soft: #555;
+    --hairline: rgba(0,0,0,.08);
+    /* Bootstrap 5.3's default stack, so an export looks like the tab it came from.
+       No webfont: this file has to render identically offline and in two years. */
+    --sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans',
+            'Liberation Sans', Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17.5px;
+    line-height: 1.65;
+  }
+  .bar {
+    position: fixed; inset: 0 0 auto 0; z-index: 10;
+    display: flex; align-items: center; gap: 14px;
+    padding: 11px 18px;
+    background: rgba(255,255,255,.82);
+    backdrop-filter: saturate(180%) blur(12px);
+    -webkit-backdrop-filter: saturate(180%) blur(12px);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .bar.scrolled { box-shadow: 0 4px 16px rgba(0,0,0,.08); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .segmented {
+    position: relative; margin-left: auto; display: inline-flex; padding: 3px;
+    border-radius: 999px; background: rgba(0,0,0,.06); border: 1px solid var(--hairline);
+  }
+  .seg { position: relative; z-index: 1; border: 0; background: transparent; color: var(--ink-soft);
+         font: 600 12.5px var(--sans); padding: 4px 14px; border-radius: 999px; cursor: pointer; transition: color .25s ease; }
+  .seg.active { color: var(--ink); }
+  .thumb { position: absolute; top: 3px; left: 3px; height: calc(100% - 6px); border-radius: 999px;
+           background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.16);
+           transition: transform .28s cubic-bezier(.4,0,.2,1), width .28s ease; }
+  .canvas {
+    background:
+      radial-gradient(55% 40% at 12% 0%, rgba(21,101,192,.05), transparent 70%),
+      radial-gradient(45% 35% at 88% 6%, rgba(106,27,154,.04), transparent 70%);
+    padding: 96px 24px 110px;
+  }
+  .grid { max-width: 1180px; margin: 0 auto; display: grid;
+          grid-template-columns: minmax(0,720px) 340px; gap: 34px; justify-content: center; align-items: start; }
+  .surface { min-width: 0; background: var(--surface); border: 1px solid var(--hairline);
+             border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+             padding: 40px 44px 44px; }
+  h1, h2, h3 { font-weight: 650; letter-spacing: -.01em; }
+  h1 { font-size: 31px; line-height: 1.25; margin-bottom: 26px; }
+  h2 { font-size: 23px; margin: 38px 0 14px; }
+  h3 { font-size: 19px; margin: 26px 0 10px; }
+  p { margin-bottom: 19px; }
+  .children { margin: -8px 0 19px; padding-left: 20px; list-style: none; }
+  .children li { position: relative; margin-bottom: 6px; font-size: 16px; }
+  .children li::before { content: ''; position: absolute; left: -14px; top: .62em; width: 6px; height: 6px;
+                         border-radius: 50%; background: currentColor; opacity: .55; }
+${colours}
+  body.plain [class*="c-"] { color: var(--ink); }
+  body.plain .rail { display: none; }
+  body.plain .grid { grid-template-columns: minmax(0,760px); }
+  .rail { position: sticky; top: 90px; align-self: start; }
+  .info-card { position: relative; background: var(--surface); border: 1px solid var(--hairline);
+               border-radius: 14px; overflow: hidden;
+               box-shadow: 0 1px 3px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06); }
+  .accent { height: 4px; background: currentColor; transition: background-color .4s ease; }
+  .info-body { padding: 18px 20px 20px; }
+  .swatch { width: 26px; height: 26px; border-radius: 50%; background: currentColor;
+            box-shadow: 0 0 0 5px rgba(0,0,0,.06); margin-bottom: 14px; }
+  .eyebrow { font-size: 11.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; margin-bottom: 5px; }
+  .info-title { font-size: 20px; font-weight: 600; line-height: 1.3; margin-bottom: 6px; }
+  .tagline { font-size: 13.5px; font-style: italic; color: var(--ink-soft); line-height: 1.55; margin-bottom: 14px; }
+  .points { list-style: none; }
+  .points li { position: relative; padding-left: 15px; font-size: 13.5px; line-height: 1.55; color: var(--ink); margin-bottom: 9px; }
+  /* --el rather than currentColor: .points li sets its own text colour for
+     readability, which would otherwise make the marker grey. */
+  .points li::before { content: ''; position: absolute; left: 0; top: .55em; width: 6px; height: 6px;
+                       border-radius: 50%; background: var(--el, currentColor); }
+${cards}
+  .audit { max-width: 1094px; margin: 34px auto 0; background: var(--surface);
+           border: 1px solid var(--hairline); border-radius: 14px; padding: 24px 28px; }
+  .audit h2 { margin-top: 0; }
+  .audit-el { border: 1px solid var(--hairline); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .audit-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .audit-name { font-weight: 600; font-size: 14px; }
+  .status { margin-left: auto; font-size: 11px; font-weight: 700; letter-spacing: .06em;
+            text-transform: uppercase; padding: 2px 8px; border-radius: 999px; background: rgba(0,0,0,.07); color: var(--ink-soft); }
+  .audit-line { font-size: 13px; line-height: 1.55; color: var(--ink-soft); margin-top: 4px; }
+  .audit-line strong { color: var(--ink); }
+  .foot { max-width: 1094px; margin: 26px auto 0; font-size: 12px; color: var(--ink-soft); text-align: center; }
+  @media (max-width: 1180px) {
+    .grid { grid-template-columns: minmax(0,100%); }
+    .rail { position: static; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }`;
+  }
+
+  function buildScript(elements) {
+    // Definitions are inlined rather than fetched, so the file stands alone.
+    const defs = JSON.stringify(elements.reduce((acc, e) => {
+      acc[e.key] = { slug: e.slug, label: e.label, title: e.title, tagline: e.tagline, points: e.points };
+      return acc;
+    }, {}));
+
+    return `(function () {
+  var DEFS = ${defs};
+  var bar = document.getElementById('bar');
+  var segColour = document.getElementById('segColour');
+  var segPlain = document.getElementById('segPlain');
+  var thumb = document.getElementById('thumb');
+  var card = document.getElementById('infoCard');
+
+  function moveThumb() {
+    var active = document.body.classList.contains('plain') ? segPlain : segColour;
+    thumb.style.width = active.offsetWidth + 'px';
+    thumb.style.transform = 'translateX(' + (active.offsetLeft - 3) + 'px)';
+  }
+  function setPlain(plain) {
+    document.body.classList.toggle('plain', plain);
+    segColour.classList.toggle('active', !plain);
+    segPlain.classList.toggle('active', plain);
+    moveThumb();
+  }
+  segColour.addEventListener('click', function () { setPlain(false); });
+  segPlain.addEventListener('click', function () { setPlain(true); });
+  window.addEventListener('resize', moveThumb);
+  moveThumb();
+
+  var blocks = [].slice.call(document.querySelectorAll('[data-element]'));
+  var currentKey = null;
+  function renderRail(key) {
+    var def = DEFS[key];
+    if (!def || key === currentKey) return;
+    currentKey = key;
+    card.className = 'info-card ' + def.slug;
+    document.getElementById('eyebrow').textContent = def.label;
+    document.getElementById('infoTitle').textContent = def.title;
+    document.getElementById('tagline').textContent = def.tagline;
+    var list = document.getElementById('points');
+    list.innerHTML = '';
+    (def.points || []).forEach(function (p) {
+      var li = document.createElement('li');
+      li.textContent = p;
+      list.appendChild(li);
+    });
+  }
+  function update() {
+    bar.classList.toggle('scrolled', window.scrollY > 4);
+    var anchor = window.innerHeight * 0.35;
+    var key = blocks.length ? blocks[0].getAttribute('data-element') : null;
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].getBoundingClientRect().top <= anchor) key = blocks[i].getAttribute('data-element');
+      else break;
+    }
+    renderRail(key);
+  }
+  var ticking = false;
+  window.addEventListener('scroll', function () {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(function () { update(); ticking = false; });
+  }, { passive: true });
+  update();
+})();`;
+  }
+
+  function buildBody(analysis, elements) {
+    const byKey = new Map(elements.map(e => [e.key, e]));
+
+    const script = (analysis.units || []).map(unit => {
+      const def = byKey.get(analysis.classifications?.[unit.index]);
+      const cls = def ? ` class="c-${def.slug}"` : '';
+      const attr = def ? ` data-element="${esc(def.key)}"` : '';
+      const tag = unit.kind === 'heading'
+        ? (unit.level === 1 ? 'h1' : unit.level === 2 ? 'h2' : 'h3')
+        : 'p';
+      const children = (unit.children || []).length
+        ? `\n    <ul class="children${def ? ` c-${def.slug}` : ''}">${unit.children
+            .map(c => `<li>${esc(c)}</li>`).join('')}</ul>`
+        : '';
+      return `    <${tag}${cls}${attr}>${esc(unit.text)}</${tag}>${children}`;
+    }).join('\n');
+
+    const legend = elements
+      .map(e => `      <span class="legend-item"><span class="dot" style="background:${e.hex}"></span>${esc(e.label)}</span>`)
+      .join('\n');
+
+    return { script, legend };
+  }
+
+  function buildAudit(audit, elements) {
+    if (!audit) return '';
+    const labels = { strong: 'Strong', weak: 'Weak', missing: 'Missing', unknown: 'Unrated' };
+
+    const cards = elements.map(def => {
+      const entry = audit.elements?.[def.key] || { status: 'unknown' };
+      const lines = [
+        entry.found ? `<div class="audit-line"><em>${esc(entry.found)}</em></div>` : '',
+        entry.issue ? `<div class="audit-line"><strong>Issue:</strong> ${esc(entry.issue)}</div>` : '',
+        entry.fix ? `<div class="audit-line"><strong>Fix:</strong> ${esc(entry.fix)}</div>` : '',
+      ].join('');
+      return `    <div class="audit-el" style="color:${def.hex}">
+      <div class="audit-head">
+        <span class="dot" style="background:currentColor"></span>
+        <span class="audit-name">${esc(def.label)}</span>
+        <span class="status">${esc(labels[entry.status] || entry.status)}</span>
+      </div>${lines}
+    </div>`;
+    }).join('\n');
+
+    const list = (title, items) => (items?.length
+      ? `    <h3>${title}</h3>\n    <ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>`
+      : '');
+
+    return `  <section class="audit">
+    <h2>Audit</h2>
+${audit.overall ? `    <p>${esc(audit.overall)}</p>` : ''}
+${cards}
+${list('What&rsquo;s working', audit.whatsWorking)}
+${list('Quick wins', audit.quickWins)}
+  </section>`;
+  }
+
+  /** Build the complete HTML document. */
+  function buildHtml(analysis, elements) {
+    const { script, legend } = buildBody(analysis, elements);
+    const title = analysis.displayName || analysis.sourceName || 'StoryBrand analysis';
+    const when = new Date(analysis.createdAt || Date.now()).toLocaleString();
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${esc(title)} — StoryBrand analysis</title>
+<style>
+${buildStyles(elements)}
+</style>
+</head>
+<body>
+
+<div class="bar" id="bar">
+  <div class="legend">
+${legend}
+  </div>
+  <div class="segmented" role="group" aria-label="Colour coding">
+    <button class="seg active" id="segColour">Colour</button>
+    <button class="seg" id="segPlain">Plain</button>
+    <span class="thumb" id="thumb"></span>
+  </div>
+</div>
+
+<div class="canvas">
+  <div class="grid">
+    <main class="surface">
+${script}
+    </main>
+    <aside class="rail">
+      <div class="info-card" id="infoCard">
+        <div class="accent"></div>
+        <div class="info-body">
+          <div class="swatch"></div>
+          <div class="eyebrow" id="eyebrow"></div>
+          <div class="info-title" id="infoTitle"></div>
+          <div class="tagline" id="tagline"></div>
+          <ul class="points" id="points"></ul>
+        </div>
+      </div>
+    </aside>
+  </div>
+${buildAudit(analysis.audit, elements)}
+  <div class="foot">
+    ${esc(title)} · ${analysis.unitCount || (analysis.units || []).length} paragraphs ·
+    ${(analysis.wordCount || 0).toLocaleString()} words · analysed ${esc(when)}
+    ${analysis.modelId ? `· ${esc(analysis.modelId)}` : ''}
+  </div>
+</div>
+
+<script>
+${buildScript(elements)}
+</script>
+</body>
+</html>`;
+  }
+
+  /** Build and trigger a download. */
+  function download(analysis, elements) {
+    const html = buildHtml(analysis, elements);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = safeFileName(analysis.displayName || analysis.sourceName);
+    link.click();
+    URL.revokeObjectURL(link.href);
+    return html;
+  }
+
+  window.StoryboardExport = { buildHtml, download, safeFileName, esc };
+})();

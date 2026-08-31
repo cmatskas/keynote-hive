@@ -135,7 +135,7 @@ if (typeof window !== 'undefined') {
     });
 }
 
-const ALL_PAGES = ['work', 'swarm', 'transcribe', 'analyze', 'settings', 'showflow'];
+const ALL_PAGES = ['work', 'swarm', 'transcribe', 'analyze', 'settings', 'showflow', 'storyboard'];
 function showPage(name) {
     ALL_PAGES.forEach(p => {
         const page = document.getElementById(`${p}-page`);
@@ -687,8 +687,8 @@ async function reconcileTranscriptions() {
 }
 
 /**
- * Make every list sidebar resizable. Centralised here because all three elements
- * are static in the page, and one call site is easier to keep honest than three
+ * Make every list sidebar resizable. Centralised here because all four elements
+ * are static in the page, and one call site is easier to keep honest than four
  * tabs each remembering to opt in.
  */
 function initResizableSidebars() {
@@ -697,6 +697,7 @@ function initResizableSidebars() {
         { selector: '#transcribeSidebar', key: 'hive.sidebarWidth.transcribe', defaultWidth: 260 },
         { selector: '#analyze-page .conv-sidebar', key: 'hive.sidebarWidth.chat', defaultWidth: 240 },
         { selector: '#workSidebar', key: 'hive.sidebarWidth.work', defaultWidth: 260 },
+        { selector: '#storyboardSidebar', key: 'hive.sidebarWidth.storyboard', defaultWidth: 260 },
     ].forEach(({ selector, key, defaultWidth }) => {
         const el = document.querySelector(selector);
         if (el) window.SidebarResize.enable({ el, storageKey: key, defaultWidth });
@@ -842,6 +843,14 @@ document.getElementById('nav-transcribe')?.addEventListener('click', showTranscr
 document.getElementById('nav-work')?.addEventListener('click', showWorkPage);
 document.getElementById('nav-swarm')?.addEventListener('click', showSwarmPage);
 document.getElementById('nav-settings')?.addEventListener('click', showSettingsPage);
+document.getElementById('nav-storyboard')?.addEventListener('click', () => {
+    showPage('storyboard');
+    if (!window._storyboardInited) {
+        window._storyboardInited = true;
+        window.StoryboardTab?.init?.().catch(err => console.error('StoryboardTab init failed:', err));
+    }
+});
+
 document.getElementById('nav-showflow')?.addEventListener('click', () => {
     showPage('showflow');
     if (!window._showflowInited) {
