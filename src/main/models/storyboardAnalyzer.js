@@ -32,6 +32,7 @@
  */
 
 const { ELEMENT_KEYS, isValidElementKey, promptElementSummary } = require('./storybrandElements');
+const { collectStreamText } = require('../utils');
 const log = require('electron-log/main');
 
 /**
@@ -230,22 +231,35 @@ async function analyze({ units, modelId, region, mantleApiKey, wordCount = 0 }, 
 
   let response = '';
   try {
-    const stream = await agent.stream(buildPrompt(units));
-    for await (const chunk of stream) {
-      // Text deltas arrive under different keys depending on the model family;
-      // this mirrors how the Chat path accumulates a response.
-      const delta = chunk?.contentBlockDelta?.delta?.text ?? chunk?.delta?.text ?? chunk?.text;
-      if (typeof delta === 'string') response += delta;
-    }
+    // Via the shared accumulator, not a hand-rolled loop. This originally guessed
+    // at the SDK's event shape and silently accumulated nothing, so every model
+    // failed with "did not return usable JSON" — the parse was never the problem.
+    response = await collectStreamText(agent.stream(buildPrompt(units)));
   } finally {
     if (typeof dispose === 'function') {
       try { dispose(); } catch { /* disposal is best-effort */ }
     }
   }
 
+  if (!response.trim()) {
+    // A separate message on purpose: an empty response means the request or the
+    // stream failed, not that the model wrote something unparseable. Conflating
+    // the two is what made the original bug hard to place.
+    throw new Error(
+      `${modelId} returned an empty response. This is usually a transport or model ` +
+      'availability problem rather than the script — try again, or pick another model.',
+    );
+  }
+
   const envelope = parseEnvelope(response);
   if (!envelope) {
-    throw new Error('The model did not return usable JSON. Try again, or pick a different model.');
+    // Include what actually came back; "unusable JSON" with no evidence is
+    // undiagnosable from a bug report.
+    const preview = response.trim().replace(/\s+/g, ' ').slice(0, 200);
+    throw new Error(
+      `${modelId} did not return usable JSON. It replied: "${preview}${response.length > 200 ? '…' : ''}". ` +
+      'Try again, or pick a different model.',
+    );
   }
 
   const classified = _readClassifications(envelope.classifications);

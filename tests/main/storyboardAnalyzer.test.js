@@ -33,14 +33,32 @@ const units = (n) => Array.from({ length: n }, (_, i) => ({
   kind: 'paragraph',
 }));
 
-/** A createAgent stand-in that streams a fixed response. */
+/**
+ * The SDK's real stream event shape, matching every other call site in the app
+ * (bedrock.js, agentToolExecutor.js, swarmOrchestrator.js) and the same helper
+ * bedrockChat.test.js uses.
+ *
+ * This is deliberately not a convenience wrapper of our own invention. The
+ * analyzer originally shipped with a guessed-at shape, and these tests passed
+ * anyway because they mocked the *same guess* — a mock that encodes your
+ * assumption verifies nothing. Every model then failed in production with "did not
+ * return usable JSON" because not one character was ever accumulated.
+ */
+function textDelta(text) {
+  return {
+    type: 'modelStreamUpdateEvent',
+    event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } },
+  };
+}
+
+/** A createAgent stand-in that streams a fixed response as real SDK events. */
 function agentReturning(response, { onPrompt } = {}) {
   return jest.fn(() => ({
     agent: {
-      stream: async (prompt) => {
+      stream: (prompt) => {
         if (onPrompt) onPrompt(prompt);
         return (async function* () {
-          yield { contentBlockDelta: { delta: { text: response } } };
+          yield textDelta(response);
         })();
       },
     },
@@ -179,21 +197,51 @@ describe('tolerating how models actually reply', () => {
     expect(map.get(2)).toBe('cta');
   });
 
-  test('accumulates text from different stream chunk shapes', async () => {
+  test('accumulates text across many deltas, ignoring non-text events', async () => {
+    // A real stream interleaves lifecycle, reasoning and tool events among the
+    // text deltas; only textDelta contributes.
     const envelope = goodEnvelope(2);
-    const half = Math.floor(envelope.length / 2);
+    const third = Math.floor(envelope.length / 3);
     const createAgent = jest.fn(() => ({
       agent: {
-        stream: async () => (async function* () {
-          yield { contentBlockDelta: { delta: { text: envelope.slice(0, half) } } };
-          yield { delta: { text: envelope.slice(half) } };
+        stream: () => (async function* () {
+          yield { type: 'agentInitializedEvent' };
+          yield textDelta(envelope.slice(0, third));
+          yield { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockStartEvent' } };
+          yield textDelta(envelope.slice(third, third * 2));
+          yield { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'reasoningDelta', text: 'IGNORE ME' } } };
+          yield textDelta(envelope.slice(third * 2));
+          yield { type: 'agentCompletedEvent' };
         })(),
       },
       dispose: jest.fn(),
     }));
 
     const result = await analyze(baseArgs(2), { createAgent });
+
     expect(Object.keys(result.classifications)).toEqual(['1', '2']);
+  });
+
+  test('a stream that yields no text deltas reports an empty response, not bad JSON', async () => {
+    // This is the exact production failure. Reporting it as unparseable JSON sent
+    // diagnosis at the parser when nothing had been accumulated at all.
+    const createAgent = jest.fn(() => ({
+      agent: {
+        stream: () => (async function* () {
+          yield { type: 'agentInitializedEvent' };
+          yield { type: 'agentCompletedEvent' };
+        })(),
+      },
+      dispose: jest.fn(),
+    }));
+
+    await expect(analyze(baseArgs(2), { createAgent })).rejects.toThrow(/returned an empty response/);
+  });
+
+  test('an unparseable reply quotes what came back', async () => {
+    // "Unusable JSON" with no evidence is undiagnosable from a bug report.
+    await expect(analyze(baseArgs(2), { createAgent: agentReturning('I am unable to help with that request.') }))
+      .rejects.toThrow(/It replied: "I am unable to help with that request\."/);
   });
 
   test('rejects a response with no JSON at all', async () => {
@@ -204,6 +252,11 @@ describe('tolerating how models actually reply', () => {
   test('rejects malformed JSON', async () => {
     await expect(analyze(baseArgs(2), { createAgent: agentReturning('{"classifications": {1: }') }))
       .rejects.toThrow(/did not return usable JSON/);
+  });
+
+  test('names the model in the failure, so a bug report identifies it', async () => {
+    await expect(analyze(baseArgs(2), { createAgent: agentReturning('nope') }))
+      .rejects.toThrow(/us\.anthropic\.claude-opus-4-6-v1/);
   });
 });
 
