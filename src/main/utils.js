@@ -256,8 +256,61 @@ function toStrandsContentBlocks(blocks) {
   });
 }
 
+/**
+ * Accumulate the text of a model response from an agent stream.
+ *
+ * Lives here rather than beside createAgent() because it is pure async-iteration
+ * logic with no SDK dependency, and strandsAgentFactory imports the SDK — which is
+ * pure ESM, so anything requiring it is unusable from a Jest test without mocking
+ * the package away. Keeping it SDK-free means tests exercise the real accumulator
+ * against real event shapes instead of a mock of it.
+ *
+ * Centralised because the SDK's event shape is three levels deep and easy to get
+ * wrong — and getting it wrong fails *silently*: no error, just an empty string,
+ * which downstream code then reports as whatever it thinks empty input means. The
+ * StoryBrand analyzer shipped with its own guessed-at shape and reported "the
+ * model did not return usable JSON" for every model on every run, because it never
+ * accumulated a single character.
+ *
+ * The shape, as of @strands-agents/sdk 1.12.0:
+ *
+ *   { type: 'modelStreamUpdateEvent',
+ *     event: { type: 'modelContentBlockDeltaEvent',
+ *              delta: { type: 'textDelta', text: '...' } } }
+ *
+ * Anything else in the stream — tool events, reasoning blocks, lifecycle events —
+ * is ignored here by design; callers that need those iterate the stream themselves.
+ *
+ * @param {AsyncIterable} stream        - the result of agent.stream(...)
+ * @param {object}   [options]
+ * @param {AbortSignal} [options.signal] - stop accumulating once aborted
+ * @param {Function} [options.onDelta]   - called with each text delta, for live UI
+ * @returns {Promise<string>}
+ *
+ * Note for callers that need partial output when the stream fails: accumulate via
+ * `onDelta` rather than from the return value. If the stream throws mid-way the
+ * return value never lands, and a user-requested stop is exactly the case where
+ * the text received so far is the thing worth keeping.
+ */
+async function collectStreamText(stream, { signal, onDelta } = {}) {
+  let text = '';
+  for await (const streamEvent of stream) {
+    if (signal?.aborted) break;
+    if (streamEvent?.type !== 'modelStreamUpdateEvent') continue;
+    const inner = streamEvent.event;
+    if (inner?.type !== 'modelContentBlockDeltaEvent') continue;
+    if (inner.delta?.type !== 'textDelta') continue;
+    const delta = inner.delta.text;
+    if (typeof delta !== 'string') continue;
+    text += delta;
+    if (onDelta) onDelta(delta);
+  }
+  return text;
+}
+
 module.exports = {
   sanitizeFileName,
+  collectStreamText,
   buildFileContentBlocks,
   toStrandsContentBlocks,
   INLINE_DOCUMENT_LIMIT_BYTES,

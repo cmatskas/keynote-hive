@@ -343,4 +343,5 @@ function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, o
   return { agent, dispose };
 }
 
+
 module.exports = { createAgent, isRetryableToolError, supportsExtendedThinking, isAnthropicModel };

@@ -358,3 +358,90 @@ describe('utils — oversized document handling (sandbox pointer, no pre-extract
     });
   });
 });
+
+/**
+ * Tests for collectStreamText — the shared model-stream accumulator.
+ *
+ * It exists because the SDK's event shape is three levels deep and getting it
+ * wrong fails silently: no error, just an empty string. The StoryBrand analyzer
+ * shipped with its own guessed-at shape and reported "the model did not return
+ * usable JSON" for every model on every run, having never accumulated a single
+ * character. One implementation, tested against the real shape, closes that off.
+ */
+describe('collectStreamText', () => {
+  const { collectStreamText } = require('../../src/main/utils');
+
+  /** The real SDK event shape, as used by every call site in the app. */
+  const textDelta = (text) => ({
+    type: 'modelStreamUpdateEvent',
+    event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } },
+  });
+
+  const streamOf = (...events) => (async function* () { for (const e of events) yield e; })();
+
+  test('joins the text deltas in order', async () => {
+    const text = await collectStreamText(streamOf(textDelta('Hello '), textDelta('world.')));
+    expect(text).toBe('Hello world.');
+  });
+
+  test('ignores every non-text event a real stream carries', async () => {
+    const text = await collectStreamText(streamOf(
+      { type: 'agentInitializedEvent' },
+      textDelta('kept'),
+      { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockStartEvent' } },
+      { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'reasoningDelta', text: 'DROPPED' } } },
+      { type: 'toolUseEvent', name: 'x' },
+      { type: 'agentCompletedEvent' },
+    ));
+    expect(text).toBe('kept');
+  });
+
+  test('returns empty for a stream with no text at all', async () => {
+    // Empty rather than throwing: callers decide what "nothing came back" means,
+    // and the analyzer reports it distinctly from unparseable output.
+    expect(await collectStreamText(streamOf({ type: 'agentCompletedEvent' }))).toBe('');
+  });
+
+  test('reports each delta to onDelta for live UI', async () => {
+    const seen = [];
+    await collectStreamText(streamOf(textDelta('a'), textDelta('b')), { onDelta: d => seen.push(d) });
+    expect(seen).toEqual(['a', 'b']);
+  });
+
+  test('stops accumulating once the signal is aborted', async () => {
+    const controller = new AbortController();
+    const stream = (async function* () {
+      yield textDelta('first');
+      controller.abort();
+      yield textDelta('should not arrive');
+    })();
+
+    expect(await collectStreamText(stream, { signal: controller.signal })).toBe('first');
+  });
+
+  test('onDelta lets a caller keep partial text when the stream throws', async () => {
+    // Taking the return value loses it, which is exactly what a user-requested
+    // stop must not do.
+    let partial = '';
+    const stream = (async function* () {
+      yield textDelta('partial answer');
+      throw new Error('connection lost');
+    })();
+
+    await expect(collectStreamText(stream, { onDelta: d => { partial += d; } }))
+      .rejects.toThrow('connection lost');
+    expect(partial).toBe('partial answer');
+  });
+
+  test('tolerates malformed events without throwing', async () => {
+    const text = await collectStreamText(streamOf(
+      null,
+      undefined,
+      { type: 'modelStreamUpdateEvent' },
+      { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent' } },
+      { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text: 42 } } },
+      textDelta('survived'),
+    ));
+    expect(text).toBe('survived');
+  });
+});
