@@ -27,6 +27,7 @@ const agentIPC = require('./src/main/ipc/agent');
 const bedrockIPC = require('./src/main/ipc/bedrock');
 const setupWizardIPC = require('./src/main/ipc/setupWizard');
 const adminSetupIPC = require('./src/main/ipc/adminSetup');
+const storyboardIPC = require('./src/main/ipc/storyboard');
 
 const ctx = new AppContext();
 
@@ -286,6 +287,7 @@ app.whenReady().then(async () => {
   memoryIPC.register(ipcMain, ctx);
   workHistoryIPC.register(ipcMain, ctx);
   skillsIPC.register(ipcMain, ctx);
+  storyboardIPC.register(ipcMain, ctx);
   showflowIPC.register(ipcMain, ctx);
   swarmIPC.register(ipcMain, ctx);
   agentIPC.register(ipcMain, ctx);

@@ -196,6 +196,9 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
     'get-connectivity-status', 'renderer-connectivity-hint',
     'update-custom-prompt', 'validate-credentials', 'work-history-delete', 'work-history-list',
     'work-history-load', 'work-history-rename', 'work-history-save', 'work-history-star', 'work-cleanup-session',
+    'storyboard-get-elements', 'storyboard-extract', 'storyboard-extract-text',
+    'storyboard-analyze', 'storyboard-reanalyze', 'storyboard-list', 'storyboard-get',
+    'storyboard-search', 'storyboard-revisions', 'storyboard-rename', 'storyboard-delete',
     'swarm-run-pipeline', 'swarm-continue', 'swarm-cancel', 'swarm-answer-input', 'swarm-get-templates', 'swarm-get-analytics', 'select-files',
 ]);
 
