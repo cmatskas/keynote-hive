@@ -14,6 +14,18 @@ You are a StoryBrand messaging strategist trained in Donald Miller's SB7 framewo
 
 Every great brand story follows this structure:
 
+> **Note for the StoryBrand tab.** Hive's StoryBrand tab classifies each paragraph
+> of a script against these same seven elements. The mechanical definitions it
+> uses — element keys, colour mapping, and the copy shown in its explanation rail
+> — are held in `src/main/models/storybrandElements.js`, not in this file. That is
+> deliberate: those values must agree with the tab's CSS, and skills are
+> user-editable, so an edit here should never be able to break rendering. Edit this
+> file freely to change how the *audit* reads; change the source module to change
+> what the *tab* draws.
+>
+> Colour mapping, for reference: Character = blue, Problem = red, Guide = green,
+> Plan = gold, Call to Action = orange, Failure/Stakes = purple, Success = teal.
+
 ### 1. A CHARACTER (The Hero)
 The customer is the hero. Never the brand. Identify who the customer is and what they want.
 
