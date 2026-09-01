@@ -44,9 +44,61 @@ const logger = require('electron-log/main');
 const MAX_PAUSED_MS = 30 * 60 * 1000;
 /** While paused, retry on this cadence even without an explicit resume signal. */
 const PAUSED_RETRY_MS = 60 * 1000;
-/** Answered polls only — paused time has its own budget above. */
-const MAX_POLL_ATTEMPTS = 60;
-const POLL_INTERVAL_MS = 5000;
+/**
+ * How long Hive keeps watching a job AWS has accepted.
+ *
+ * This was 60 attempts x 5s = exactly 5 minutes, which made long media
+ * structurally impossible: Transcribe accepts up to 4 hours of audio and takes
+ * real time roughly proportional to its length, so anything past a short clip
+ * blew the cap and was reported as a failure while the job ran on to completion
+ * and billed. The ceiling is now Transcribe's own maximum media duration plus
+ * margin for queueing.
+ *
+ * Still bounded rather than open-ended, so a job that somehow never reaches a
+ * terminal state ends rather than polling forever.
+ *
+ * Excludes time spent paused for connectivity or credentials — that has its own
+ * budget in MAX_PAUSED_MS, and an outage must not eat the processing budget.
+ */
+const MAX_PROCESSING_MS = 5 * 60 * 60 * 1000;
+
+/**
+ * Poll cadence, widening as a job runs. Short files stay responsive (a
+ * 30-second clip finishes within the first few polls) while a 4-hour job costs
+ * roughly 270 GetTranscriptionJob calls instead of the ~2,880 a flat 5s would.
+ */
+const POLL_SCHEDULE = [
+  { untilMs: 60 * 1000, everyMs: 5 * 1000 },
+  { untilMs: 5 * 60 * 1000, everyMs: 15 * 1000 },
+  { untilMs: 15 * 60 * 1000, everyMs: 30 * 1000 },
+];
+const POLL_INTERVAL_MAX_MS = 60 * 1000;
+
+/** Poll interval for a job that has been processing for `elapsedMs`. */
+function pollIntervalFor(elapsedMs) {
+  for (const step of POLL_SCHEDULE) {
+    if (elapsedMs < step.untilMs) return step.everyMs;
+  }
+  return POLL_INTERVAL_MAX_MS;
+}
+
+/**
+ * Time spent actually observing the job, excluding pauses. Never negative, so a
+ * clock adjustment cannot make the budget look already spent.
+ */
+function observedProcessingMs(job, now = Date.now()) {
+  if (!job.pollStartedAt) return 0;
+  return Math.max(0, now - job.pollStartedAt - (job.pausedTotalMs || 0));
+}
+
+/** Human-readable elapsed time: seconds, then minutes, then hours. */
+function formatElapsed(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
 
 class TranscriptionCancelled extends Error {
   constructor() {
@@ -63,6 +115,23 @@ class TranscriptionPauseExpired extends Error {
         : `Transcription paused for too long waiting for a connection. The job "${jobName}" is still running on AWS.`
     );
     this.name = 'TranscriptionPauseExpired';
+    this.jobName = jobName;
+  }
+}
+
+/**
+ * The processing budget ran out. Deliberately its own type, and deliberately not
+ * a generic failure: the job is alive on AWS and will finish and bill whatever
+ * Hive does, so the only honest report names it and says where to collect it.
+ */
+class TranscriptionStillProcessing extends Error {
+  constructor(jobName, observedMs) {
+    super(
+      `Transcription is taking longer than ${formatElapsed(observedMs)}, so Hive has stopped waiting. ` +
+      `The job "${jobName}" is still running on AWS — use "Find past transcriptions" to collect the ` +
+      'transcript once it finishes. You will not be charged twice.'
+    );
+    this.name = 'TranscriptionStillProcessing';
     this.jobName = jobName;
   }
 }
@@ -526,7 +595,9 @@ async function runTranscription(ctx, job, { file }) {
 
     emitProgress(ctx, job, { status: 'IN_PROGRESS', message: 'Transcription job started. Processing audio...' });
 
-    for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+    job.pollStartedAt = Date.now();
+
+    for (;;) {
       if (job.cancelled) return { status: 'CANCELLED', jobId: job.jobId };
 
       const jobStatus = await observeWithPause(ctx, job, async () => {
@@ -573,13 +644,22 @@ async function runTranscription(ctx, job, { file }) {
         throw new Error(`Transcription job failed: ${jobStatus.FailureReason || 'Unknown error'}`);
       }
 
-      const elapsed = Math.floor((attempt + 1) * POLL_INTERVAL_MS / 1000);
-      emitProgress(ctx, job, { status: 'IN_PROGRESS', message: `Processing audio... (${elapsed}s elapsed)` });
-      await cancellableSleep(job, POLL_INTERVAL_MS);
-    }
+      // Measured, not derived from the attempt count: the interval widens as a
+      // job runs, so attempts x interval would report a duration that never
+      // happened.
+      const observedMs = observedProcessingMs(job);
 
-    if (job.cancelled) return { status: 'CANCELLED', jobId: job.jobId };
-    throw new Error('Transcription job timed out after 5 minutes');
+      if (observedMs >= MAX_PROCESSING_MS) {
+        if (job.cancelled) return { status: 'CANCELLED', jobId: job.jobId };
+        throw new TranscriptionStillProcessing(job.jobName, observedMs);
+      }
+
+      emitProgress(ctx, job, {
+        status: 'IN_PROGRESS',
+        message: `Processing audio... (${formatElapsed(observedMs)} elapsed)`,
+      });
+      await cancellableSleep(job, pollIntervalFor(observedMs));
+    }
   } catch (err) {
     // A cancel surfaces either as the flag (upload abort) or as the thrown
     // TranscriptionCancelled that breaks a pause — both are a clean stop.
@@ -594,6 +674,17 @@ async function runTranscription(ctx, job, { file }) {
     if (err instanceof TranscriptionPauseExpired) {
       await persistJob(ctx, job, 'ABANDONED', null, { abandonedReason: job.pauseReason || 'network' });
       transcriptionNotify(ctx, 'Transcription Paused Too Long', err.message.slice(0, 140), 'critical');
+      return { status: 'ABANDONED', jobId: job.jobId, jobName: err.jobName, message: err.message };
+    }
+
+    // Same situation as above — Hive stopped watching, AWS did not stop working —
+    // so it gets the same treatment. Reporting this as a failure (which it did)
+    // told the user their transcript was gone while they were being billed for
+    // one that was about to exist, and wrote no record, so nothing pointed at
+    // the job that could still be collected.
+    if (err instanceof TranscriptionStillProcessing) {
+      await persistJob(ctx, job, 'ABANDONED', null, { abandonedReason: 'timeout' });
+      transcriptionNotify(ctx, 'Transcription Still Running', err.message.slice(0, 140), 'critical');
       return { status: 'ABANDONED', jobId: job.jobId, jobName: err.jobName, message: err.message };
     }
 
@@ -679,6 +770,10 @@ async function renameTranscription(ctx, jobId, displayName) {
 
 module.exports = {
   runTranscription,
+  pollIntervalFor,
+  observedProcessingMs,
+  formatElapsed,
+  MAX_PROCESSING_MS,
   persistJob,
   writeSidecar,
   buildRecord,
@@ -696,6 +791,5 @@ module.exports = {
   TranscriptionPauseExpired,
   MAX_PAUSED_MS,
   PAUSED_RETRY_MS,
-  MAX_POLL_ATTEMPTS,
-  POLL_INTERVAL_MS,
+  TranscriptionStillProcessing,
 };

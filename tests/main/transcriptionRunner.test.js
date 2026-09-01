@@ -918,3 +918,174 @@ describe('paused budget exhaustion', () => {
     expect(result.jobName).toMatch(/^transcription-\d+$/);
   });
 });
+
+/**
+ * The processing budget.
+ *
+ * This replaced a flat 60 attempts x 5s = exactly 5 minutes, which made long
+ * media structurally impossible: Transcribe accepts up to 4 hours of audio and
+ * takes real time roughly proportional to its length, so any substantial file
+ * blew the cap. Worse, the cap was reported as a plain failure and wrote no
+ * record, while the job ran on to completion on AWS and billed — so the user was
+ * told their transcript was gone at the moment they were paying for one.
+ *
+ * Nothing in the suite covered that path, which is how a wrong constant survived.
+ *
+ * Elapsed time is simulated by moving job.pollStartedAt rather than by waiting,
+ * so these exercise the real budget arithmetic in the real loop.
+ */
+describe('the processing budget', () => {
+  /** Pretend the job has been observed for `ms` already. */
+  const pretendElapsed = (job, ms) => { job.pollStartedAt = Date.now() - ms; };
+
+  test('keeps polling well past the old 5-minute cap', async () => {
+    // The reported bug, directly: a job still in progress at 10 minutes used to
+    // be failed here.
+    const { ctx } = buildCtx();
+    const { job, promise } = startJob(ctx);
+    await pollingAsleep(job);
+
+    pretendElapsed(job, 10 * 60 * 1000);
+    job.wake();
+    await pollingAsleep(job);
+
+    expect(job.cancelled).toBe(false);
+
+    // And it still completes rather than having been abandoned along the way.
+    ctx.awsClients.transcribe.send = jest.fn(async () => completedJob());
+    job.wake();
+    await expect(promise).resolves.toMatchObject({ status: 'COMPLETED' });
+  });
+
+  test('a job that finishes after an hour still delivers its transcript', async () => {
+    const { ctx } = buildCtx();
+    const { job, promise } = startJob(ctx);
+    await pollingAsleep(job);
+
+    pretendElapsed(job, 60 * 60 * 1000);
+    ctx.awsClients.transcribe.send = jest.fn(async () => completedJob());
+    job.wake();
+
+    await expect(promise).resolves.toMatchObject({ status: 'COMPLETED' });
+  });
+
+  test('exhausting the budget is ABANDONED, not FAILED, and records the job', async () => {
+    const { ctx, sent } = buildCtx();
+    const { job, promise } = startJob(ctx);
+    await pollingAsleep(job);
+
+    pretendElapsed(job, runner.MAX_PROCESSING_MS + 1000);
+    job.wake();
+
+    const result = await promise;
+
+    expect(result.status).toBe('ABANDONED');
+    expect(result.jobName).toBe(job.jobName);
+    // A record must exist, or nothing points at the job left running on AWS.
+    expect(ctx.transcriptionRegistry.saved).toHaveLength(1);
+    expect(ctx.transcriptionRegistry.saved[0].record).toMatchObject({
+      status: 'ABANDONED',
+      abandonedReason: 'timeout',
+    });
+    expect(sent.some(e => e.channel === 'transcription-progress')).toBe(true);
+  });
+
+  test('the abandoned message says the job is still on AWS and how to collect it', async () => {
+    const { ctx } = buildCtx();
+    const { job, promise } = startJob(ctx);
+    await pollingAsleep(job);
+
+    pretendElapsed(job, runner.MAX_PROCESSING_MS + 1000);
+    job.wake();
+
+    const result = await promise;
+
+    expect(result.message).toContain('still running on AWS');
+    expect(result.message).toContain('Find past transcriptions');
+    expect(result.message).toContain('not be charged twice');
+    expect(result.message).toContain(job.jobName);
+  });
+
+  test('paused time does not consume the processing budget', async () => {
+    // An outage has its own budget (MAX_PAUSED_MS). If it also ate this one, a
+    // long pause would abandon a job that had barely been observed.
+    const { ctx } = buildCtx();
+    const { job, promise } = startJob(ctx);
+    await pollingAsleep(job);
+
+    job.pollStartedAt = Date.now() - (runner.MAX_PROCESSING_MS + 60 * 1000);
+    job.pausedTotalMs = runner.MAX_PROCESSING_MS; // nearly all of it was paused
+    job.wake();
+    await pollingAsleep(job);
+
+    ctx.awsClients.transcribe.send = jest.fn(async () => completedJob());
+    job.wake();
+    await expect(promise).resolves.toMatchObject({ status: 'COMPLETED' });
+  });
+
+  test('reports real elapsed time, not attempts x interval', async () => {
+    const { ctx, sent } = buildCtx();
+    const { job, promise } = startJob(ctx);
+    await pollingAsleep(job);
+
+    pretendElapsed(job, 90 * 60 * 1000);
+    job.wake();
+    await pollingAsleep(job);
+
+    const messages = progressOf(sent).map(p => p.message);
+    expect(messages.some(m => m.includes('1h 30m elapsed'))).toBe(true);
+
+    job.cancelled = true;
+    job.wake();
+    await promise;
+  });
+});
+
+describe('poll backoff', () => {
+  test('widens with elapsed time, then holds at a minute', () => {
+    // Short files stay responsive; a 4-hour job costs ~270 GetTranscriptionJob
+    // calls instead of ~2,880 at a flat 5s.
+    expect(runner.pollIntervalFor(0)).toBe(5000);
+    expect(runner.pollIntervalFor(59 * 1000)).toBe(5000);
+    expect(runner.pollIntervalFor(60 * 1000)).toBe(15000);
+    expect(runner.pollIntervalFor(4 * 60 * 1000)).toBe(15000);
+    expect(runner.pollIntervalFor(5 * 60 * 1000)).toBe(30000);
+    expect(runner.pollIntervalFor(14 * 60 * 1000)).toBe(30000);
+    expect(runner.pollIntervalFor(15 * 60 * 1000)).toBe(60000);
+    expect(runner.pollIntervalFor(4 * 60 * 60 * 1000)).toBe(60000);
+  });
+
+  test('the budget is generous enough for the media AWS actually accepts', () => {
+    // Transcribe's maximum media duration is 4 hours; the ceiling has to clear
+    // that plus queueing or long files are impossible again.
+    expect(runner.MAX_PROCESSING_MS).toBeGreaterThan(4 * 60 * 60 * 1000);
+  });
+});
+
+describe('observedProcessingMs / formatElapsed', () => {
+  test('excludes paused time', () => {
+    const now = 1_000_000;
+    const job = { pollStartedAt: now - 60_000, pausedTotalMs: 20_000 };
+    expect(runner.observedProcessingMs(job, now)).toBe(40_000);
+  });
+
+  test('is zero before polling starts', () => {
+    expect(runner.observedProcessingMs({ pausedTotalMs: 0 })).toBe(0);
+  });
+
+  test('never goes negative if the clock moves backwards', () => {
+    const job = { pollStartedAt: 2_000_000, pausedTotalMs: 0 };
+    expect(runner.observedProcessingMs(job, 1_000_000)).toBe(0);
+  });
+
+  test('formats seconds, minutes and hours', () => {
+    expect(runner.formatElapsed(0)).toBe('0s');
+    expect(runner.formatElapsed(45_000)).toBe('45s');
+    expect(runner.formatElapsed(59_999)).toBe('59s');
+    expect(runner.formatElapsed(60_000)).toBe('1m');
+    expect(runner.formatElapsed(59 * 60 * 1000)).toBe('59m');
+    expect(runner.formatElapsed(60 * 60 * 1000)).toBe('1h 0m');
+    expect(runner.formatElapsed(90 * 60 * 1000)).toBe('1h 30m');
+    expect(runner.formatElapsed(4 * 60 * 60 * 1000 + 5 * 60 * 1000)).toBe('4h 5m');
+  });
+});
