@@ -1,5 +1,22 @@
 # Release Notes
 
+## v4.0.2
+
+### Fixes
+- **Transcription failed after exactly 5 minutes, no matter the file.** Not an AWS limit and not a missing API parameter: Hive polled `GetTranscriptionJob` a fixed 60 times at 5-second intervals and then threw `Transcription job timed out after 5 minutes`. AWS Transcribe accepts media up to 4 hours long and processing takes real time roughly proportional to the audio, so any substantial recording was structurally impossible to transcribe — the cap had nothing to do with the file or the account.
+  - The budget is now wall-clock and 5 hours, clearing Transcribe's own 4-hour maximum media duration with margin for queueing. Still bounded rather than open-ended, so a job that never reaches a terminal state still ends.
+  - Paused time is excluded from that budget. An outage already has its own 30-minute allowance, and letting it also consume the processing budget would abandon a job that had barely been observed.
+- **A timed-out job was reported as a failure, and left no trace.** The job was still running on AWS and still billing, so "failed" was the one thing it wasn't. Worse, the record was only written on completion or pause-expiry, so a timeout wrote nothing at all — there was no entry pointing at the job that could still be collected. It now takes the same path an expired pause already took: recorded as still-on-AWS, named, and reported with a message saying to use **Find past transcriptions** and that you will not be charged twice. That path existed and was correct; the timeout simply never used it.
+
+### Improvements
+- **Polling backs off** — 5s for the first minute, then 15s, 30s, and 60s. Short files stay as responsive as before, while a 4-hour job costs roughly 270 `GetTranscriptionJob` calls instead of the ~2,880 a flat 5-second interval would have made.
+- **Elapsed time in the progress line is measured rather than inferred.** It was `attempts x interval`, which was only accidentally correct before and would have been plainly wrong once the interval started varying. It now reads real elapsed time and switches to minutes and hours, so a long job reads `1h 30m elapsed` instead of a five-figure second count.
+
+### Tests
+- 14 tests for the budget, backoff, and elapsed formatting — including the reported bug directly: a job still in progress at 10 minutes keeps polling, and one that finishes after an hour still delivers its transcript. Elapsed time is simulated by moving the job's start timestamp, so the real budget arithmetic runs in the real loop.
+- Mutation-verified: restoring the 5-minute cap fails 3, reporting the timeout as a failure instead of still-on-AWS fails 2, letting paused time consume the budget fails 2, flattening the backoff fails 1, and inferring elapsed time from a counter fails 1.
+- Worth noting that **no test covered the timeout path at all** before this, which is how a wrong constant survived in a well-covered file.
+
 ## v4.0.1
 
 ### Fixes

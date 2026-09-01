@@ -224,6 +224,10 @@ Transcription runs in the background — it doesn't block the UI. Progress appea
 
 If the connection drops or your credentials expire while a job is running, Hive pauses instead of failing — see [Working Offline](#working-offline).
 
+**Long files.** AWS Transcribe accepts media up to 4 hours long (and 2GB), and processing takes real time roughly proportional to the length of the audio, so a long recording can legitimately take a while — the progress line shows elapsed time, and Hive polls less often as a job goes on rather than hammering AWS for hours. Hive waits up to 5 hours, which clears Transcribe's own maximum with room for queueing.
+
+If a job somehow outlasts even that, Hive stops watching but **does not** call it a failure, because the job is still running on AWS and will still produce a transcript you have already paid for. It's recorded as still-on-AWS and named, and **Find past transcriptions** collects the result once it finishes. The same is true if you were offline for longer than Hive's pause budget.
+
 ## StoryBrand Tab
 
 Upload a keynote script or a detailed outline and Hive classifies every paragraph against the seven [StoryBrand SB7](https://storybrand.com/) elements, then shows the script back to you colour-coded — Character in blue, Problem in red, Guide in green, Plan in gold, Call to Action in orange, Stakes in purple, Success in teal. A sticky card beside the text explains whichever element you're currently reading, and a Colour/Plain toggle drops the colours when you just want to read.
