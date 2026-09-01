@@ -1421,9 +1421,17 @@ Instructions for the agent go here.
                 <button class="sb-seg-btn" id="sbSegPlain" aria-pressed="false">Plain</button>
                 <span class="sb-seg-thumb" id="sbSegThumb"></span>
               </div>
-              <button class="btn btn-sm btn-outline-secondary sb-audit-toggle" id="sbAuditToggle">
+              <button class="btn btn-sm btn-outline-secondary sb-audit-toggle" id="sbAuditToggle" aria-expanded="false" aria-controls="sbAuditPanel">
                 <i class="bi bi-clipboard-check me-1"></i>Audit
               </button>
+            </div>
+
+            <!-- Flow ribbon. Sits outside .sb-scroll so it stays put while the
+                 script scrolls beneath it — it is a minimap as well as a picture,
+                 and would be useless if it scrolled away. -->
+            <div class="sb-flow" id="sbFlow" role="navigation" aria-label="Story flow">
+              <div class="sb-flow-track" id="sbFlowTrack"></div>
+              <div class="sb-flow-caption" id="sbFlowCaption"></div>
             </div>
 
             <div class="sb-scroll" id="sbScroll">
@@ -1448,6 +1456,14 @@ Instructions for the agent go here.
           </div>
 
           <!-- ── Audit panel ── -->
+          <!-- Row overflow menu. Reuses the Work tab's .sidebar-context-menu / .ctx-item
+               classes so both sidebars are styled by one set of rules. -->
+          <div id="sbContextMenu" class="sidebar-context-menu" style="display:none;">
+            <button class="ctx-item" data-action="rename"><i class="bi bi-pencil"></i> Rename</button>
+            <div class="ctx-divider"></div>
+            <button class="ctx-item ctx-danger" data-action="delete"><i class="bi bi-trash3"></i> Delete</button>
+          </div>
+
           <div class="sb-audit-panel" id="sbAuditPanel" style="display:none;">
             <div class="sb-audit-header">
               <span class="sb-display-heading">Audit</span>
@@ -1478,6 +1494,7 @@ Instructions for the agent go here.
     <script src="../renderer/showflowStore.js"></script>
     <script src="../renderer/showflowExport.js"></script>
     <script src="../renderer/showflowTab.js"></script>
+    <script src="../renderer/storyboardFlow.js"></script>
     <script src="../renderer/storyboardExport.js"></script>
     <script src="../renderer/storyboardTab.js"></script>
 </body>

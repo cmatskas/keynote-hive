@@ -1682,7 +1682,12 @@ body {
     transition: opacity 0.15s;
     flex-shrink: 0;
 }
-.sidebar-item:hover .sidebar-menu-btn { opacity: 1; }
+/* Also covers the StoryBrand sidebar, whose rows are .conv-item rather than
+ * .sidebar-item. Listed here rather than duplicated so the reveal behaviour has
+ * one definition. */
+.sidebar-item:hover .sidebar-menu-btn,
+#storyboard-page .conv-item:hover .sidebar-menu-btn,
+#storyboard-page .conv-item.active .sidebar-menu-btn { opacity: 1; }
 
 /* Working indicator in sidebar */
 .sidebar-working-indicator {
@@ -2595,6 +2600,13 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  /* Establishes the containing block for .sb-audit-panel, which is absolutely
+   * positioned. Without it the panel resolved against the initial containing
+   * block — the whole window — and opened as a full-height overlay over the
+   * navbar and, fatally, over the Audit button that toggles it. The toggle and
+   * close handlers were both correct; the layout put them underneath the panel,
+   * leaving no way back except restarting the app. */
+  position: relative;
   overflow: hidden;
   background: var(--sb-canvas);
 }
@@ -3053,6 +3065,39 @@ body {
 
 /* ── Sidebar list entries ────────────────────────────────────────────────── */
 
+/* StoryBrand list rows carry a title, a colour shape bar, a paragraph/word line
+ * and sometimes a search snippet, so they stack. The base .conv-item is a
+ * centred flex *row* — inherited unchanged, it laid all of that out side by side:
+ * the title was crushed to an ellipsis, the meta and the snippet sat in columns
+ * beside each other, and the shape bar collapsed to nothing and was never once
+ * visible. */
+#storyboard-page .conv-item {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  position: relative;   /* containing block for the overflow button */
+}
+
+/* Room for the button, so a long name does not run underneath it. */
+#storyboard-page .conv-item-title {
+  padding-right: 22px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#storyboard-page .conv-item .sidebar-menu-btn {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+}
+
+/* The active row is a solid accent fill with white text, and the button's muted
+ * grey all but disappears on it. */
+#storyboard-page .conv-item.active .sidebar-menu-btn {
+  color: inherit;
+}
+
 .sb-entry-shape { display: flex; gap: 2px; margin-top: 6px; height: 4px; }
 .sb-entry-shape span { flex: 1 1 auto; border-radius: 2px; min-width: 2px; }
 .sb-entry-meta { font-size: 11.5px; opacity: 0.75; margin-top: 3px; }
@@ -3236,4 +3281,104 @@ body {
 .chat-edit-btn:focus-visible {
     outline: 2px solid var(--accent-primary);
     outline-offset: 1px;
+}
+
+/* ── Flow ribbon ────────────────────────────────────────────────────────────
+ *
+ * A sequential picture of the talk, above the script and outside the scroll
+ * container so it stays put while reading — it doubles as a minimap, which only
+ * works if it is always on screen.
+ *
+ * One segment per run of consecutive paragraphs sharing an element, sized by word
+ * count. Not a histogram of totals: totals describe composition, which the
+ * sidebar shape bar already shows, and discard the order a keynote is made of.
+ */
+#storyboard-page .sb-flow {
+  flex: 0 0 auto;
+  padding: 10px 16px 8px;
+  background: var(--sb-surface);
+  border-bottom: 1px solid var(--sb-hairline);
+}
+
+#storyboard-page .sb-flow-track {
+  display: flex;
+  gap: 2px;
+  height: 14px;
+}
+
+#storyboard-page .sb-flow-seg {
+  /* flex-basis 0 so width is the run's share of the script and nothing else —
+   * with auto, an empty button still claims content width and short runs would
+   * read as larger than they are. */
+  flex: 1 1 0;
+  min-width: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: var(--sb-el, var(--sb-ink-soft));
+  /* High enough that a segment reads as the same colour as the text it points at
+   * — the ribbon's only job is that mapping, and at lower opacity gold and orange
+   * became hard to tell apart on the dark canvas. The current run is
+   * distinguished by its ring rather than by being the only saturated one. */
+  opacity: 0.78;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+#storyboard-page .sb-flow-seg:hover,
+#storyboard-page .sb-flow-seg:focus-visible {
+  opacity: 1;
+  /* Grows downward only: scaling both ways would push against the caption and
+   * make the row jitter as the pointer moves along it. */
+  transform: scaleY(1.35);
+  transform-origin: top;
+  outline: none;
+}
+
+/* The run being read. Full opacity plus a ring, so it is distinguishable from a
+ * hovered segment rather than looking like the pointer is somewhere it is not. */
+#storyboard-page .sb-flow-seg.is-current {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--sb-surface), 0 0 0 3px currentColor;
+}
+
+#storyboard-page .sb-flow-seg.is-unclassified {
+  background: var(--sb-ink-soft);
+  opacity: 0.28;
+}
+
+#storyboard-page .sb-flow-caption {
+  margin-top: 7px;
+  font-size: 11.5px;
+  color: var(--sb-ink-soft);
+  min-height: 14px;   /* reserved, so hovering does not shift the script below */
+  transition: color 0.15s ease;
+}
+
+#storyboard-page .sb-flow-caption.is-detail {
+  font-weight: 600;
+}
+
+/* Per-element colour, published as a custom property so the segment's own
+ * background and the is-current ring (which uses currentColor) both pick it up
+ * from one declaration. */
+#storyboard-page .sb-fc-blue   { --sb-el: var(--sb-blue);   color: var(--sb-blue); }
+#storyboard-page .sb-fc-red    { --sb-el: var(--sb-red);    color: var(--sb-red); }
+#storyboard-page .sb-fc-green  { --sb-el: var(--sb-green);  color: var(--sb-green); }
+#storyboard-page .sb-fc-gold   { --sb-el: var(--sb-gold);   color: var(--sb-gold); }
+#storyboard-page .sb-fc-orange { --sb-el: var(--sb-orange); color: var(--sb-orange); }
+#storyboard-page .sb-fc-purple { --sb-el: var(--sb-purple); color: var(--sb-purple); }
+#storyboard-page .sb-fc-teal   { --sb-el: var(--sb-teal);   color: var(--sb-teal); }
+
+/* Plain mode drops the ribbon's colour along with the script's, so the toggle
+ * means the same thing everywhere. */
+#storyboard-page .sb-reading-view.is-plain .sb-flow-seg {
+  --sb-el: var(--sb-ink-soft);
+  color: var(--sb-ink-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #storyboard-page .sb-flow-seg { transition: none; }
+  #storyboard-page .sb-flow-seg:hover,
+  #storyboard-page .sb-flow-seg:focus-visible { transform: none; }
 }

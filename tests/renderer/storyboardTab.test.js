@@ -96,6 +96,11 @@ async function loadTab({ list = [], elements = ELEMENTS } = {}) {
 
   jest.resetModules();
   delete window.StoryboardTab;
+  // Same order as index.html's script tags. storyboardFlow must come first: the
+  // tab calls window.StoryboardFlow while rendering, and that dependency is
+  // deliberately not defended against — a forgotten script tag should break
+  // loudly here rather than silently render a script with no ribbon.
+  require('../../src/renderer/storyboardFlow.js');
   require('../../src/renderer/storyboardExport.js');
   require('../../src/renderer/storyboardTab.js');
   await window.StoryboardTab.init();
@@ -604,5 +609,271 @@ describe('HTML export', () => {
     const html = window.StoryboardExport.buildHtml({ ...ANALYSIS, audit: null }, ELEMENTS);
     expect(html).toContain('</html>');
     expect(html).not.toContain('class="audit"');
+  });
+});
+
+
+describe('the page loads the flow module before the tab that needs it', () => {
+  test('storyboardFlow.js is loaded, and before storyboardTab.js', () => {
+    // The tab calls window.StoryboardFlow during render, so the order is load
+    // bearing and invisible from the tab's own code.
+    const html = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'src', 'pages', 'index.html'),
+      'utf8',
+    );
+    const flowAt = html.indexOf('storyboardFlow.js');
+    const tabAt = html.indexOf('storyboardTab.js');
+
+    expect(flowAt).toBeGreaterThan(-1);
+    expect(tabAt).toBeGreaterThan(-1);
+    expect(flowAt).toBeLessThan(tabAt);
+  });
+});
+
+/**
+ * The flow ribbon's behaviour in the tab.
+ *
+ * buildFlow's grouping is covered in storyboardFlow.test.js; this covers the
+ * parts that only exist once it is on screen — that a segment points at the right
+ * paragraph, that widths carry the run's share, and that a script with no
+ * structure does not get a bar implying it has some.
+ */
+describe('the flow ribbon', () => {
+  /** An analysis with three distinct runs. */
+  function threeRunAnalysis() {
+    return {
+      id: 'a1',
+      displayName: 'Test',
+      units: [
+        { index: 1, text: 'one two three four five six seven eight nine ten', kind: 'paragraph' },
+        { index: 2, text: 'eleven twelve', kind: 'paragraph' },
+        { index: 3, text: 'thirteen', kind: 'paragraph' },
+      ],
+      classifications: { 1: 'character', 2: 'problem', 3: 'success' },
+      audit: null,
+      modelId: 'm',
+      analysedAt: new Date().toISOString(),
+    };
+  }
+
+  beforeEach(() => {
+    document.getElementById('sbFlowTrack').innerHTML = '';
+    document.getElementById('sbFlow').style.display = '';
+  });
+
+  test('draws one segment per run, in document order', () => {
+    window.StoryboardTab._render(threeRunAnalysis());
+
+    const segs = [...document.querySelectorAll('#sbFlowTrack .sb-flow-seg')];
+    expect(segs).toHaveLength(3);
+    expect(segs.map(s => s.dataset.index)).toEqual(['1', '2', '3']);
+  });
+
+  test('segment width carries the run\'s share of the words', () => {
+    // Not paragraph count: the first run is ten words of a thirteen-word script
+    // and must dominate, or the ribbon misrepresents the talk.
+    window.StoryboardTab._render(threeRunAnalysis());
+
+    const grows = [...document.querySelectorAll('#sbFlowTrack .sb-flow-seg')]
+      .map(s => parseFloat(s.style.flexGrow));
+
+    expect(grows[0]).toBeGreaterThan(grows[1]);
+    expect(grows[1]).toBeGreaterThan(grows[2]);
+    expect(grows[0]).toBeCloseTo(1000 * 10 / 13, 0);
+  });
+
+  test('each segment names its element, range and size for hover and screen readers', () => {
+    window.StoryboardTab._render(threeRunAnalysis());
+
+    const first = document.querySelector('#sbFlowTrack .sb-flow-seg');
+    expect(first.getAttribute('title')).toMatch(/paragraph 1/);
+    expect(first.getAttribute('title')).toMatch(/10 words/);
+    expect(first.getAttribute('aria-label')).toMatch(/^Jump to /);
+  });
+
+  test('carries the element colour class so the ribbon matches the script', () => {
+    window.StoryboardTab._render(threeRunAnalysis());
+
+    const segs = [...document.querySelectorAll('#sbFlowTrack .sb-flow-seg')];
+    // Whatever the palette says, not a hardcoded list here — the definitions are
+    // the single source of truth for colour.
+    const slugFor = key => ELEMENTS.find(e => e.key === key).slug;
+    expect(segs[0].className).toContain(`sb-fc-${slugFor('character')}`);
+    expect(segs[1].className).toContain(`sb-fc-${slugFor('problem')}`);
+    expect(segs[2].className).toContain(`sb-fc-${slugFor('success')}`);
+  });
+
+  test('is hidden for a script with only one run', () => {
+    // A single full-width bar implies structure the script does not have.
+    window.StoryboardTab._render({
+      ...threeRunAnalysis(),
+      classifications: { 1: 'character', 2: 'character', 3: 'character' },
+    });
+
+    expect(document.getElementById('sbFlow').style.display).toBe('none');
+    expect(document.querySelectorAll('#sbFlowTrack .sb-flow-seg')).toHaveLength(0);
+  });
+
+  test('clicking a segment scrolls that run\'s first paragraph into view', () => {
+    window.StoryboardTab._render(threeRunAnalysis());
+    const scroll = document.getElementById('sbScroll');
+    const scrollTo = jest.fn();
+    scroll.scrollTo = scrollTo;
+    // jsdom reports zero geometry, so give the target an offset to aim at.
+    const target = document.querySelector('#sbSurface [data-index="3"]');
+    Object.defineProperty(target, 'offsetTop', { value: 900, configurable: true });
+    Object.defineProperty(scroll, 'clientHeight', { value: 400, configurable: true });
+
+    document.querySelector('#sbFlowTrack .sb-flow-seg[data-index="3"]').click();
+
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    // Offset back by a quarter viewport so the paragraph lands where the rail's
+    // anchor is rather than flush under the glass bar.
+    expect(scrollTo.mock.calls[0][0].top).toBe(900 - 100);
+  });
+
+  test('never scrolls to a negative offset for an early paragraph', () => {
+    window.StoryboardTab._render(threeRunAnalysis());
+    const scroll = document.getElementById('sbScroll');
+    scroll.scrollTo = jest.fn();
+    Object.defineProperty(scroll, 'clientHeight', { value: 400, configurable: true });
+    const target = document.querySelector('#sbSurface [data-index="1"]');
+    Object.defineProperty(target, 'offsetTop', { value: 10, configurable: true });
+
+    document.querySelector('#sbFlowTrack .sb-flow-seg[data-index="1"]').click();
+
+    expect(scroll.scrollTo.mock.calls[0][0].top).toBe(0);
+  });
+
+  test('the caption reports the run currently being read', () => {
+    // A live readout of position is more use than a static summary, and it is
+    // what makes the ribbon a minimap rather than a legend. Which run that is
+    // here depends on geometry jsdom does not have, so this asserts the shape of
+    // the readout rather than a specific run.
+    window.StoryboardTab._render(threeRunAnalysis());
+
+    const caption = document.getElementById('sbFlowCaption');
+    expect(caption.textContent).toMatch(/paragraph \d/);
+    expect(caption.textContent).toMatch(/words/);
+    expect(caption.classList.contains('is-detail')).toBe(true);
+  });
+
+  test('the caption falls back to an affordance hint when no run is current', () => {
+    // The state before any position is known — it has to say what the ribbon is
+    // for, since an unlabelled strip of colour explains nothing.
+    window.StoryboardTab._render(threeRunAnalysis());
+
+    window.StoryboardTab._flowCaption(-1);
+
+    const caption = document.getElementById('sbFlowCaption');
+    expect(caption.textContent).toMatch(/3 sections/);
+    expect(caption.textContent).toMatch(/click to jump/);
+    expect(caption.classList.contains('is-detail')).toBe(false);
+  });
+
+  test('hovering a segment reports its element, range and share', () => {
+    window.StoryboardTab._render(threeRunAnalysis());
+
+    document.querySelector('#sbFlowTrack .sb-flow-seg[data-index="2"]')
+      .dispatchEvent(new MouseEvent('mouseenter'));
+
+    const caption = document.getElementById('sbFlowCaption').textContent;
+    expect(caption).toMatch(/paragraph 2/);
+    expect(caption).toMatch(/2 words/);
+  });
+});
+
+/**
+ * The flow ribbon in the standalone export.
+ *
+ * The export has to carry the same overview as the tab, and must stay
+ * self-contained — no stylesheet, no font and no script of ours behind it, so the
+ * ribbon's colours are inlined and its behaviour ships in the document.
+ */
+describe('the exported flow ribbon', () => {
+  function analysisWithRuns() {
+    return {
+      id: 'e1',
+      displayName: 'Export test',
+      sourceName: 'keynote.docx',
+      units: [
+        { index: 1, text: 'alpha beta gamma delta', kind: 'paragraph' },
+        { index: 2, text: 'epsilon zeta', kind: 'paragraph' },
+        { index: 3, text: 'eta', kind: 'paragraph' },
+      ],
+      classifications: { 1: 'character', 2: 'problem', 3: 'guide' },
+      audit: null,
+      modelId: 'model-x',
+      analysedAt: new Date().toISOString(),
+    };
+  }
+
+  const exportHtml = (analysis) =>
+    window.StoryboardExport.buildHtml(analysis, ELEMENTS);
+
+  test('includes a segment per run, with inlined colours', () => {
+    const html = exportHtml(analysisWithRuns());
+
+    const segs = html.match(/class="flow-seg"/g) || [];
+    expect(segs).toHaveLength(3);
+    // Hex, not a custom property from our stylesheet — nothing of ours is present.
+    expect(html).toContain(ELEMENTS.find(e => e.key === 'character').hex);
+  });
+
+  test('every script block carries data-index so click-to-jump can resolve a target', () => {
+    // The ribbon's segments point at paragraphs by index; without these the
+    // clicks would silently do nothing in an exported file.
+    //
+    // Parsed rather than string-matched. A toContain('data-index="1"') check
+    // passes on the *segments*, which carry the same attribute — it looked like
+    // coverage and verified nothing.
+    const html = exportHtml(analysisWithRuns());
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    const blocks = [...doc.querySelectorAll('.surface [data-index]')];
+    expect(blocks.map(b => b.getAttribute('data-index'))).toEqual(['1', '2', '3']);
+
+    // And every segment's target actually exists in the document.
+    for (const seg of doc.querySelectorAll('.flow-seg')) {
+      const target = seg.getAttribute('data-index');
+      expect(doc.querySelector(`.surface [data-index="${target}"]`)).not.toBeNull();
+    }
+  });
+
+  test('segment widths carry each run\'s share of the words', () => {
+    const html = exportHtml(analysisWithRuns());
+
+    const grows = [...html.matchAll(/flex-grow:([\d.]+)/g)].map(m => parseFloat(m[1]));
+    expect(grows).toHaveLength(3);
+    expect(grows[0]).toBeGreaterThan(grows[1]);
+    expect(grows[1]).toBeGreaterThan(grows[2]);
+  });
+
+  test('is omitted for a script with a single run', () => {
+    const html = exportHtml({
+      ...analysisWithRuns(),
+      classifications: { 1: 'character', 2: 'character', 3: 'character' },
+    });
+
+    expect(html).not.toContain('class="flow-seg"');
+    expect(html).not.toContain('id="flowTrack"');
+  });
+
+  test('stays entirely self-contained', () => {
+    // The guarantee the whole export rests on: it must render identically on
+    // someone else's machine, offline, in two years.
+    const html = exportHtml(analysisWithRuns());
+
+    expect(html).not.toMatch(/<link[^>]+stylesheet/i);
+    expect(html).not.toMatch(/<script[^>]+src=/i);
+    expect(html).not.toMatch(/https?:\/\//);
+  });
+
+  test('the ribbon script ships in the document', () => {
+    const html = exportHtml(analysisWithRuns());
+
+    expect(html).toContain('flow-seg');
+    expect(html).toContain('markFlow');
+    expect(html).toContain('prefers-reduced-motion');
   });
 });

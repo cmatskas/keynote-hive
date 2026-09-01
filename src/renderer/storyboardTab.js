@@ -213,7 +213,9 @@
     current = null;
     $('sbInputView').style.display = '';
     $('sbReadingView').style.display = 'none';
-    $('sbAuditPanel').style.display = 'none';
+    // Through the helper so the toggle's state resets with it — returning to the
+    // input view with aria-expanded left true would report a panel that is gone.
+    setAuditOpen(false);
     $('sbReanalyzeBtn').classList.add('d-none');
     $('sbExportBtn').classList.add('d-none');
     $('sbTitle').textContent = 'StoryBrand';
@@ -284,6 +286,7 @@
     }).join('\n');
 
     surface.innerHTML = html;
+    renderFlow(analysis);
     observeReveals();
     updateActiveElement();
   }
@@ -310,10 +313,23 @@
     }, { passive: true });
 
     $('sbAuditToggle')?.addEventListener('click', () => {
-      const panel = $('sbAuditPanel');
-      panel.style.display = panel.style.display === 'none' ? '' : 'none';
+      setAuditOpen($('sbAuditPanel').style.display === 'none');
     });
-    $('sbAuditClose')?.addEventListener('click', () => { $('sbAuditPanel').style.display = 'none'; });
+    $('sbAuditClose')?.addEventListener('click', () => setAuditOpen(false));
+
+    // Escape closes it. Not a nicety: the panel is an overlay, and when its only
+    // way out was one button it was possible to end up with no way back at all.
+    // A second, layout-independent exit means a positioning mistake cannot trap
+    // the user again.
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      const page = $('storyboard-page');
+      // Only when this tab is actually showing, or Escape here would swallow the
+      // key for whatever else is on screen.
+      if (!page || page.classList.contains('d-none')) return;
+      if ($('sbContextMenu')?.style.display === 'block') return hideEntryMenu();
+      if ($('sbAuditPanel')?.style.display !== 'none') setAuditOpen(false);
+    });
 
     $('sbTitle')?.addEventListener('click', () => { if (current) beginRename(); });
     $('sbTitleInput')?.addEventListener('keydown', (e) => {
@@ -371,6 +387,119 @@
    * Pick the last classified block whose top has passed the reading anchor, and
    * show that element in the rail.
    */
+  // ── Flow ribbon ────────────────────────────────────────────
+  //
+  // A sequential picture of the talk: one segment per run of consecutive
+  // paragraphs sharing an element, in document order, sized by word count.
+  //
+  // Deliberately not a histogram of element totals. Totals describe composition,
+  // which the sidebar shape bar already shows, and composition throws away the
+  // one thing a keynote is made of — order. A ribbon shows the arc, and makes a
+  // missing element visible as an absent colour rather than as a fact you have to
+  // go and check.
+
+  let flowRuns = [];
+  let flowActiveRun = -1;
+
+  function renderFlow(analysis) {
+    const track = $('sbFlowTrack');
+    const wrap = $('sbFlow');
+    if (!track || !wrap) return;
+
+    flowRuns = window.StoryboardFlow.buildFlow(analysis.units || [], analysis.classifications || {});
+    flowActiveRun = -1;
+
+    if (flowRuns.length <= 1) {
+      // One run is not a flow — it is a solid bar that says nothing. Hide rather
+      // than draw something that implies structure the script does not have.
+      wrap.style.display = 'none';
+      track.innerHTML = '';
+      return;
+    }
+    wrap.style.display = '';
+
+    track.innerHTML = flowRuns.map((run, i) => {
+      const def = elementsByKey.get(run.key);
+      const label = def ? def.label : 'Unclassified';
+      const pct = Math.round(run.share * 1000) / 10;
+      const range = run.startIndex === run.endIndex
+        ? `paragraph ${run.startIndex}`
+        : `paragraphs ${run.startIndex}\u2013${run.endIndex}`;
+      // flex-grow carries the proportion; flex-basis 0 keeps content from
+      // influencing width, so a run's size is its share and nothing else.
+      return `<button type="button" class="sb-flow-seg${def ? ` sb-fc-${def.slug}` : ' is-unclassified'}"
+        style="flex-grow: ${run.share * 1000}"
+        data-run="${i}" data-index="${run.startIndex}"
+        title="${esc(label)} \u00b7 ${range} \u00b7 ${run.words.toLocaleString()} words (${pct}%)"
+        aria-label="Jump to ${esc(label)}, ${range}"></button>`;
+    }).join('');
+
+    track.querySelectorAll('.sb-flow-seg').forEach(seg => {
+      seg.addEventListener('click', () => jumpToUnit(Number(seg.dataset.index)));
+      seg.addEventListener('mouseenter', () => showFlowCaption(Number(seg.dataset.run)));
+      seg.addEventListener('focus', () => showFlowCaption(Number(seg.dataset.run)));
+    });
+    track.addEventListener('mouseleave', () => showFlowCaption(flowActiveRun));
+
+    // Arrow keys walk the ribbon, so it is navigable without a mouse.
+    track.addEventListener('keydown', (e) => {
+      const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!dir) return;
+      e.preventDefault();
+      const segs = [...track.querySelectorAll('.sb-flow-seg')];
+      const at = segs.indexOf(document.activeElement);
+      const next = segs[Math.min(segs.length - 1, Math.max(0, at + dir))];
+      next?.focus();
+    });
+
+    showFlowCaption(-1);
+  }
+
+  /** The caption under the ribbon — hover detail without a custom tooltip. */
+  function showFlowCaption(runIdx) {
+    const caption = $('sbFlowCaption');
+    if (!caption) return;
+    const run = flowRuns[runIdx];
+    if (!run) {
+      caption.textContent = `${flowRuns.length} sections \u00b7 hover to inspect, click to jump`;
+      caption.classList.remove('is-detail');
+      return;
+    }
+    const def = elementsByKey.get(run.key);
+    const range = run.startIndex === run.endIndex
+      ? `paragraph ${run.startIndex}`
+      : `paragraphs ${run.startIndex}\u2013${run.endIndex}`;
+    caption.textContent = `${def ? def.label : 'Unclassified'} \u00b7 ${range} \u00b7 ${run.words.toLocaleString()} words (${Math.round(run.share * 100)}%)`;
+    caption.classList.add('is-detail');
+    if (def) caption.style.color = `var(--sb-${def.slug})`;
+    else caption.style.removeProperty('color');
+  }
+
+  /** Scroll a paragraph into view inside the tab's own scroll container. */
+  function jumpToUnit(index) {
+    const scroll = $('sbScroll');
+    const target = $('sbSurface')?.querySelector(`[data-index="${index}"]`);
+    if (!scroll || !target) return;
+
+    // Offset by a third of the viewport so the target lands where the rail's
+    // anchor is, rather than flush against the top edge under the glass bar.
+    const top = target.offsetTop - scroll.clientHeight * 0.25;
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    scroll.scrollTo({ top: Math.max(0, top), behavior: reduced ? 'auto' : 'smooth' });
+  }
+
+  /** Mark the run being read, making the ribbon a minimap rather than a legend. */
+  function markFlowPosition(unitIndex) {
+    if (!flowRuns.length) return;
+    const idx = window.StoryboardFlow.runIndexForUnit(flowRuns, unitIndex);
+    if (idx === flowActiveRun) return;
+    flowActiveRun = idx;
+    $('sbFlowTrack')?.querySelectorAll('.sb-flow-seg').forEach((seg, i) => {
+      seg.classList.toggle('is-current', i === idx);
+    });
+    showFlowCaption(idx);
+  }
+
   function updateActiveElement() {
     const scroll = $('sbScroll');
     const surface = $('sbSurface');
@@ -379,16 +508,41 @@
     const anchor = scroll.getBoundingClientRect().top + scroll.clientHeight * 0.33;
     let key = null;
 
+    let unitIndex = null;
     for (const block of surface.querySelectorAll('[data-element]')) {
       if (!block.dataset.element) continue;
-      if (block.getBoundingClientRect().top <= anchor) key = block.dataset.element;
-      else break;
+      if (block.getBoundingClientRect().top <= anchor) {
+        key = block.dataset.element;
+        unitIndex = Number(block.dataset.index);
+      } else break;
     }
+    // Same anchor the rail uses, so the ribbon and the explanation card always
+    // agree about where the reader is.
+    if (unitIndex !== null) markFlowPosition(unitIndex);
     if (!key) {
       const first = surface.querySelector('[data-element]:not([data-element=""])');
       key = first?.dataset.element || null;
     }
     renderRail(key);
+  }
+
+  /**
+   * Open or close the audit panel.
+   *
+   * One function rather than two handlers flipping the same style, so the
+   * toggle's aria-expanded and pressed state cannot drift out of step with what
+   * is actually on screen.
+   */
+  function setAuditOpen(open) {
+    const panel = $('sbAuditPanel');
+    const toggle = $('sbAuditToggle');
+    if (!panel) return;
+    panel.style.display = open ? '' : 'none';
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.classList.toggle('active', open);
+    }
+    if (open) $('sbAuditClose')?.focus();
   }
 
   function renderRail(key) {
@@ -461,6 +615,7 @@
   // ── Sidebar ──────────────────────────────────────────────────────────────
 
   function bindSidebar() {
+    bindEntryMenu();
     $('sbSearch')?.addEventListener('input', (e) => {
       const query = e.target.value;
       $('sbSearchClear')?.classList.toggle('d-none', !query);
@@ -499,21 +654,70 @@
           <div class="sb-entry-shape">${shapeBar(entry.elementCounts)}</div>
           <div class="sb-entry-meta">${entry.unitCount} paragraphs · ${(entry.wordCount || 0).toLocaleString()} words</div>
           ${match ? `<div class="sb-entry-match">${esc(match.snippet)}</div>` : ''}
-          <div class="conv-item-actions">
-            <button class="conv-action" data-action="rename" title="Rename"><i class="bi bi-pencil"></i></button>
-            <button class="conv-action" data-action="delete" title="Delete"><i class="bi bi-trash"></i></button>
-          </div>
+          <button class="sidebar-menu-btn" data-action="menu" title="More"><i class="bi bi-three-dots"></i></button>
         </div>`;
     }).join('');
 
     list.querySelectorAll('.conv-item').forEach(item => {
       const id = item.dataset.id;
       item.addEventListener('click', async (e) => {
-        const action = e.target.closest('[data-action]')?.dataset.action;
-        if (action === 'rename') { e.stopPropagation(); return renameEntry(id); }
-        if (action === 'delete') { e.stopPropagation(); return deleteEntry(id); }
+        if (e.target.closest('[data-action="menu"]')) {
+          e.stopPropagation();
+          return showEntryMenu(e, id);
+        }
         const analysis = await window.electronAPI.invoke('storyboard-get', id);
         if (analysis) showAnalysis(analysis);
+      });
+    });
+  }
+
+  // ── Row overflow menu ──────────────────────────────────────
+  //
+  // Two always-visible icon buttons per row was the wrong shape for this
+  // sidebar: rows already carry a title, a colour shape bar, a paragraph/word
+  // line and sometimes a search snippet, and a pencil and a trash competing with
+  // all of that made the row read as a toolbar. This follows the Work tab
+  // instead — a three-dots button that appears on hover, opening a menu — and
+  // reuses its classes so the two are styled by the same rules rather than by
+  // two descriptions of the same intent.
+
+  let menuTargetId = null;
+
+  function showEntryMenu(e, id) {
+    const menu = $('sbContextMenu');
+    if (!menu) return;
+    menuTargetId = id;
+    menu.style.display = 'block';
+    menu.style.left = `${e.clientX}px`;
+    menu.style.top = `${e.clientY}px`;
+    // Clamped after layout, or a row near the window edge opens a menu that runs
+    // off it. Same approach as the Work tab's.
+    requestAnimationFrame(() => {
+      const rect = menu.getBoundingClientRect();
+      if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 8}px`;
+      if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 8}px`;
+    });
+  }
+
+  function hideEntryMenu() {
+    const menu = $('sbContextMenu');
+    if (menu) menu.style.display = 'none';
+    menuTargetId = null;
+  }
+
+  function bindEntryMenu() {
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('#sbContextMenu') && !e.target.closest('[data-action="menu"]')) hideEntryMenu();
+    });
+
+    $('sbContextMenu')?.querySelectorAll('.ctx-item').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        const id = menuTargetId;
+        hideEntryMenu();
+        if (!id) return;
+        if (action === 'rename') renameEntry(id);
+        if (action === 'delete') deleteEntry(id);
       });
     });
   }
@@ -622,6 +826,7 @@
     init,
     // Exposed for tests.
     _render: renderScript,
+    _flowCaption: showFlowCaption,
     _renderAudit: renderAudit,
     _showAnalysis: showAnalysis,
     _setPlain: setPlain,
