@@ -102,3 +102,130 @@ describe('describeAgentError()', () => {
     expect(typeof result).toBe('string');
   });
 });
+
+/**
+ * Rewinding a stopped turn.
+ *
+ * When a run is stopped, the Work tab offers Edit prompt / Try again, and both
+ * rewind past the stopped turn before sending again. The rewind has to be real:
+ * conversationHistory for the next call is derived from session.messages, so a
+ * turn left behind is a turn the model gets told about — it would receive the
+ * attempt the user just discarded and read the edited prompt as a follow-up to
+ * it, which is the opposite of what editing means.
+ */
+describe('rewindTo()', () => {
+  const { rewindTo } = window.WorkTab;
+
+  /** A session mid-conversation whose last turn was stopped. */
+  function buildStoppedSession() {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const messages = [
+      { role: 'user', content: 'first question' },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'second question' },        // index 2 — the stopped turn
+      { role: 'assistant', content: 'partial second...' }, // discarded on rewind
+    ];
+
+    // One node per message, plus the notice, in render order.
+    const nodes = messages.map((m, i) => {
+      const el = document.createElement('div');
+      el.className = `chat-message ${m.role}`;
+      el.dataset.idx = String(i);
+      container.appendChild(el);
+      return el;
+    });
+    const notice = document.createElement('div');
+    notice.className = 'chat-interrupted';
+    container.appendChild(notice);
+
+    const session = {
+      container,
+      messages,
+      streamingEl: nodes[3],
+      streamingText: 'partial second...',
+      interruptedNotice: notice,
+      lastUserTurn: { el: nodes[2], index: 2, text: 'second question' },
+    };
+    return { session, container, nodes, notice };
+  }
+
+  test('truncates history to just before the stopped turn', () => {
+    const { session } = buildStoppedSession();
+
+    rewindTo(session, session.lastUserTurn);
+
+    expect(session.messages).toEqual([
+      { role: 'user', content: 'first question' },
+      { role: 'assistant', content: 'first answer' },
+    ]);
+  });
+
+  test('discards the partial reply as well as the prompt', () => {
+    const { session } = buildStoppedSession();
+
+    rewindTo(session, session.lastUserTurn);
+
+    const contents = session.messages.map(m => m.content);
+    expect(contents).not.toContain('second question');
+    expect(contents).not.toContain('partial second...');
+  });
+
+  test('keeps every earlier turn intact', () => {
+    // A rewind that took too much would silently erase conversation the user
+    // never asked to lose.
+    const { session } = buildStoppedSession();
+
+    rewindTo(session, session.lastUserTurn);
+
+    expect(session.messages).toHaveLength(2);
+    expect(session.messages[0].content).toBe('first question');
+  });
+
+  test('removes the stopped message, the partial reply and the notice from the DOM', () => {
+    const { session, container, nodes, notice } = buildStoppedSession();
+
+    rewindTo(session, session.lastUserTurn);
+
+    expect(container.contains(nodes[0])).toBe(true);
+    expect(container.contains(nodes[1])).toBe(true);
+    expect(container.contains(nodes[2])).toBe(false);
+    expect(container.contains(nodes[3])).toBe(false);
+    // The notice is after the stopped turn, so it goes with it rather than being
+    // left orphaned above the resent message.
+    expect(container.contains(notice)).toBe(false);
+    expect(container.querySelectorAll('.chat-message')).toHaveLength(2);
+  });
+
+  test('clears streaming state so the next run does not inherit discarded text', () => {
+    const { session } = buildStoppedSession();
+
+    rewindTo(session, session.lastUserTurn);
+
+    expect(session.streamingEl).toBeNull();
+    expect(session.streamingText).toBe('');
+    expect(session.lastUserTurn).toBeNull();
+    expect(session.interruptedNotice).toBeNull();
+  });
+
+  test('rewinding the very first turn empties the conversation', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const el = document.createElement('div');
+    container.appendChild(el);
+
+    const session = {
+      container,
+      messages: [{ role: 'user', content: 'only question' }],
+      streamingEl: null,
+      streamingText: '',
+      lastUserTurn: { el, index: 0, text: 'only question' },
+    };
+
+    rewindTo(session, session.lastUserTurn);
+
+    expect(session.messages).toEqual([]);
+    expect(container.children).toHaveLength(0);
+  });
+});

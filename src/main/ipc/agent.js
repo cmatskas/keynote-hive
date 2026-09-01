@@ -46,7 +46,15 @@ function register(ipcMain, ctx) {
 
     ctx.skillsManager.resetActivations();
     try {
-      return await executor.run(model, prompt, conversationHistory, files, enableThinking);
+      const text = await executor.run(model, prompt, conversationHistory, files, enableThinking);
+
+      // run() resolves with whatever text accumulated whether the run finished
+      // or the user stopped it, so the renderer had no way to tell the two
+      // apart — a cancelled run rendered as an ordinary, apparently complete
+      // reply. Reported on the return value rather than as a status event
+      // because an event can arrive either side of this promise resolving, and
+      // the UI decision depends on knowing for certain.
+      return { text, aborted: abortController.signal.aborted };
     } catch (err) {
       // An in-flight run is deliberately allowed to fail on its own rather than
       // being pre-emptively aborted when the network drops — a brief blip may

@@ -387,6 +387,71 @@
     await window.electronAPI.invoke('cancel-agent', { sessionId: sid }).catch(() => {});
   }
 
+  /**
+   * Show the stopped-run notice for `session`, wired to edit and retry.
+   *
+   * Both actions rewind to just before the stopped turn and send again. The
+   * conversation genuinely has to be truncated, not merely re-rendered: history
+   * for the next call is derived from session.messages, so leaving the abandoned
+   * turn in place would hand the model the attempt the user just discarded and
+   * present the edited prompt as a follow-up to it.
+   */
+  function showInterrupted(session, sid) {
+    const turn = session.lastUserTurn;
+    if (!turn) return;
+
+    const notice = CR.appendInterruptedNotice(session.container, {
+      onEdit: () => {
+        CR.beginEditUserMessage(turn.el, {
+          text: turn.text,
+          onSave: (edited) => resendFrom(session, sid, turn, edited),
+        });
+      },
+      onRetry: () => resendFrom(session, sid, turn, turn.text),
+    });
+    session.interruptedNotice = notice;
+  }
+
+  /**
+   * Erase the stopped turn from the conversation — history, DOM and streaming
+   * state — leaving the session as though it had never been sent.
+   *
+   * Separated from the resend because this is the part that has to be exactly
+   * right: history for the next call is derived from session.messages, so a
+   * turn left behind here is a turn the model is told about. Exported for tests
+   * (see window.WorkTab) alongside describeAgentError.
+   */
+  function rewindTo(session, turn) {
+    // Everything from the stopped user message onward, including any partial
+    // reply — that text is a fragment of an answer to a prompt that is about to
+    // stop existing.
+    session.messages = session.messages.slice(0, turn.index);
+
+    // The DOM equivalent: the stopped message and every node after it. The
+    // notice sits in that range, so it goes with them and does not need
+    // removing separately.
+    let node = turn.el;
+    while (node) {
+      const next = node.nextSibling;
+      node.remove();
+      node = next;
+    }
+
+    session.interruptedNotice = null;
+    session.lastUserTurn = null;
+    // Both refer to the reply just discarded; leaving them set would append the
+    // abandoned text to the next run's bubble.
+    session.streamingEl = null;
+    session.streamingText = '';
+  }
+
+  /** Rewind past the stopped turn, then send `text` as a fresh message. */
+  function resendFrom(session, sid, turn, text) {
+    if (session.processing) return;
+    rewindTo(session, turn);
+    sendWorkMessage({ promptOverride: text });
+  }
+
   // ── Skills Palette ─────────────────────────────────────────
   const SKILL_STARTERS = {
     'storybrand': 'Run a StoryBrand SB7 audit on this content:\n\n',
@@ -475,13 +540,20 @@
     document.getElementById('workSkillsPalette').classList.remove('open');
   }
 
-  async function sendWorkMessage() {
+  /**
+   * @param {object} [options]
+   * @param {string} [options.promptOverride] - send this instead of the composer's
+   *   contents. Used by resend-after-stop, so the edited prompt goes through this
+   *   same path (credential checks, working-directory prefix, streaming, history,
+   *   save) instead of a parallel implementation that would drift from it.
+   */
+  async function sendWorkMessage({ promptOverride = null } = {}) {
     const session = getActiveSession();
     if (session.processing) return;
 
     const promptInput = document.getElementById('workPromptEditor');
     const model = document.getElementById('workModelSelect').value;
-    const prompt = promptInput.value.trim();
+    const prompt = promptOverride !== null ? promptOverride.trim() : promptInput.value.trim();
 
     if (!prompt) {
       showToast('Please enter a message', 'error');
@@ -527,9 +599,14 @@
     // Show user message
     const userMsg = { role: 'user', content: prompt, timestamp: new Date().toISOString() };
     session.messages.push(userMsg);
-    CR.appendChatMessage(container, userMsg);
-    promptInput.value = '';
-    promptInput.style.height = 'auto';
+    const userMsgEl = CR.appendChatMessage(container, userMsg);
+    // Remembered so a stop can offer to edit *this* turn. Index rather than a
+    // node alone, because the rewind has to truncate session.messages too.
+    session.lastUserTurn = { el: userMsgEl, index: session.messages.length - 1, text: prompt };
+    if (promptOverride === null) {
+      promptInput.value = '';
+      promptInput.style.height = 'auto';
+    }
 
     // Save immediately so the conversation exists in history
     await saveSession(sid, session.messages);
@@ -555,7 +632,7 @@
     try {
       const files = workFiles.getFiles();
 
-      const response = await window.electronAPI.invoke('invoke-agent', {
+      const result = await window.electronAPI.invoke('invoke-agent', {
         model,
         prompt: fullPrompt,
         conversationHistory: history,
@@ -563,6 +640,9 @@
         sessionId: sid,
         enableThinking: !!session.enableThinking,
       });
+
+      const response = result?.text ?? '';
+      const wasAborted = !!result?.aborted;
 
       thinkingEl.remove();
       CR.finishActivityLog(session.activityLog);
@@ -580,6 +660,11 @@
       } else if (session.streamingText) {
         session.messages.push({ role: 'assistant', content: session.streamingText, timestamp: new Date().toISOString() });
       }
+
+      // A stopped run resolves exactly like a finished one, so without this the
+      // partial reply reads as a complete answer. Offer the two useful next
+      // steps instead of making the user retype the prompt from memory.
+      if (wasAborted) showInterrupted(session, sid);
 
       saveSession(sid, session.messages);
       refreshSidebar();
@@ -770,7 +855,9 @@
     try {
       const data = await window.electronAPI.invoke('work-history-load', { id });
       const session = getOrCreateSession(id);
-      session.messages = data.messages || [];
+      // data is null for a session that was never saved — opening such an entry
+      // should show an empty conversation, not throw.
+      session.messages = data?.messages || [];
       session.container.innerHTML = '';
       session.messages.forEach(msg => {
         CR.appendChatMessage(session.container, msg, {
@@ -908,6 +995,6 @@
   });
 
   if (typeof window !== 'undefined') {
-    window.WorkTab = { init, describeAgentError };
+    window.WorkTab = { init, describeAgentError, rewindTo };
   }
 })();
