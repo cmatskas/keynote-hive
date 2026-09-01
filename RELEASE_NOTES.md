@@ -1,5 +1,17 @@
 # Release Notes
 
+## v4.1.1
+
+### Tests
+- **The AWS free-text rule is now enforced against the source, not against copies of it.** `awsText.js` and its tests already covered the em-dash `ValidationError` that once stopped a brand-new install creating the Web Search Gateway — but those tests asserted string literals pasted into the test file, so they verified a duplicate of the shipped text. Someone adding a third AWS resource with a prose description, which is the natural thing to write, would have sailed past a green suite exactly as the original did.
+  - `tests/main/awsTextInvariant.test.js` scans every `new *Command({ ... })` construction under `src/main` and requires each free-text field to be either wrapped in `toAwsText()` or provably clean, then reads the literals out of the source and checks they survive that wrapping unchanged.
+  - Scoped to AWS command constructions deliberately. The codebase has a dozen other `description:` fields — tool schemas and pipeline templates that go to a model, where unicode is fine and mangling it would be a regression.
+  - The scan widened coverage past what it set out to check: AWS applies the same character constraint to `name`, and it turned up two generated Code Interpreter session names that had never been considered.
+  - Mutation-verified, including a replay of the original incident: reintroducing the em dash unwrapped fails, adding a new unwrapped prose description fails, a wrapped-but-dirty literal that would be silently mangled fails, and breaking the scanner itself fails — the last because a scan that silently matches nothing would make every other assertion here pass by vacuity.
+
+### Docs
+- The README now records **why** the live AWS Setup Check test is manual rather than scheduled, since the reason is a policy constraint and not an oversight. Long-lived keys are the wrong answer for a permission set that can mint an administrator role, and GitHub OIDC federation — the correct pattern on an ordinary AWS account — is unavailable on an Amazon-managed one: the identity provider raises a critical security finding and is deleted automatically. A CodeBuild-hosted runner is the available option and is not set up, with the public-repository risk noted.
+
 ## v4.1.0
 
 ### New

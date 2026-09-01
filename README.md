@@ -334,9 +334,60 @@ would have created legitimately, and the next run treats it as pre-existing.
 
 Needs `iam:CreateRole`, `iam:PutRolePolicy`, `iam:GetRole`, `iam:DeleteRole`,
 `iam:DeleteRolePolicy`, plus `bedrock-agentcore:CreateMemory`/`DeleteMemory` for the
-memory check. Unlike the Mantle check, this is **not** wired into CI — it is manual by
-design, though adding it to the daily `scheduled-tests.yml` would cost nothing when
-nothing is broken, since the IAM path is free.
+memory check.
+
+**Why this isn't in CI.** Unlike the Mantle check, this one is manual, and that's a
+constraint rather than an oversight — worth recording so nobody "fixes" it in a way
+that gets reverted.
+
+Running it in GitHub Actions needs real AWS credentials in the account, and the two
+ways to get them are both closed off here. Long-lived access keys are the wrong answer
+for a permission set that includes `iam:CreateRole` and `iam:PutRolePolicy`, which
+together let the holder mint an administrator role — that's the highest-value secret in
+the repo, guarding a privilege-escalation path. And GitHub OIDC federation, which is
+the correct pattern on a normal AWS account, is not available on an Amazon-managed one:
+creating an IAM OIDC provider for `token.actions.githubusercontent.com` triggers Cloud
+Security's IAMOpenIdProvider campaign (a critical finding with a Sev-2.5 ticket),
+external identity providers aren't on the approved list, and unapproved providers are
+deleted automatically. There is currently no sanctioned path for third-party CI to
+authenticate into an Amazon AWS account.
+
+The available option is a CodeBuild-hosted GitHub Actions runner, where the runner is
+compute inside the account and credentials come from a role attached to it rather than
+from an external identity provider. That's a deliberate piece of infrastructure work
+with a security consideration attached — this repository is public, and a self-hosted
+runner reachable from a fork pull request would be arbitrary code execution inside the
+AWS account. It is not set up, and shouldn't be without scoping the runner to the
+scheduled workflow only.
+
+In the meantime the specific failure that motivated this test — an em dash in an IAM
+`Description` — is covered offline and by construction; see below.
+
+### AWS text constraints (offline)
+
+AWS rejects free-text metadata fields — an IAM role `Description`, an AgentCore Memory
+`description` or `name` — that contain anything outside printable ASCII and Latin-1.
+This is easy to hit by accident, because an em dash, a curly quote or an ellipsis comes
+free from any editor, and the failure surfaces only as a `ValidationError` from a real
+AWS call. It reached a user once: a brand-new install could not create the Web Search
+Gateway, because the role description Hive sends contained an em dash.
+
+`src/main/awsText.js` fixes the mechanism — `toAwsText()` transliterates typography and
+drops what it can't convert, deliberately lossy on the grounds that a mangled
+description is far better than a failed resource creation.
+
+`tests/main/awsTextInvariant.test.js` then enforces the rule against the source rather
+than against copies of it. It scans every `new *Command({ ... })` construction under
+`src/main` and requires each free-text field to be either wrapped in `toAwsText()` or
+provably clean, and separately checks that the literals actually present in the source
+survive that wrapping unchanged. Reading the literals out of the source is the point:
+the earlier tests pasted their own copies of those strings, so they verified a duplicate
+of the code and a newly-added description would have sailed past a green suite exactly
+as the original did.
+
+That closes the class offline, with no credentials and no AWS calls. The live check
+above still covers what unit tests structurally cannot — whether AWS's own validation
+rules have changed — which is why it exists and why it stays manual.
 
 ### Project Structure
 
