@@ -68,6 +68,129 @@ function appendChatError(container, message) {
   container.scrollTop = container.scrollHeight;
 }
 
+
+/**
+ * The "your run was stopped" notice, with the two things worth offering next.
+ *
+ * Deliberately not styled as an error (compare appendChatError above, which is
+ * filled with --error): cancelling is something the user chose to do, not a
+ * fault, and dressing it in red reads as "something went wrong" when nothing did.
+ *
+ * "Stopped" rather than "interrupted", and "resend" rather than any wording
+ * implying an undo — a Work session's sandbox keeps whatever the stopped run
+ * already created, so re-running is a fresh attempt against existing state, not
+ * a rewind. Claiming otherwise would be a lie the UI can't back up.
+ *
+ * @param {HTMLElement} container
+ * @param {object}   handlers
+ * @param {Function} handlers.onEdit  - "Edit prompt" clicked
+ * @param {Function} handlers.onRetry - "Try again" clicked
+ * @returns {HTMLElement} the notice, so the caller can remove it on resend
+ */
+function appendInterruptedNotice(container, { onEdit, onRetry } = {}) {
+  const el = document.createElement('div');
+  el.className = 'chat-interrupted';
+  el.innerHTML = `
+    <span class="chat-interrupted-text">
+      <i class="bi bi-info-circle"></i>
+      <span>Response stopped.</span>
+    </span>
+    <span class="chat-interrupted-actions">
+      <button type="button" class="chat-interrupted-btn" data-action="edit">Edit prompt</button>
+      <button type="button" class="chat-interrupted-btn" data-action="retry">Try again</button>
+    </span>`;
+
+  el.querySelector('[data-action="edit"]').addEventListener('click', () => { if (onEdit) onEdit(); });
+  el.querySelector('[data-action="retry"]').addEventListener('click', () => { if (onRetry) onRetry(); });
+
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+  return el;
+}
+
+/**
+ * Turn an already-rendered user bubble into an editor, in place.
+ *
+ * In place rather than repopulating the composer at the bottom: the message
+ * stays where it is in the conversation, so it is unambiguous which turn is
+ * being changed, and the stopped output below remains visible to amend away
+ * from.
+ *
+ * The original markup is captured and restored verbatim on cancel, so backing
+ * out cannot subtly alter the message — re-rendering it from text would drop
+ * whatever formatText() had produced.
+ *
+ * @param {HTMLElement} messageEl - the .chat-message.user element to edit
+ * @param {object}   handlers
+ * @param {string}   handlers.text     - raw text to edit (not the rendered HTML)
+ * @param {Function} handlers.onSave   - called with the edited text
+ * @param {Function} handlers.onCancel - called when editing is abandoned
+ */
+function beginEditUserMessage(messageEl, { text, onSave, onCancel } = {}) {
+  const bubble = messageEl.querySelector('.chat-bubble');
+  if (!bubble || messageEl.classList.contains('editing')) return;
+
+  const originalHtml = bubble.innerHTML;
+  messageEl.classList.add('editing');
+
+  bubble.innerHTML = `
+    <textarea class="chat-edit-input" rows="1"></textarea>
+    <div class="chat-edit-actions">
+      <button type="button" class="chat-edit-btn" data-action="cancel">Cancel</button>
+      <button type="button" class="chat-edit-btn primary" data-action="save">Save</button>
+    </div>`;
+
+  const input = bubble.querySelector('.chat-edit-input');
+  // Assigned, not interpolated into the template above. A textarea's content is
+  // RCDATA, so innerHTML would *probably* also be safe here — tags arrive as
+  // literal text, and in fragment-parsing context even a closing </textarea>
+  // does not end the span (verified in jsdom, and it follows from the spec's
+  // "appropriate end tag" rule). But that is a subtle argument to have to make
+  // about handling user input, and .value has no parsing step to reason about
+  // at all. Prefer the version that needs no argument.
+  input.value = text || '';
+
+  const autoGrow = () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 320) + 'px';
+  };
+  autoGrow();
+  input.addEventListener('input', autoGrow);
+
+  const restore = () => {
+    messageEl.classList.remove('editing');
+    bubble.innerHTML = originalHtml;
+  };
+
+  const save = () => {
+    const edited = input.value.trim();
+    // An empty prompt would be rejected by the send path anyway; treating it as
+    // a no-op keeps the user in the editor with their text rather than silently
+    // discarding the turn.
+    if (!edited) { input.focus(); return; }
+    restore();
+    if (onSave) onSave(edited);
+  };
+
+  bubble.querySelector('[data-action="save"]').addEventListener('click', save);
+  bubble.querySelector('[data-action="cancel"]').addEventListener('click', () => {
+    restore();
+    if (onCancel) onCancel();
+  });
+
+  input.addEventListener('keydown', (e) => {
+    // Enter sends, Shift+Enter newlines — same contract as the composer, so the
+    // muscle memory carries over. Escape backs out.
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); }
+    if (e.key === 'Escape') { e.preventDefault(); restore(); if (onCancel) onCancel(); }
+  });
+
+  input.focus();
+  // Caret at the end: the common edit is appending a clarification, and
+  // select-all would put one keystroke between the user and losing the prompt.
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
 // ── Activity Log (timeline) ──────────────────────────────────
 
 /** Escapes a string for safe use inside an HTML attribute value. */
@@ -312,6 +435,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     formatText, cleanupAnalysisText, appendChatMessage, appendThinking,
     appendChatError, appendStatusMessage, showPlaceholder, renderChatHistory,
+    appendInterruptedNotice, beginEditUserMessage,
     createActivityLog, addActivityEntry, completeActivityEntry, finishActivityLog,
     updateThinkingEntry, removeActivityNarrationLine,
   };
@@ -320,6 +444,7 @@ if (typeof window !== 'undefined') {
   window.ChatRenderer = {
     formatText, cleanupAnalysisText, appendChatMessage, appendThinking,
     appendChatError, appendStatusMessage, showPlaceholder, renderChatHistory,
+    appendInterruptedNotice, beginEditUserMessage,
     createActivityLog, addActivityEntry, completeActivityEntry, finishActivityLog,
     updateThinkingEntry, removeActivityNarrationLine,
   };

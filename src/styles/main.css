@@ -3105,3 +3105,135 @@ body {
   font-weight: 600;
   cursor: help;
 }
+
+/* ── Stopped-run notice and in-place prompt editing ──────────────────────────
+ *
+ * Shown when a user stops a run, in place of letting the partial reply pass for
+ * a finished one. Neutral rather than error-coloured on purpose: stopping is a
+ * choice the user made, and red would report it as a fault.
+ *
+ * Shared by the Work and Chat tabs, so nothing here assumes either tab's layout.
+ */
+.chat-interrupted {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-self: stretch;
+    padding: 10px 14px;
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.chat-interrupted-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.chat-interrupted-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.chat-interrupted-btn {
+    padding: 4px 12px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-interrupted-btn:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--accent-primary);
+}
+
+.chat-interrupted-btn:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+}
+
+/* While editing, the user bubble stops looking like a sent message and starts
+ * looking like an input. The resting bubble is solid --accent-primary with white
+ * text, which a textarea cannot sit on legibly, so it reverts to a plain surface
+ * with a focus ring — the same signal the reference design uses. */
+.chat-message.user.editing {
+    max-width: 92%;
+    align-self: stretch;
+    align-items: stretch;
+}
+
+.chat-message.user.editing .chat-bubble {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--border-accent);
+    border-bottom-right-radius: 12px;
+}
+
+.chat-edit-input {
+    display: block;
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: 1.6;
+    padding: 0;
+    /* The textarea is auto-grown in JS; a drag handle would fight that, and the
+     * bubble has no room for one. */
+    resize: none;
+    overflow-y: auto;
+}
+
+.chat-edit-input:focus {
+    outline: none;
+}
+
+.chat-edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.chat-edit-btn {
+    padding: 4px 14px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-edit-btn:hover {
+    background: var(--bg-tertiary);
+}
+
+.chat-edit-btn.primary {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: #fff;
+}
+
+.chat-edit-btn.primary:hover {
+    filter: brightness(1.08);
+    background: var(--accent-primary);
+}
+
+.chat-edit-btn:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+}
