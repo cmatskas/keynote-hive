@@ -35,8 +35,28 @@ class WorkHistoryManager {
     await fs.writeFile(this._filePath(session.id), JSON.stringify(session));
   }
 
+  /**
+   * Load a saved session, or null if it was never written.
+   *
+   * A missing file is an ordinary state here rather than a failure: save() skips
+   * sessions with no messages, so every launch that creates a session id and
+   * quits before sending anything leaves that id in the renderer's localStorage
+   * with nothing on disk. Throwing meant the app logged an unhandled handler
+   * error on startup for a case that is entirely expected — the renderer already
+   * treated a falsy result as "show the greeting".
+   *
+   * Anything other than a missing file still throws: an unreadable or corrupt
+   * session is a real problem and should not be silently indistinguishable from
+   * a new one.
+   */
   async load(id) {
-    const data = await fs.readFile(this._filePath(id), 'utf8');
+    let data;
+    try {
+      data = await fs.readFile(this._filePath(id), 'utf8');
+    } catch (err) {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    }
     return JSON.parse(data);
   }
 
