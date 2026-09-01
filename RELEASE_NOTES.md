@@ -1,5 +1,23 @@
 # Release Notes
 
+## v4.1.0
+
+### New
+- **Stopping a run now offers to edit the prompt instead of making you retype it.** When you stop the agent mid-answer in the Work or Chat tab, you get a notice reading "Response stopped." with **Edit prompt** and **Try again**. Editing happens in place on your own message bubble — it becomes a text field where it sits, so it is unambiguous which turn you are changing and the stopped output stays visible below to amend away from. Enter saves, Shift+Enter adds a newline, Escape backs out, and cancelling restores the message exactly as it was.
+  - Both actions rewind the conversation past the stopped turn before sending again. This has to be a real rewind rather than a redraw: the history sent with the next request is derived from the stored messages, so a turn left behind would be handed to the model as context and the edited prompt would arrive as a follow-up to the attempt you just discarded.
+  - **A stopped run was previously indistinguishable from a finished one.** Both resolve with whatever text had arrived, so a half-answer was rendered as though the model had simply been brief. Both tabs now report the cancellation explicitly.
+  - **The Work tab's sandbox does not rewind, and the notice does not pretend otherwise.** If the stopped run installed a package or wrote a file, that persists — a resend is a fresh attempt against existing state, not an undo. Only the conversation is rewound.
+  - In the Chat tab the resend re-attaches the documents the stopped turn was sent with. Chat clears attachments after every send (the Work tab does not), so without that the resent question would have silently gone without the files it was about.
+
+### Fixes
+- **Cancelled turns are no longer written to AgentCore Memory.** The memory save ran whenever any text had accumulated, including on cancellation, so an interrupted run was recorded as though it were a complete exchange — and because Memory is durable and cross-conversation, that truncated reply was then fed back into every later turn as context, with nothing in the app able to unwrite it. A turn you stopped is not something the agent should remember happening.
+- **The Work tab no longer throws on every launch.** Startup logged `Error occurred in handler for 'work-history-load': ENOENT`. Not a stale file: sessions with no messages are never written to disk, so any launch that created a session and closed without sending anything left an id pointing at a file that had never existed. A missing session now reads as empty, which is what it is. An unreadable or corrupt one still raises an error, so genuine data loss cannot masquerade as "nothing saved here".
+
+### Tests
+- 30 new tests across five suites. The rewind is covered in both tabs (history truncated to exactly the right point, partial reply discarded with the prompt, earlier turns untouched, DOM and notice removed together), along with the notice and editor themselves, the memory guard, attachment carry-through, and the work-history store.
+- Mutation-verified, 16 mutations. Leaving the stopped turn in history fails 4, removing only the user bubble fails 1, not clearing streaming state fails 1, re-rendering instead of restoring markup on cancel fails 1, discarding an empty edit fails 1, writing cancelled turns to memory fails 1, dropping the attachment override fails 2, reverting the ENOENT fix fails 1, and treating every read error as "not found" fails 1.
+- One mutation is *not* caught and is documented as such: swapping the editor's `.value` assignment for `.innerHTML` is behaviourally equivalent, because a textarea's content is RCDATA — verified empirically rather than assumed. The original code comment claimed this guarded an injection hole; it does not, and the comment was corrected rather than left overstating a guarantee.
+
 ## v4.0.2
 
 ### Fixes
