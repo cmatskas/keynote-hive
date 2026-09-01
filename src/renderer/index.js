@@ -10,6 +10,9 @@ let currentTranscript = [];
 let currentConversation = null; // active conversation object
 let selectedFiles = []; // attached documents for Bedrock
 let credentialsVerified = false; // lazy credential check — once per session
+// The last user turn sent in the Chat tab: { el, index, text, files }. Set on
+// every send so a stop can offer to edit and resend that exact turn.
+let lastChatTurn = null;
 
 // ── Transcription pane state ─────────────────────────────────────────────
 // Declared up here because restoreTranscriptionState() runs at module scope,
@@ -104,6 +107,12 @@ function setupThemeToggle() {
 // Expose functions for testing
 if (typeof window !== 'undefined') {
     window.showSuccessToast = showSuccessToast;
+    // Stopped-run rewind. rewindChatTo takes its conversation as an argument
+    // precisely so it can be driven from a test; production calls it via
+    // resendChatFrom with the active conversation.
+    window.rewindChatTo = rewindChatTo;
+    window.showChatInterrupted = showChatInterrupted;
+    window.sendMessage = sendMessage;
     window.showErrorToast = showErrorToast;
     window.showInfoToast = showInfoToast;
     window.showWarningToast = showWarningToast;
@@ -1088,9 +1097,20 @@ promptEditor.addEventListener('keydown', (e) => {
     }
 });
 
-async function sendMessage() {
+/**
+ * @param {object} [options]
+ * @param {string} [options.promptOverride] - send this instead of the editor's
+ *   contents, and keep the editor untouched. Used by resend-after-stop so the
+ *   edited prompt goes through this same path rather than a parallel copy of it.
+ * @param {Array}  [options.filesOverride]  - re-attach these instead of the
+ *   current selection. Chat clears attachments after every send (Work does not),
+ *   so a resend would otherwise silently drop the files the stopped turn had.
+ */
+async function sendMessage({ promptOverride = null, filesOverride = null } = {}) {
     const model = document.getElementById('modelSelect').value;
-    const prompt = document.getElementById('promptEditor').value.trim();
+    const prompt = promptOverride !== null
+        ? promptOverride.trim()
+        : document.getElementById('promptEditor').value.trim();
 
     if (!prompt) {
         showErrorToast('Please enter a prompt');
@@ -1127,8 +1147,9 @@ async function sendMessage() {
     // Snapshot attachment metadata (name only — content isn't persisted onto
     // the message) for rendering chips on the sent bubble. The transcript,
     // if checked, is already in selectedFiles as a synthetic .txt file.
-    const attachments = selectedFiles.map(f => ({ name: f.name, isTranscript: !!f.isTranscript }));
-    const filesToSend = selectedFiles;
+    const sourceFiles = filesOverride !== null ? filesOverride : selectedFiles;
+    const attachments = sourceFiles.map(f => ({ name: f.name, isTranscript: !!f.isTranscript }));
+    const filesToSend = sourceFiles;
 
     // Create conversation if none active
     if (!currentConversation) {
@@ -1138,8 +1159,19 @@ async function sendMessage() {
     // Add user message to conversation
     const userMsg = { role: 'user', content: prompt, timestamp: new Date().toISOString(), attachments };
     currentConversation.messages.push(userMsg);
-    appendChatMessage(userMsg);
-    document.getElementById('promptEditor').value = '';
+    const userMsgEl = appendChatMessage(userMsg);
+    // Remembered so a stop can offer to edit this turn. The files are snapshotted
+    // because clearSelectedFilesAndTranscript() reassigns selectedFiles, and a
+    // resend needs the attachments this turn was actually sent with.
+    lastChatTurn = {
+        el: userMsgEl,
+        index: currentConversation.messages.length - 1,
+        text: prompt,
+        files: [...filesToSend],
+    };
+    if (promptOverride === null) {
+        document.getElementById('promptEditor').value = '';
+    }
     document.getElementById('chatPlaceholder')?.remove();
 
     // Show thinking indicator
@@ -1199,12 +1231,17 @@ async function sendMessage() {
         
         thinkingEl.remove();
 
-        await window.electronAPI.invoke('send-to-bedrock', {
+        const result = await window.electronAPI.invoke('send-to-bedrock', {
             model,
             prompt,
             conversationHistory: history,
             files: filesToSend
         });
+
+        // A stopped run resolves like a finished one, so say it was stopped and
+        // offer the two useful next steps instead of leaving a half-answer that
+        // reads as complete.
+        if (result?.aborted) showChatInterrupted();
 
         // Clear files after successful send
         if (selectedFiles.length > 0) {
@@ -1366,6 +1403,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('newConversationBtn').addEventListener('click', () => {
         currentConversation = null;
+        // The remembered turn's element belongs to the conversation being
+        // cleared; a stale reference would have the notice edit a detached node.
+        lastChatTurn = null;
         document.getElementById('chatHistory').innerHTML =
             '<div id="chatPlaceholder" class="chat-placeholder"><i class="bi bi-chat-dots fs-1 mb-3 d-block"></i>Type a message below to start</div>';
         document.getElementById('promptEditor').focus();
@@ -1456,6 +1496,7 @@ async function renderConversationList(filter = '') {
 
 async function loadConversation(id) {
     currentConversation = await window.electronAPI.invoke('load-conversation', id);
+    lastChatTurn = null;   // belongs to the conversation being replaced
     renderChatHistory();
     renderConversationList();
     document.getElementById('downloadAnalysis').classList.remove('d-none');
@@ -1466,6 +1507,7 @@ async function deleteConversation(id) {
     await window.electronAPI.invoke('delete-conversation', id);
     if (currentConversation && currentConversation.id === id) {
         currentConversation = null;
+        lastChatTurn = null;
         document.getElementById('chatHistory').innerHTML =
             '<div id="chatPlaceholder" class="chat-placeholder"><i class="bi bi-chat-dots fs-1 mb-3 d-block"></i>Start a new conversation or select one from the sidebar</div>';
         document.getElementById('downloadAnalysis').classList.add('d-none');
@@ -1483,6 +1525,80 @@ function renderChatHistory() {
     }
     currentConversation.messages.forEach(msg => appendChatMessage(msg));
     history.scrollTop = history.scrollHeight;
+}
+
+/**
+ * Show the stopped-run notice for the Chat tab, wired to edit and retry.
+ *
+ * Mirrors the Work tab's flow and shares its renderer helpers. Simpler here:
+ * there is no sandbox to leave behind and no durable memory to keep out of, so
+ * a rewind really does undo everything the stopped turn did.
+ */
+function showChatInterrupted() {
+    if (!lastChatTurn) return;
+    const turn = lastChatTurn;
+    const history = document.getElementById('chatHistory');
+
+    // Via window.ChatRenderer: this file predates that module and keeps its own
+    // copies of appendChatMessage/appendThinking/appendChatError, so the shared
+    // helpers are not bare identifiers here. Reused rather than duplicated a
+    // third time — the Work tab and this tab must stay visually identical.
+    const CR = window.ChatRenderer;
+
+    CR.appendInterruptedNotice(history, {
+        onEdit: () => {
+            CR.beginEditUserMessage(turn.el, {
+                text: turn.text,
+                onSave: (edited) => resendChatFrom(turn, edited),
+            });
+        },
+        onRetry: () => resendChatFrom(turn, turn.text),
+    });
+}
+
+/**
+ * Erase the stopped turn, then send `text` again.
+ *
+ * The conversation must genuinely be truncated: history for the next call is
+ * derived from currentConversation.messages, so a turn left behind would be
+ * handed to the model as context and the edited prompt would arrive as a
+ * follow-up to the attempt the user just discarded.
+ */
+function resendChatFrom(turn, text) {
+    rewindChatTo(currentConversation, turn);
+
+    // Partial output belonged to the turn just discarded, so the download and
+    // copy affordances for it go too.
+    currentAnalysis = '';
+    document.getElementById('downloadAnalysis').classList.add('d-none');
+    document.getElementById('copyAnalysis').classList.add('d-none');
+
+    sendMessage({ promptOverride: text, filesOverride: turn.files });
+}
+
+/**
+ * Erase a stopped turn from a conversation and the DOM.
+ *
+ * Takes the conversation explicitly rather than reading currentConversation so
+ * the truncation can be tested directly — this is the part that has to be exact,
+ * since history for the next call is derived from conversation.messages.
+ * Mirrors workTab's rewindTo().
+ */
+function rewindChatTo(conversation, turn) {
+    // Drops the stopped user message and the partial reply. The partial is in
+    // messages because invokeChatModel emits bedrock-stream-complete even when
+    // cancelled, so the completion handler has already pushed it.
+    conversation.messages = conversation.messages.slice(0, turn.index);
+
+    // The DOM equivalent: the stopped message and every node after it, which
+    // includes the notice.
+    let node = turn.el;
+    while (node) {
+        const next = node.nextSibling;
+        node.remove();
+        node = next;
+    }
+    lastChatTurn = null;
 }
 
 function appendChatMessage(msg) {

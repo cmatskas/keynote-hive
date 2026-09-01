@@ -113,7 +113,13 @@ function register(ipcMain, ctx) {
     ctx.bedrockAbortController = new AbortController();
     const { signal } = ctx.bedrockAbortController;
     try {
-      return await invokeChatModel(ctx, model, prompt, conversationHistory, files, event, signal);
+      const text = await invokeChatModel(ctx, model, prompt, conversationHistory, files, event, signal);
+      // Same contract as invoke-agent: a stopped run and a finished one both
+      // resolve with whatever text arrived, so the abort has to be reported
+      // explicitly or the renderer shows a truncated reply as a complete one.
+      // Reported here rather than from invokeChatModel because conversations.js
+      // also calls that function and wants a plain string.
+      return { text, aborted: signal.aborted };
     } finally {
       ctx.bedrockAbortController = null;
     }
