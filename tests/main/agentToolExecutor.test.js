@@ -437,6 +437,55 @@ describe('agentToolExecutor', () => {
       expect(mockAgent.stream).toHaveBeenCalledWith(expect.anything(), { cancelSignal: undefined });
     });
 
+    test('does not write a cancelled turn to durable memory', async () => {
+      // AgentCore Memory is cross-conversation and cannot be unwritten from the
+      // renderer, so an interrupted run must not be recorded — it would feed a
+      // truncated reply back into every later turn as though it had completed.
+      const controller = new AbortController();
+      const memory = {
+        buildContext: jest.fn(async () => ''),
+        saveEvent: jest.fn(async () => {}),
+      };
+      const mockAgent = createMockAgent();
+      mockAgent.stream.mockReturnValue((async function* () {
+        yield { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text: 'Partial answer.' } } };
+        yield { type: 'modelMessageEvent', stopReason: 'endTurn' };
+        controller.abort();
+      })());
+      mockCreateAgent.mockReturnValue({ agent: mockAgent, dispose: jest.fn() });
+
+      const executor = buildExecutor({ signal: controller.signal, memory });
+      const text = await executor.run('test-model', 'prompt', [], []);
+
+      // The partial text still comes back for the transcript — it is only
+      // durable memory that must not record it.
+      expect(text).toContain('Partial answer.');
+      expect(memory.saveEvent).not.toHaveBeenCalled();
+    });
+
+    test('still writes a completed turn to memory', async () => {
+      // The guard must be specific to cancellation, not a blanket disabling of
+      // memory writes.
+      const memory = {
+        buildContext: jest.fn(async () => ''),
+        saveEvent: jest.fn(async () => {}),
+      };
+      const mockAgent = createMockAgent();
+      mockAgent.stream.mockReturnValue(streamOf([
+        { type: 'modelStreamUpdateEvent', event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text: 'Full answer.' } } },
+        { type: 'modelMessageEvent', stopReason: 'endTurn' },
+      ]));
+      mockCreateAgent.mockReturnValue({ agent: mockAgent, dispose: jest.fn() });
+
+      const executor = buildExecutor({ memory });
+      await executor.run('test-model', 'prompt', [], []);
+
+      expect(memory.saveEvent).toHaveBeenCalledWith('sess-1', [
+        { role: 'user', content: 'prompt' },
+        { role: 'assistant', content: expect.stringContaining('Full answer.') },
+      ]);
+    });
+
     test('returns partial text gracefully when the signal aborts mid-stream', async () => {
       const controller = new AbortController();
       const mockAgent = createMockAgent();

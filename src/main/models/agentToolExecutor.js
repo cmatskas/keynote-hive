@@ -382,8 +382,14 @@ Before giving your FINAL response, verify ALL of the following — if any is NO,
       cleanupToolStatus();
       cleanupToolStatusDone();
 
-      // Save conversation to memory
-      if (this.memory && this.sessionId && accumulatedText) {
+      // Save conversation to memory — but never a cancelled turn.
+      //
+      // AgentCore Memory is durable and cross-conversation, so writing an
+      // interrupted run recorded a truncated reply as though it were a complete
+      // one: buildContext() would then feed the abandoned attempt back into
+      // every later turn, and nothing local could unwrite it. A turn the user
+      // stopped is not something the agent should remember happening.
+      if (this.memory && this.sessionId && accumulatedText && !aborted) {
         try {
           await this.memory.saveEvent(this.sessionId, [
             { role: 'user', content: prompt },
