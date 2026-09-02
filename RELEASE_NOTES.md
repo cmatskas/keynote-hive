@@ -1,5 +1,19 @@
 # Release Notes
 
+## v4.1.2
+
+### Fixes
+- **Saving working credentials after an expiry left the app insisting they were invalid.** Renewing credentials and testing them successfully, then returning to the Work tab, gave `Sending a message needs working AWS credentials` on every send — with the Send button still disabled. Restarting Hive was the only way out.
+  - The main process was fine throughout: the new credentials were loaded, the AWS clients were rebuilt, and Save & Test genuinely passed. What was wrong was the *renderer's cached verdict*. It remembers the last credential state it was told about, and nothing told it the credentials now worked, so it went on refusing every AWS action and disabling every AWS control against credentials that were provably good. Restarting fixed it because a fresh renderer asks the main process for the state instead of remembering it.
+  - The cause was in `CredentialMonitor.reset()` — which is exactly what saving credentials calls. Recovery is announced only on the transition *out of* expired, and `reset()` set `_lastStatus` back to `'valid'` before that transition could be observed. So the recovery event was never sent. One stale value produced both symptoms, since the same verdict gates the warning message and the control disabling.
+  - `reset()` now preserves that state, and re-checks immediately rather than waiting out the poll interval — a minute of disabled Send, right after being told your credentials are fine, reads as the fix not having worked.
+  - Recovery also broadcasts now, through an `onRecovered` hook mirroring the existing `onExpired`. Previously a single renderer message stood between a correct UI and a permanently disabled one. A settled-valid verdict notifies too, so a stale cache cannot survive even when there was no transition to report.
+  - Worth recording why this survived: **recovery without saving always worked**, because the expired state was left intact in that path. Only the save path was broken — and that is the path nobody re-tests, because fixing your credentials is exactly when you stop looking for bugs.
+
+### Tests
+- 7 tests covering the reported sequence: expiry, then saving working credentials, then the recovery announcement and the host notification that corrects the renderer. Also that rotating already-valid credentials does *not* produce a spurious "credentials working again" notification, that bad replacement credentials keep reporting rejected, and that `reset()` still clears a paused state.
+- Mutation-verified: restoring the shipped `reset()` fails 4, and the narrower variant that keeps the immediate re-check but still overwrites the expired state fails 2 — so the tests pin the actual cause rather than only the timing.
+
 ## v4.1.1
 
 ### Tests
