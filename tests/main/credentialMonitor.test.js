@@ -41,14 +41,18 @@ const CREDS = { accessKeyId: 'AKIA', secretAccessKey: 'secret', region: 'us-east
 function build({ online = true } = {}) {
   const state = { online };
   const onExpired = jest.fn();
+  const onRecovered = jest.fn();
+  const onStateSettled = jest.fn();
   const send = jest.fn();
   const monitor = new CredentialMonitor({
     getCredentials: () => CREDS,
     getMainWindow: () => ({ isDestroyed: () => false, webContents: { send } }),
     isOnline: () => state.online,
     onExpired,
+    onRecovered,
+    onStateSettled,
   });
-  return { monitor, onExpired, send, state };
+  return { monitor, onExpired, onRecovered, onStateSettled, send, state };
 }
 
 /** The renderer message for a given level, if it was sent. */
@@ -321,6 +325,143 @@ describe('CredentialMonitor expiry is non-destructive', () => {
     await Promise.resolve();
 
     expect(mockQuickValidate).toHaveBeenCalledTimes(1);
+    monitor.stop();
+  });
+});
+
+
+/**
+ * Saving working credentials after an expiry.
+ *
+ * This is the path a user actually takes to recover, and it was broken in a way
+ * that recovery-without-saving was not: reset() set `_lastStatus` back to 'valid',
+ * and recovery is announced only on the transition out of 'expired'. So the
+ * transition never happened, no `ok` was ever sent, and the renderer — which
+ * caches the last verdict it was told — kept refusing every AWS action with
+ * "needs working AWS credentials" against credentials that were provably fine.
+ * Restarting the app was the only cure, since a fresh renderer asks for the state
+ * rather than remembering it.
+ *
+ * It survived because the broken path is the one nobody re-tests: fixing your
+ * credentials is precisely when you stop looking for bugs.
+ */
+describe('recovery after saving new credentials', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+  });
+  afterEach(() => jest.useRealTimers());
+
+  /** Expire the credentials, exactly as the monitor would observe it. */
+  async function expire(monitor) {
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: false, errors: ['ExpiredToken'] });
+    await monitor._runPollCheck();
+  }
+
+  test('announces recovery after reset(), which is what saving credentials does', async () => {
+    const { monitor, send } = build();
+    monitor.start();
+    await expire(monitor);
+    expect(bannerLevels(send)).toContain('expired');
+
+    // The user pastes working credentials and hits Save & Test.
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    monitor.reset();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(bannerLevels(send)).toContain('ok');
+    expect(monitor.getCredentialState()).toBe('valid');
+    monitor.stop();
+  });
+
+  test('re-checks immediately on reset rather than waiting out the poll interval', async () => {
+    // A minute of a disabled Send button, after being told the credentials are
+    // fine, reads as the fix not having worked.
+    const { monitor } = build();
+    monitor.start();
+    await expire(monitor);
+
+    mockQuickValidate.mockClear();
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    monitor.reset();
+    await Promise.resolve();
+
+    expect(mockQuickValidate).toHaveBeenCalled();
+    monitor.stop();
+  });
+
+  test('notifies the host so a cached renderer verdict is corrected', async () => {
+    // The banner event alone left one message between a correct UI and a
+    // permanently disabled one.
+    const { monitor, onRecovered } = build();
+    monitor.start();
+    await expire(monitor);
+
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    monitor.reset();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onRecovered).toHaveBeenCalled();
+    monitor.stop();
+  });
+
+  test('a settled valid verdict still notifies, so a stale cache cannot persist', async () => {
+    // No expiry, no transition — but the renderer may still be holding a stale
+    // 'rejected' from before. Something has to say otherwise.
+    const { monitor, onStateSettled } = build();
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    monitor.start();
+
+    await monitor._runPollCheck();
+
+    expect(onStateSettled).toHaveBeenCalled();
+    monitor.stop();
+  });
+
+  test('does not announce a recovery that never happened', async () => {
+    // Rotating perfectly good credentials must not produce a "credentials
+    // working again" notification for a problem the user never had.
+    const { monitor, send, onRecovered } = build();
+    mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
+    monitor.start();
+    await monitor._runPollCheck();
+
+    monitor.reset();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(bannerLevels(send)).not.toContain('ok');
+    expect(onRecovered).not.toHaveBeenCalled();
+    monitor.stop();
+  });
+
+  test('still clears a paused state, so new credentials start clean', async () => {
+    // The behaviour reset() was originally written for, preserved.
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: true, errors: [] });
+    const { monitor } = build();
+    monitor.start();
+    await monitor._runPollCheck();
+    expect(monitor.isPausedOffline()).toBe(true);
+
+    monitor.reset();
+
+    expect(monitor.isPausedOffline()).toBe(false);
+    monitor.stop();
+  });
+
+  test('saving credentials that are also bad keeps reporting rejected', async () => {
+    const { monitor } = build();
+    monitor.start();
+    await expire(monitor);
+
+    mockQuickValidate.mockResolvedValue({ valid: false, offline: false, errors: ['ExpiredToken'] });
+    monitor.reset();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(monitor.getCredentialState()).toBe('rejected');
     monitor.stop();
   });
 });

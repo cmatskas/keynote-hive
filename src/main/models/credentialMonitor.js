@@ -43,12 +43,15 @@ const { notify } = require('../notify');
 const POLL_INTERVAL_MS = 60 * 1000; // 1 minute
 
 class CredentialMonitor {
-  constructor({ getCredentials, getMainWindow, onExpired, isOnline = null, onReachedAws = null }) {
+  constructor({ getCredentials, getMainWindow, onExpired, isOnline = null, onReachedAws = null,
+    onRecovered = null, onStateSettled = null }) {
     this.getCredentials  = getCredentials;   // () => currentCredentials
     this.getMainWindow   = getMainWindow;    // () => mainWindow
     this.onExpired       = onExpired;        // called when credentials expire
     this.isOnline        = isOnline;         // () => boolean, optional
     this.onReachedAws = onReachedAws;        // () => void, called on any real answer from AWS
+    this.onRecovered  = onRecovered;         // () => void, credentials work again after an expiry
+    this.onStateSettled = onStateSettled;    // () => void, verdict confirmed with no transition
 
     this._pollTimer   = null;
     this._running     = false;
@@ -71,13 +74,34 @@ class CredentialMonitor {
     log.info('[CredentialMonitor] stopped');
   }
 
-  /** Call this after credentials are refreshed to reset state. */
+  /**
+   * Call this after credentials are refreshed.
+   *
+   * Deliberately does NOT clear `_lastStatus`. It used to set it back to 'valid',
+   * which quietly broke the most common recovery path in the app: saving working
+   * credentials after an expiry. Recovery is announced only on the transition out
+   * of 'expired' (see _runPollCheck), so erasing that memory meant the transition
+   * never happened, `credential-expiry-warning: ok` was never sent, and the
+   * renderer kept its 'rejected' verdict forever — every AWS control stayed
+   * disabled and every send was refused with "needs working AWS credentials",
+   * against credentials that were provably fine. Restarting the app was the only
+   * way out, because a fresh renderer asks for the state instead of remembering it.
+   *
+   * Recovery *without* a save always worked, which is why this survived: the
+   * broken path was the one nobody tests by hand, since fixing credentials is
+   * exactly when you stop looking for bugs.
+   *
+   * Also re-checks immediately. Waiting out the poll interval left the UI blocked
+   * for up to a minute after the user had already been told their credentials
+   * were fine.
+   */
   reset() {
     this.stop();
-    this._lastStatus = 'valid';
     this._pausedOffline = false;
     this._credentialState = 'unknown';
     this.start();
+    this._runPollCheck().catch(err =>
+      log.warn(`[CredentialMonitor] post-reset check failed: ${err.message}`));
   }
 
   /**
@@ -154,6 +178,13 @@ class CredentialMonitor {
       this._handleExpired();
     } else if (this._lastStatus === 'expired') {
       this._handleRecovered();
+    } else if (this.onStateSettled) {
+      // Valid, and not a recovery — but the renderer may still be holding a
+      // stale verdict (it caches what it was last told, and a reset clears our
+      // 'unknown' without telling it). Let the host re-broadcast the truth.
+      try { this.onStateSettled(); } catch (err) {
+        log.warn(`[CredentialMonitor] onStateSettled threw: ${err.message}`);
+      }
     }
   }
 
@@ -209,6 +240,15 @@ class CredentialMonitor {
     });
 
     this._sendToRenderer('credential-expiry-warning', { level: 'ok' });
+
+    // Mirrors onExpired. Without this the only thing correcting the renderer was
+    // the banner event above, so a single dropped message left the UI wrong with
+    // nothing to repair it.
+    if (this.onRecovered) {
+      try { this.onRecovered(); } catch (err) {
+        log.warn(`[CredentialMonitor] onRecovered threw: ${err.message}`);
+      }
+    }
   }
 
   _sendToRenderer(channel, data) {

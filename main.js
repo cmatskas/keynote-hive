@@ -207,6 +207,16 @@ ctx.startCredentialMonitor = function () {
     onExpired: () => {
       broadcastConnectivity();
     },
+    // Both of these exist because the renderer *caches* the credential verdict
+    // it was last told. Saving working credentials after an expiry left that
+    // cache reading 'rejected' with nothing to correct it, so every AWS control
+    // stayed disabled against credentials the user had just tested successfully.
+    onRecovered: () => {
+      broadcastConnectivity();
+    },
+    onStateSettled: () => {
+      broadcastConnectivity();
+    },
   });
   ctx.credentialMonitor.start();
 };
