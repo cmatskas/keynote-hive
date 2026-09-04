@@ -92,6 +92,11 @@ class StoryboardRegistry {
       units: analysis.units || [],
       classifications: analysis.classifications || {},
       audit: analysis.audit || null,
+      brandAlignment: analysis.brandAlignment || null,
+      // Which of the three model calls came back unusable, so reopening an
+      // analysis can say "the brand check was unavailable" rather than showing an
+      // empty section that reads like a clean verdict.
+      incomplete: Array.isArray(analysis.incomplete) ? analysis.incomplete : [],
     };
 
     await fs.writeFile(this._file(id), JSON.stringify(record, null, 2));
@@ -119,12 +124,17 @@ class StoryboardRegistry {
     for (const name of names.filter(n => n.endsWith('.json'))) {
       try {
         const raw = JSON.parse(await fs.readFile(path.join(this.dir, name), 'utf8'));
-        const { units, classifications, audit, ...summary } = raw;
+        // brandAlignment is destructured out with the rest of the detail: the
+        // sidebar shows shape and counts, and shipping five dimension objects per
+        // row for a list of fifty analyses is exactly the bloat this omission
+        // exists to prevent.
+        const { units, classifications, audit, brandAlignment, ...summary } = raw;
         records.push({
           ...summary,
           // Enough for the sidebar to show a story-shape preview without the payload.
           elementCounts: countElements(classifications),
           hasAudit: !!audit,
+          hasBrandAlignment: !!brandAlignment,
         });
       } catch (err) {
         // One unreadable file must not hide the rest of the user's history.

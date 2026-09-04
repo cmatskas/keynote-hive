@@ -22,6 +22,10 @@ const {
   missingIndices,
   _readClassifications,
   _readAudit,
+  _readRules,
+  _readSoundbites,
+  _readBrandAlignment,
+  RULE_KEYS,
   MAX_WORDS,
 } = require('../../src/main/models/storyboardAnalyzer');
 const { ELEMENT_KEYS } = require('../../src/main/models/storybrandElements');
@@ -142,14 +146,23 @@ describe('the model never supplies the text', () => {
     expect(JSON.stringify(result)).not.toMatch(/REWRITTEN|REWRITE/);
   });
 
-  test('the prompt asks the model not to return the script', () => {
-    let seen = '';
-    return analyze(baseArgs(2), {
-      createAgent: agentReturning(goodEnvelope(2), { onPrompt: (p) => { seen = p; } }),
-    }).then(() => {
-      expect(seen).toMatch(/Do not include the script text/i);
-      expect(seen).toMatch(/refer to units by\s*number only/i);
+  test('every prompt tells the model not to send the script back', async () => {
+    // Asserted across all three calls rather than whichever ran last. The split
+    // made this test start passing or failing depending on ordering, which is
+    // exactly the kind of accident that leaves a real gap: the rule has to hold
+    // for the audit and brand prompts too, since anything they echo could reach
+    // the screen.
+    const prompts = [];
+    await analyze(baseArgs(2), {
+      createAgent: agentReturning(goodEnvelope(2), { onPrompt: (p) => prompts.push(p) }),
     });
+
+    expect(prompts).toHaveLength(3);
+    for (const prompt of prompts) {
+      expect(prompt).toMatch(/do not (include the script text|reproduce the script)/i);
+    }
+    // The classification prompt is the one that refers to units by number.
+    expect(prompts.some(p => /refer to units by\s*number only/i.test(p))).toBe(true);
   });
 
   test('drops classifications for units that do not exist', async () => {
@@ -340,7 +353,9 @@ describe('the audit is secondary to the classification', () => {
     const audit = _readAudit({ elements: { problem: { status: 'weak', issue: 'no villain' } } });
 
     expect(audit.elements.problem).toEqual({
-      status: 'weak', found: '', issue: 'no villain', fix: '',
+      // score is null, not 0: an analysis saved before scoring existed has no
+      // score, and 0 would render as "missing" against a strong element.
+      status: 'weak', score: null, found: '', issue: 'no villain', fix: '',
     });
     expect(audit.elements.success.status).toBe('unknown');
   });
@@ -399,5 +414,289 @@ describe('missingIndices', () => {
   test('is empty when everything is classified', () => {
     const classified = new Map([[1, 'problem'], [2, 'guide']]);
     expect(missingIndices(units(2), classified)).toEqual([]);
+  });
+});
+
+/**
+ * The three-call split.
+ *
+ * One call had to emit the classification map for every paragraph, the whole
+ * audit, and the brand check in a single envelope. The sections that came last got
+ * the least care, a long script could run the combined output into the token
+ * ceiling, and one malformed brace lost everything — including the classification
+ * already paid for.
+ *
+ * Split, the guarantees worth protecting are: the classification is the only fatal
+ * call, the judgement calls degrade independently, and nothing waits on anything
+ * else.
+ */
+describe('the three-call split', () => {
+  /**
+   * An agent whose reply depends on which prompt it is given, so each call can be
+   * made to succeed or fail independently.
+   */
+  function agentPerCall({ classification, audit, brand, onPrompt } = {}) {
+    const replyFor = (prompt) => {
+      if (/Assign exactly one element/.test(prompt)) return classification;
+      if (/4 RULES OF MESSAGING/.test(prompt)) return audit;
+      if (/Kernel" Brand Guidelines/.test(prompt)) return brand;
+      throw new Error(`unrecognised prompt: ${prompt.slice(0, 60)}`);
+    };
+    return jest.fn(() => ({
+      agent: {
+        stream: (prompt) => {
+          if (onPrompt) onPrompt(prompt);
+          const reply = replyFor(prompt);
+          return (async function* () {
+            if (reply instanceof Error) throw reply;
+            yield textDelta(reply);
+          })();
+        },
+      },
+      dispose: jest.fn(),
+    }));
+  }
+
+  const classificationReply = (n) => JSON.stringify({
+    classifications: Object.fromEntries(
+      Array.from({ length: n }, (_, i) => [String(i + 1), ELEMENT_KEYS[i % ELEMENT_KEYS.length]]),
+    ),
+  });
+
+  const auditReply = () => JSON.stringify({
+    audit: {
+      overall: 'Reads well.',
+      elements: Object.fromEntries(ELEMENT_KEYS.map(k => [k, { status: 'strong', score: 9 }])),
+      rules: {
+        'zero-cognitive-load': { verdict: 'pass', evidence: 'plain language', note: '' },
+        survival: { verdict: 'fail', evidence: '22% faster', note: 'lead with the benefit' },
+        memorable: { verdict: 'pass', evidence: '', note: '' },
+        'customer-hero': { verdict: 'pass', evidence: '', note: '' },
+      },
+      soundbites: {
+        problem: { status: 'strong', found: 'the barking', suggestion: '' },
+        empathy: { status: 'weak', found: '', suggestion: 'say you understand' },
+        answer: { status: 'strong', found: '', suggestion: '' },
+        change: { status: 'missing', found: '', suggestion: 'name who they become' },
+        endResult: { status: 'strong', found: '', suggestion: '' },
+      },
+      whatsWorking: ['clear problem'],
+      quickWins: ['add empathy'],
+    },
+  });
+
+  const brandReply = () => JSON.stringify({
+    brandAlignment: {
+      score: 74,
+      verdict: 'Close, but the opening centres AWS rather than the builder.',
+      dimensions: {
+        persona: { status: 'weak', score: 6, found: 'we built', issue: 'AWS as hero', fix: 'you build' },
+        positioning: { status: 'strong', score: 9, found: '', issue: '', fix: '' },
+        traits: { status: 'strong', score: 8, found: '', issue: '', fix: '' },
+        voice: { status: 'weak', score: 7, found: '', issue: '', fix: '' },
+        craft: { status: 'strong', score: 8, found: '', issue: '', fix: '' },
+      },
+      naturalAlignment: 'Guide and champion agree here.',
+      tensions: ['The tightest line loses the double-take.'],
+      outOfScope: ['Slide colour is a visual question.'],
+    },
+  });
+
+  test('makes exactly three calls, one per concern', async () => {
+    const createAgent = agentPerCall({
+      classification: classificationReply(2), audit: auditReply(), brand: brandReply(),
+    });
+
+    await analyze(baseArgs(2), { createAgent });
+
+    expect(createAgent).toHaveBeenCalledTimes(3);
+    // Distinct ids, so a log or a trace can tell them apart.
+    const ids = createAgent.mock.calls.map(c => c[0].id).sort();
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  test('returns the audit and the brand check together', async () => {
+    const result = await analyze(baseArgs(2), {
+      createAgent: agentPerCall({
+        classification: classificationReply(2), audit: auditReply(), brand: brandReply(),
+      }),
+    });
+
+    expect(result.audit.rules.survival.verdict).toBe('fail');
+    expect(result.audit.soundbites.change.status).toBe('missing');
+    expect(result.brandAlignment.score).toBe(74);
+    expect(result.brandAlignment.dimensions.persona.fix).toBe('you build');
+    expect(result.incomplete).toEqual([]);
+  });
+
+  test('a failed audit call keeps the classification and the brand check', async () => {
+    // The whole point of splitting: colour-coding a script is useful on its own,
+    // and losing it because one table came back malformed would be a poor trade.
+    const result = await analyze(baseArgs(3), {
+      createAgent: agentPerCall({
+        classification: classificationReply(3),
+        audit: new Error('stream died'),
+        brand: brandReply(),
+      }),
+    });
+
+    expect(Object.keys(result.classifications)).toHaveLength(3);
+    expect(result.audit).toBeNull();
+    expect(result.brandAlignment.score).toBe(74);
+    expect(result.incomplete).toEqual(['audit']);
+  });
+
+  test('a failed brand call keeps the classification and the audit', async () => {
+    const result = await analyze(baseArgs(3), {
+      createAgent: agentPerCall({
+        classification: classificationReply(3),
+        audit: auditReply(),
+        brand: new Error('stream died'),
+      }),
+    });
+
+    expect(result.audit.overall).toBe('Reads well.');
+    expect(result.brandAlignment).toBeNull();
+    expect(result.incomplete).toEqual(['brand alignment']);
+  });
+
+  test('both judgement calls failing still yields a usable analysis', async () => {
+    const result = await analyze(baseArgs(2), {
+      createAgent: agentPerCall({
+        classification: classificationReply(2),
+        audit: new Error('nope'),
+        brand: new Error('nope'),
+      }),
+    });
+
+    expect(Object.keys(result.classifications)).toHaveLength(2);
+    expect(result.incomplete).toEqual(['audit', 'brand alignment']);
+  });
+
+  test('a failed classification call is fatal', async () => {
+    // Without it there is nothing to render, so this is the one that must throw
+    // rather than degrade.
+    await expect(analyze(baseArgs(2), {
+      createAgent: agentPerCall({
+        classification: new Error('stream died'),
+        audit: auditReply(),
+        brand: brandReply(),
+      }),
+    })).rejects.toThrow();
+  });
+
+  test('the calls run concurrently rather than in sequence', async () => {
+    // Three sequential round trips would triple the wait for no benefit — none of
+    // them needs another's result.
+    let inFlight = 0;
+    let peak = 0;
+    const createAgent = jest.fn((opts) => ({
+      agent: {
+        stream: (prompt) => (async function* () {
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          await new Promise(r => setTimeout(r, 5));
+          inFlight--;
+          if (/Assign exactly one element/.test(prompt)) yield textDelta(classificationReply(2));
+          else if (/4 RULES/.test(prompt)) yield textDelta(auditReply());
+          else yield textDelta(brandReply());
+        })(),
+      },
+      dispose: jest.fn(),
+    }));
+
+    await analyze(baseArgs(2), { createAgent });
+
+    expect(peak).toBe(3);
+  });
+
+  test('an unparseable brand reply names which call failed', async () => {
+    // "Did not return usable JSON" without saying which of three calls is
+    // undiagnosable from a bug report.
+    const result = await analyze(baseArgs(2), {
+      createAgent: agentPerCall({
+        classification: classificationReply(2),
+        audit: auditReply(),
+        brand: 'I cannot help with that.',
+      }),
+    });
+
+    expect(result.brandAlignment).toBeNull();
+    expect(result.incomplete).toEqual(['brand alignment']);
+  });
+});
+
+describe('the new audit readers', () => {
+  test('the 4 Rules keys are fixed, so an invented rule cannot reach the UI', () => {
+    // Same reasoning as element keys: a row the UI has no label for would render
+    // blank and read as "no issue found".
+    const rules = _readRules({
+      survival: { verdict: 'fail', evidence: 'specs', note: 'lead with benefit' },
+      'my-invented-rule': { verdict: 'fail', evidence: 'x' },
+    });
+
+    expect(Object.keys(rules)).toEqual(RULE_KEYS);
+    expect(rules.survival.verdict).toBe('fail');
+    expect(rules['zero-cognitive-load'].verdict).toBe('unknown');
+  });
+
+  test('an invalid verdict becomes unknown rather than passing through', () => {
+    const rules = _readRules({ memorable: { verdict: 'MAYBE' } });
+    expect(rules.memorable.verdict).toBe('unknown');
+  });
+
+  test('the soundbites keep P.E.A.C.E. order regardless of response order', () => {
+    // The order is part of the framework — Problem before Empathy before Answer —
+    // and a scorecard that reorders them stops matching what the skill teaches.
+    const sb = _readSoundbites({
+      endResult: { status: 'strong' }, problem: { status: 'weak' },
+    });
+
+    expect(Object.keys(sb)).toEqual(['problem', 'empathy', 'answer', 'change', 'endResult']);
+  });
+
+  test('brand alignment clamps scores into range', () => {
+    const brand = _readBrandAlignment({
+      score: 140,
+      verdict: 'ok',
+      dimensions: { persona: { status: 'strong', score: 99 }, craft: { status: 'weak', score: -4 } },
+    });
+
+    expect(brand.score).toBe(100);
+    expect(brand.dimensions.persona.score).toBe(10);
+    expect(brand.dimensions.craft.score).toBe(0);
+  });
+
+  test('brand alignment is null when the response carried nothing usable', () => {
+    // Null lets the panel say the check was unavailable. Five "unknown" rows would
+    // read like a verdict of "no problems found", which is the opposite.
+    expect(_readBrandAlignment(null)).toBeNull();
+    expect(_readBrandAlignment({})).toBeNull();
+    expect(_readBrandAlignment({ dimensions: {} })).toBeNull();
+  });
+
+  test('brand alignment survives a partial response', () => {
+    const brand = _readBrandAlignment({ score: 62, dimensions: { persona: { status: 'weak' } } });
+
+    expect(brand.score).toBe(62);
+    expect(brand.dimensions.persona.status).toBe('weak');
+    expect(brand.dimensions.voice.status).toBe('unknown');
+    expect(brand.tensions).toEqual([]);
+  });
+
+  test('an audit from before this change still reads cleanly', () => {
+    // Analyses saved by earlier versions have no rules, soundbites or scores. They
+    // must load as "not assessed" rather than throwing or inventing verdicts.
+    const audit = _readAudit({
+      overall: 'old analysis',
+      elements: { problem: { status: 'weak', issue: 'thin' } },
+      whatsWorking: ['x'],
+    });
+
+    expect(audit.overall).toBe('old analysis');
+    expect(audit.elements.problem.score).toBeNull();
+    expect(Object.keys(audit.rules)).toEqual(RULE_KEYS);
+    expect(audit.rules.survival.verdict).toBe('unknown');
+    expect(audit.soundbites.problem.status).toBe('unknown');
   });
 });
