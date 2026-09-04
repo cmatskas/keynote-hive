@@ -38,6 +38,21 @@ function register(ipcMain, ctx) {
     await ctx.skillsManager.openSkillsFolder();
   });
 
+  // Bundled skills whose update is waiting on the user, because they have edited
+  // their own copy and we will not overwrite it. An unmodified copy is updated
+  // silently at startup and never appears here.
+  ipcMain.handle('get-skill-updates', async () => {
+    return ctx.skillsManager.getAvailableUpdates();
+  });
+
+  ipcMain.handle('apply-skill-update', async (event, { name }) => {
+    return await ctx.skillsManager.applySkillUpdate(name);
+  });
+
+  ipcMain.handle('decline-skill-update', async (event, { name }) => {
+    return await ctx.skillsManager.declineSkillUpdate(name);
+  });
+
   ipcMain.handle('get-skill-content', async (event, name) => {
     const skill = ctx.skillsManager.getSkill(name);
     if (!skill) return null;

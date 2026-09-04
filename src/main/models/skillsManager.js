@@ -71,7 +71,14 @@ class SkillsManager {
     if (!dir) return [];
     const entries = await fs.readdir(dir, { withFileTypes: true, recursive: true });
     return entries
-      .filter(e => e.isFile() && e.name !== 'SKILL.md')
+      // Dotfiles are bookkeeping, not content. The seed marker (.hive-seed.json)
+      // lives here, and advertising it as a resource would invite the model to
+      // read our internal state and treat it as reference material. Backups of a
+      // replaced skill are excluded for the same reason.
+      .filter(e => e.isFile()
+        && e.name !== 'SKILL.md'
+        && !e.name.startsWith('.')
+        && !e.name.includes('SKILL.md.backup'))
       .map(e => path.relative(dir, path.join(e.parentPath || e.path, e.name)));
   }
 
@@ -275,6 +282,28 @@ class SkillsManager {
 
   // ── Seeding ────────────────────────────────────────────────────────────
 
+  /**
+   * Copy bundled skills into userData, and carry forward updates to them.
+   *
+   * This used to seed only when SKILL.md was absent, which meant a revised
+   * bundled skill reached new installs and nobody else — every existing user kept
+   * whatever shipped the day they first ran Hive. Silently, and forever.
+   *
+   * Skills are user-editable, so an update cannot simply overwrite. Three cases:
+   *
+   *   1. Nothing installed        → seed it.
+   *   2. Installed and untouched  → replace silently. There is nothing to
+   *                                 reconcile and nothing to ask about.
+   *   3. Installed and edited     → leave it strictly alone and record that an
+   *                                 update is available, for Settings > Skills to
+   *                                 offer as an explicit choice.
+   *
+   * "Untouched" is decided by hashing against `.hive-seed.json`, written whenever
+   * we seed or update. A skill installed before that marker existed has no hash to
+   * compare, so it is treated as edited — the cautious reading, since guessing
+   * wrong in that direction costs a notification and guessing wrong the other way
+   * destroys someone's work.
+   */
   async _seedBundledSkills() {
     let entries;
     try {
@@ -283,23 +312,163 @@ class SkillsManager {
       return;
     }
 
+    this.updatesAvailable = new Map();
+
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const srcSkill = path.join(this.bundledSkillsDir, entry.name, 'SKILL.md');
+      const srcDir = path.join(this.bundledSkillsDir, entry.name);
       const destDir = path.join(this.userSkillsDir, entry.name);
       const destSkill = path.join(destDir, 'SKILL.md');
 
+      let installed;
       try {
-        await fs.access(destSkill);
+        installed = await fs.readFile(destSkill, 'utf8');
       } catch {
-        // Doesn't exist — seed it
+        // Case 1: not installed.
         await this._ensureDir(destDir);
-        await this._copyDirRecursive(
-          path.join(this.bundledSkillsDir, entry.name),
-          destDir
-        );
+        await this._copyDirRecursive(srcDir, destDir);
+        await this._writeSeedMarker(destDir, srcDir);
+        continue;
+      }
+
+      const bundledVersion = await this._bundledVersion(srcDir);
+      const marker = await this._readSeedMarker(destDir);
+
+      // What the installed copy claims to be. The marker records what we *wrote*,
+      // but a skill installed before the marker existed has none — and that is
+      // every user who already had Hive, so it is the common case rather than an
+      // edge one. Falling back to the file's own frontmatter means those installs
+      // are still told an update exists; keying only off the marker meant they
+      // silently got nothing forever, which is the exact failure this replaced.
+      const installedVersion = marker?.version || this._declaredVersion(installed);
+
+      // Nothing to offer unless the bundled copy is genuinely newer.
+      if (!bundledVersion || !this._isNewer(bundledVersion, installedVersion)) continue;
+
+      // A choice the user already made sticks; do not ask again for this version.
+      if (marker?.declinedVersion && !this._isNewer(bundledVersion, marker.declinedVersion)) continue;
+
+      // Provably untouched only when we have a hash to compare against. Without a
+      // marker we cannot know, so the update is offered rather than applied — that
+      // way an edited copy is never destroyed, and the backup makes accepting safe
+      // even for someone who did edit it.
+      if (marker?.hash && this._hash(installed) === marker.hash) {
+        // Case 2: untouched since we wrote it.
+        await this._copyDirRecursive(srcDir, destDir);
+        await this._writeSeedMarker(destDir, srcDir);
+        log.info(`[skills] updated '${entry.name}' to v${bundledVersion} (local copy was unmodified)`);
+      } else {
+        // Case 3: edited. Record only; never overwrite.
+        this.updatesAvailable.set(entry.name, {
+          name: entry.name,
+          installedVersion: installedVersion || null,
+          availableVersion: bundledVersion,
+        });
+        log.info(`[skills] '${entry.name}' v${bundledVersion} available; local copy is modified, leaving it alone`);
       }
     }
+  }
+
+  /** Bundled skills whose update is waiting on the user because they edited theirs. */
+  getAvailableUpdates() {
+    return [...(this.updatesAvailable?.values() || [])];
+  }
+
+  /**
+   * Install the bundled version of a skill, keeping the user's copy as a backup.
+   *
+   * The backup is the whole point: "replace" has to be reversible, or the only
+   * safe answer to the prompt is always "keep mine".
+   */
+  async applySkillUpdate(name) {
+    const srcDir = path.join(this.bundledSkillsDir, name);
+    const destDir = path.join(this.userSkillsDir, name);
+    const destSkill = path.join(destDir, 'SKILL.md');
+
+    const bundledVersion = await this._bundledVersion(srcDir);
+    const marker = await this._readSeedMarker(destDir);
+    const backupName = `SKILL.md.backup-${marker?.version || 'previous'}`;
+
+    try {
+      await fs.copyFile(destSkill, path.join(destDir, backupName));
+    } catch (err) {
+      log.warn(`[skills] could not back up '${name}' before update: ${err.message}`);
+    }
+
+    await this._copyDirRecursive(srcDir, destDir);
+    await this._writeSeedMarker(destDir, srcDir);
+    this.updatesAvailable?.delete(name);
+    this.cache = await this._discoverAll();
+
+    return { name, version: bundledVersion, backup: backupName };
+  }
+
+  /** Keep the user's version, and stop offering this one. */
+  async declineSkillUpdate(name) {
+    const srcDir = path.join(this.bundledSkillsDir, name);
+    const destDir = path.join(this.userSkillsDir, name);
+    const bundledVersion = await this._bundledVersion(srcDir);
+    const marker = (await this._readSeedMarker(destDir)) || {};
+
+    await this._writeMarkerRaw(destDir, { ...marker, declinedVersion: bundledVersion });
+    this.updatesAvailable?.delete(name);
+
+    return { name, declinedVersion: bundledVersion };
+  }
+
+  _hash(content) {
+    return require('crypto').createHash('sha256').update(content, 'utf8').digest('hex');
+  }
+
+  /** Semver-ish compare, tolerant of "2" and "2.0" and "2.0.1". */
+  _isNewer(a, b) {
+    if (!b) return true;
+    const parts = v => String(v).split('.').map(n => parseInt(n, 10) || 0);
+    const [x, y] = [parts(a), parts(b)];
+    for (let i = 0; i < Math.max(x.length, y.length); i++) {
+      if ((x[i] || 0) > (y[i] || 0)) return true;
+      if ((x[i] || 0) < (y[i] || 0)) return false;
+    }
+    return false;
+  }
+
+  /** The version a SKILL.md declares in its own frontmatter, or null. */
+  _declaredVersion(content) {
+    const fm = String(content).match(/^---\n([\s\S]*?)\n---/);
+    return fm ? (fm[1].match(/version:\s*["']?([\d.]+)/) || [])[1] || null : null;
+  }
+
+  async _bundledVersion(srcDir) {
+    try {
+      return this._declaredVersion(await fs.readFile(path.join(srcDir, 'SKILL.md'), 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+
+  async _readSeedMarker(destDir) {
+    try {
+      return JSON.parse(await fs.readFile(path.join(destDir, '.hive-seed.json'), 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+
+  async _writeMarkerRaw(destDir, data) {
+    try {
+      await fs.writeFile(path.join(destDir, '.hive-seed.json'), JSON.stringify(data, null, 2));
+    } catch (err) {
+      log.warn(`[skills] could not write seed marker: ${err.message}`);
+    }
+  }
+
+  async _writeSeedMarker(destDir, srcDir) {
+    const version = await this._bundledVersion(srcDir);
+    let hash = null;
+    try {
+      hash = this._hash(await fs.readFile(path.join(destDir, 'SKILL.md'), 'utf8'));
+    } catch { /* nothing to hash */ }
+    await this._writeMarkerRaw(destDir, { version, hash, seededAt: new Date().toISOString() });
   }
 
   async _ensureDir(dir) {

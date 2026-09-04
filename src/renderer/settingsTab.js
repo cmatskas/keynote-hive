@@ -612,6 +612,16 @@
         list.innerHTML = '<div class="text-muted small text-center py-4">No skills installed.</div>';
         return;
       }
+
+      // Updates only appear here when the user has edited their own copy of a
+      // bundled skill. An unmodified copy is updated silently at startup, because
+      // there is nothing to reconcile and asking would be noise.
+      let updates = [];
+      try {
+        updates = await window.electronAPI.invoke('get-skill-updates') || [];
+      } catch { updates = []; }
+      const updateFor = new Map(updates.map(u => [u.name, u]));
+
       list.innerHTML = skills.map(s => `
         <div class="card mb-2">
           <div class="card-body py-2 px-3 d-flex align-items-center justify-content-between">
@@ -620,8 +630,17 @@
                 <strong class="small">${esc(s.name)}</strong>
                 ${s.autoActivate ? '<span class="badge bg-primary bg-opacity-25 text-primary" style="font-size:0.65rem;">always-on</span>' : ''}
                 ${s.scope ? `<span class="badge bg-secondary bg-opacity-25 text-muted" style="font-size:0.65rem;">${esc(s.scope)}</span>` : ''}
+                ${updateFor.has(s.name) ? `<span class="badge bg-warning bg-opacity-25 text-warning skill-update-badge" style="font-size:0.65rem;">v${esc(updateFor.get(s.name).availableVersion)} available</span>` : ''}
               </div>
               <div class="text-muted small text-truncate">${esc(s.description)}</div>
+              ${updateFor.has(s.name) ? `
+                <div class="skill-update-row small mt-2 d-flex align-items-center gap-2 flex-wrap">
+                  <span class="text-muted">
+                    A newer bundled version is available. Yours has local edits, so it has been left alone.
+                  </span>
+                  <button class="btn btn-sm btn-outline-secondary skill-update-keep" data-skill="${esc(s.name)}">Keep mine</button>
+                  <button class="btn btn-sm btn-warning skill-update-apply" data-skill="${esc(s.name)}">Use the new version</button>
+                </div>` : ''}
             </div>
             <div class="d-flex align-items-center gap-1 flex-shrink-0">
               <button class="btn btn-sm btn-outline-secondary skill-edit-btn" data-skill="${esc(s.name)}" title="Edit"><i class="bi bi-pencil"></i></button>
@@ -641,6 +660,38 @@
       list.querySelectorAll('.skill-delete-btn').forEach(btn => {
         btn.addEventListener('click', () => deleteSkill(btn.dataset.skill));
       });
+      // Replace: installs the bundled version and keeps theirs as a backup, so
+      // the choice is reversible — otherwise the only safe answer is always
+      // "keep mine".
+      list.querySelectorAll('.skill-update-apply').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const name = btn.dataset.skill;
+          btn.disabled = true;
+          try {
+            const res = await window.electronAPI.invoke('apply-skill-update', { name });
+            window.electronAPI.showToast(`Updated ${name} to v${res.version}. Your version was saved as ${res.backup}.`, 'success');
+          } catch (err) {
+            window.electronAPI.showToast(`Could not update ${name}: ${err.message}`, 'error');
+          }
+          loadSkills();
+        });
+      });
+
+      // Keep: records the version so this stops being offered.
+      list.querySelectorAll('.skill-update-keep').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const name = btn.dataset.skill;
+          btn.disabled = true;
+          try {
+            await window.electronAPI.invoke('decline-skill-update', { name });
+            window.electronAPI.showToast(`Keeping your version of ${name}.`, 'info');
+          } catch (err) {
+            window.electronAPI.showToast(`Could not save that choice: ${err.message}`, 'error');
+          }
+          loadSkills();
+        });
+      });
+
       // Wire toggles
       list.querySelectorAll('.skill-toggle').forEach(toggle => {
         toggle.addEventListener('change', () => {
