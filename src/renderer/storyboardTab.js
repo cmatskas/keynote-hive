@@ -230,7 +230,7 @@
     $('sbExportBtn').classList.remove('d-none');
     $('sbTitle').textContent = analysis.displayName || 'Analysis';
     renderScript(analysis);
-    renderAudit(analysis.audit);
+    renderAudit(analysis);
     highlightActive(analysis.id);
     $('sbScroll').scrollTop = 0;
     showRevisionBadge(analysis.id);
@@ -571,18 +571,50 @@
 
   // ── Audit ────────────────────────────────────────────────────────────────
 
-  function renderAudit(audit) {
+  /** Labels for the fixed key lists the analyzer validates against. */
+  const RULE_LABELS = {
+    'zero-cognitive-load': 'Zero cognitive load',
+    survival: 'Linked to survival',
+    memorable: 'Memorable and repeatable',
+    'customer-hero': 'Audience is the hero',
+  };
+  const SOUNDBITE_LABELS = {
+    problem: 'Problem',
+    empathy: 'Empathy',
+    answer: 'Answer',
+    change: 'Change',
+    endResult: 'End result',
+  };
+  const BRAND_LABELS = {
+    persona: 'Persona — champion, not hero',
+    positioning: 'Positioning — builders turning ambition into action',
+    traits: 'Personality traits',
+    voice: 'Voice tenets',
+    craft: 'Writing craft',
+  };
+
+  function renderAudit(analysis) {
     const body = $('sbAuditBody');
     if (!body) return;
-    if (!audit) {
-      body.innerHTML = '<div class="sb-audit-line">No audit was returned for this analysis.</div>';
+
+    const audit = analysis?.audit || null;
+    const brand = analysis?.brandAlignment || null;
+    const incomplete = Array.isArray(analysis?.incomplete) ? analysis.incomplete : [];
+
+    if (!audit && !brand) {
+      // Distinguishes "this run could not produce it" from "this analysis predates
+      // the feature" — otherwise a transient failure reads as a permanent gap.
+      body.innerHTML = incomplete.length
+        ? `<div class="sb-audit-line">The ${esc(incomplete.join(' and '))} could not be produced for this
+             analysis. Re-analyse to try again.</div>`
+        : '<div class="sb-audit-line">No audit was returned for this analysis.</div>';
       return;
     }
 
     const statusLabel = { strong: 'Strong', weak: 'Weak', missing: 'Missing', unknown: 'Unrated' };
 
     const elementCards = elements.map(def => {
-      const entry = audit.elements?.[def.key] || { status: 'unknown' };
+      const entry = audit?.elements?.[def.key] || { status: 'unknown' };
       const lines = [
         entry.found ? `<div class="sb-audit-line sb-audit-quote">${esc(entry.found)}</div>` : '',
         entry.issue ? `<div class="sb-audit-line"><strong>Issue:</strong> ${esc(entry.issue)}</div>` : '',
@@ -594,6 +626,7 @@
           <div class="sb-audit-element-head">
             <span class="sb-dot" style="background: currentColor"></span>
             <span class="sb-audit-element-name">${esc(def.label)}</span>
+            ${entry.score !== null && entry.score !== undefined ? `<span class="sb-audit-score">${entry.score}/10</span>` : ''}
             <span class="sb-audit-status is-${esc(entry.status)}">${esc(statusLabel[entry.status] || entry.status)}</span>
           </div>
           ${lines}
@@ -604,11 +637,100 @@
       ? `<div class="sb-audit-section-title">${title}</div><ul class="sb-audit-list">${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>`
       : '');
 
+    // ── The 4 Rules ──
+    // Rendered only when at least one rule got a verdict. An analysis from before
+    // this existed has four "unknown" rows, and a table of Unrated reads like a
+    // finding rather than an absence.
+    const ruleRows = Object.entries(RULE_LABELS)
+      .map(([key, label]) => {
+        const entry = audit?.rules?.[key];
+        if (!entry) return '';
+        const verdict = entry.verdict === 'pass' ? 'Pass' : entry.verdict === 'fail' ? 'Fail' : 'Unrated';
+        return `
+          <div class="sb-rule">
+            <span class="sb-rule-verdict is-${esc(entry.verdict)}">${verdict}</span>
+            <span class="sb-rule-name">${esc(label)}</span>
+            ${entry.evidence ? `<div class="sb-audit-line sb-audit-quote">${esc(entry.evidence)}</div>` : ''}
+            ${entry.note ? `<div class="sb-audit-line">${esc(entry.note)}</div>` : ''}
+          </div>`;
+      }).join('');
+    const anyRule = audit?.rules && Object.values(audit.rules).some(r => r.verdict !== 'unknown');
+    const rulesSection = anyRule
+      ? `<div class="sb-audit-section-title">The 4 Rules of Messaging</div>${ruleRows}`
+      : '';
+
+    // ── P.E.A.C.E. soundbites ──
+    const soundbiteRows = Object.entries(SOUNDBITE_LABELS)
+      .map(([key, label]) => {
+        const entry = audit?.soundbites?.[key];
+        if (!entry) return '';
+        return `
+          <div class="sb-soundbite">
+            <div class="sb-soundbite-head">
+              <span class="sb-soundbite-name">${esc(label)}</span>
+              <span class="sb-audit-status is-${esc(entry.status)}">${esc(statusLabel[entry.status] || entry.status)}</span>
+            </div>
+            ${entry.found ? `<div class="sb-audit-line sb-audit-quote">${esc(entry.found)}</div>` : ''}
+            ${entry.suggestion ? `<div class="sb-audit-line"><strong>Try:</strong> ${esc(entry.suggestion)}</div>` : ''}
+          </div>`;
+      }).join('');
+    const anySoundbite = audit?.soundbites && Object.values(audit.soundbites).some(sb => sb.status !== 'unknown');
+    const soundbitesSection = anySoundbite
+      ? `<div class="sb-audit-section-title">The 5 Soundbites</div>${soundbiteRows}`
+      : '';
+
+    // ── AWS brand alignment ──
+    let brandSection = '';
+    if (brand) {
+      const dimRows = Object.entries(BRAND_LABELS).map(([key, label]) => {
+        const entry = brand.dimensions?.[key];
+        if (!entry) return '';
+        return `
+          <div class="sb-brand-dim">
+            <div class="sb-brand-dim-head">
+              <span class="sb-brand-dim-name">${esc(label)}</span>
+              ${entry.score !== null && entry.score !== undefined ? `<span class="sb-brand-dim-score">${entry.score}/10</span>` : ''}
+              <span class="sb-audit-status is-${esc(entry.status)}">${esc(statusLabel[entry.status] || entry.status)}</span>
+            </div>
+            ${entry.found ? `<div class="sb-audit-line sb-audit-quote">${esc(entry.found)}</div>` : ''}
+            ${entry.issue ? `<div class="sb-audit-line"><strong>Issue:</strong> ${esc(entry.issue)}</div>` : ''}
+            ${entry.fix ? `<div class="sb-audit-line"><strong>Fix:</strong> ${esc(entry.fix)}</div>` : ''}
+          </div>`;
+      }).join('');
+
+      // Banded rather than numeric-only: "62" means nothing without a scale.
+      const band = brand.score === null ? '' : brand.score >= 80 ? 'is-good' : brand.score >= 50 ? 'is-mixed' : 'is-poor';
+
+      brandSection = `
+        <div class="sb-audit-section-title">AWS brand alignment</div>
+        ${brand.score !== null ? `
+          <div class="sb-brand-score ${band}">
+            <span class="sb-brand-score-value">${brand.score}<span class="sb-brand-score-max">/100</span></span>
+            ${brand.verdict ? `<span class="sb-brand-verdict">${esc(brand.verdict)}</span>` : ''}
+          </div>` : (brand.verdict ? `<div class="sb-audit-line">${esc(brand.verdict)}</div>` : '')}
+        ${dimRows}
+        ${brand.naturalAlignment ? `<div class="sb-audit-line sb-brand-agrees"><strong>Where both frameworks agree:</strong> ${esc(brand.naturalAlignment)}</div>` : ''}
+        ${list('Tensions worth a decision', brand.tensions)}
+        ${list('Out of scope (visual brand)', brand.outOfScope)}`;
+    } else if (incomplete.includes('brand alignment')) {
+      brandSection = `
+        <div class="sb-audit-section-title">AWS brand alignment</div>
+        <div class="sb-audit-line">This check could not be produced for this analysis. Re-analyse to try again.</div>`;
+    }
+
+    const auditUnavailable = !audit && incomplete.includes('audit')
+      ? '<div class="sb-audit-line">The StoryBrand audit could not be produced for this analysis. Re-analyse to try again.</div>'
+      : '';
+
     body.innerHTML = [
-      audit.overall ? `<div class="sb-audit-overall">${esc(audit.overall)}</div>` : '',
-      elementCards,
-      list('What&rsquo;s working', audit.whatsWorking),
-      list('Quick wins', audit.quickWins),
+      auditUnavailable,
+      audit?.overall ? `<div class="sb-audit-overall">${esc(audit.overall)}</div>` : '',
+      audit ? elementCards : '',
+      rulesSection,
+      soundbitesSection,
+      brandSection,
+      list('What&rsquo;s working', audit?.whatsWorking),
+      list('Quick wins', audit?.quickWins),
     ].join('');
   }
 

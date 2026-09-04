@@ -3382,3 +3382,120 @@ body {
   #storyboard-page .sb-flow-seg:hover,
   #storyboard-page .sb-flow-seg:focus-visible { transform: none; }
 }
+
+/* ── Audit panel: 4 Rules, soundbites, AWS brand alignment ───────────────────
+ *
+ * Three sections added when the tab took on StoryBrand 2.0. Each is rendered only
+ * when the model actually returned it, so an analysis saved before they existed
+ * shows the audit it has rather than rows of "Unrated" that read like findings.
+ */
+#storyboard-page .sb-audit-score,
+#storyboard-page .sb-brand-dim-score {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+/* The 4 Rules: a verdict is pass or fail, so it gets a word rather than a colour
+ * alone — the panel is read as much as scanned. */
+#storyboard-page .sb-rule {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--sb-hairline);
+}
+
+#storyboard-page .sb-rule-verdict {
+  display: inline-block;
+  min-width: 42px;
+  margin-right: 8px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+#storyboard-page .sb-rule-verdict.is-pass { background: rgba(46, 125, 50, 0.14); color: var(--sb-green); }
+#storyboard-page .sb-rule-verdict.is-fail { background: rgba(211, 47, 47, 0.14); color: var(--sb-red); }
+#storyboard-page .sb-rule-verdict.is-unknown { background: rgba(128, 128, 128, 0.14); color: var(--sb-ink-soft); }
+
+#storyboard-page .sb-rule-name { font-size: 13px; font-weight: 600; }
+
+/* Soundbites: five in fixed P.E.A.C.E. order. */
+#storyboard-page .sb-soundbite {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--sb-hairline);
+}
+
+#storyboard-page .sb-soundbite-head,
+#storyboard-page .sb-brand-dim-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+#storyboard-page .sb-soundbite-name,
+#storyboard-page .sb-brand-dim-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+#storyboard-page .sb-soundbite-head .sb-audit-status,
+#storyboard-page .sb-brand-dim-head .sb-audit-status { margin-left: auto; }
+
+#storyboard-page .sb-brand-dim-head .sb-audit-status { margin-left: 0; }
+
+#storyboard-page .sb-brand-dim {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--sb-hairline);
+}
+
+/* The 0–100 score. Banded as well as numeric, because a bare "62" means nothing
+ * without a scale to read it against. */
+#storyboard-page .sb-brand-score {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  border-left: 3px solid currentColor;
+  background: var(--sb-canvas);
+}
+
+#storyboard-page .sb-brand-score.is-good  { color: var(--sb-green); }
+#storyboard-page .sb-brand-score.is-mixed { color: var(--sb-gold); }
+#storyboard-page .sb-brand-score.is-poor  { color: var(--sb-red); }
+
+#storyboard-page .sb-brand-score-value {
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+#storyboard-page .sb-brand-score-max {
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0.65;
+}
+
+#storyboard-page .sb-brand-verdict {
+  font-size: 12.5px;
+  color: var(--sb-ink-soft);
+  flex: 1 1 180px;
+}
+
+/* Where StoryBrand and the AWS brand agree is worth calling out rather than
+ * burying: it is the one place the two frameworks reinforce each other. */
+#storyboard-page .sb-brand-agrees {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(46, 125, 50, 0.08);
+}

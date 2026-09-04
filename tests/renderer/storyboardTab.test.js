@@ -313,7 +313,7 @@ describe('the Colour / Plain toggle', () => {
 describe('the audit panel', () => {
   test('renders one card per element with its status', async () => {
     const tab = await loadTab();
-    tab._renderAudit(ANALYSIS.audit);
+    tab._renderAudit(ANALYSIS);
 
     const cards = $('sbAuditBody').querySelectorAll('.sb-audit-element');
     expect(cards).toHaveLength(7);
@@ -323,7 +323,7 @@ describe('the audit panel', () => {
 
   test('shows the issue and fix for a weak element', async () => {
     const tab = await loadTab();
-    tab._renderAudit(ANALYSIS.audit);
+    tab._renderAudit(ANALYSIS);
 
     const body = $('sbAuditBody').textContent;
     expect(body).toContain('No transformation shown');
@@ -332,7 +332,7 @@ describe('the audit panel', () => {
 
   test('shows the overall verdict and both lists', async () => {
     const tab = await loadTab();
-    tab._renderAudit(ANALYSIS.audit);
+    tab._renderAudit(ANALYSIS);
 
     const body = $('sbAuditBody').textContent;
     expect(body).toContain('Strong problem framing');
@@ -342,19 +342,19 @@ describe('the audit panel', () => {
 
   test('says so when there is no audit rather than rendering blank', async () => {
     const tab = await loadTab();
-    tab._renderAudit(null);
+    tab._renderAudit({ audit: null });
     expect($('sbAuditBody').textContent).toMatch(/No audit/i);
   });
 
   test('marks elements the model did not rate as unrated', async () => {
     const tab = await loadTab();
-    tab._renderAudit({ elements: {}, whatsWorking: [], quickWins: [] });
+    tab._renderAudit({ audit: { elements: {}, whatsWorking: [], quickWins: [] } });
     expect($('sbAuditBody').textContent).toContain('Unrated');
   });
 
   test('escapes audit text', async () => {
     const tab = await loadTab();
-    tab._renderAudit({ overall: '<img src=x onerror="alert(1)">', elements: {} });
+    tab._renderAudit({ audit: { overall: '<img src=x onerror="alert(1)">', elements: {} } });
     expect($('sbAuditBody').querySelector('img')).toBeNull();
   });
 });
@@ -875,5 +875,297 @@ describe('the exported flow ribbon', () => {
     expect(html).toContain('flow-seg');
     expect(html).toContain('markFlow');
     expect(html).toContain('prefers-reduced-motion');
+  });
+});
+
+/**
+ * The StoryBrand 2.0 audit sections.
+ *
+ * Three sections were added: the 4 Rules, the P.E.A.C.E. soundbites, and AWS brand
+ * alignment. The behaviour that matters most is what happens when they are
+ * *absent* — an analysis saved before they existed, or a model call that failed
+ * this run. An empty section reads as "nothing to report", which is the opposite
+ * of "not assessed", so absence has to be explicit or silent, never blank.
+ */
+describe('the 2.0 audit sections', () => {
+  const fullAudit = () => ({
+    overall: 'Solid arc.',
+    elements: Object.fromEntries(ELEMENTS.map(e => [e.key, { status: 'strong', score: 9, found: '', issue: '', fix: '' }])),
+    rules: {
+      'zero-cognitive-load': { verdict: 'pass', evidence: 'plain words', note: '' },
+      survival: { verdict: 'fail', evidence: '22% faster', note: 'lead with the benefit' },
+      memorable: { verdict: 'pass', evidence: '', note: '' },
+      'customer-hero': { verdict: 'pass', evidence: '', note: '' },
+    },
+    soundbites: {
+      problem: { status: 'strong', found: 'the barking', suggestion: '' },
+      empathy: { status: 'weak', found: '', suggestion: 'say you understand' },
+      answer: { status: 'strong', found: '', suggestion: '' },
+      change: { status: 'missing', found: '', suggestion: 'name who they become' },
+      endResult: { status: 'strong', found: '', suggestion: '' },
+    },
+    whatsWorking: ['clear problem'],
+    quickWins: ['add empathy'],
+  });
+
+  const fullBrand = () => ({
+    score: 74,
+    verdict: 'Close, but the opening centres AWS.',
+    dimensions: {
+      persona: { status: 'weak', score: 6, found: 'we built', issue: 'AWS as hero', fix: 'lead with you' },
+      positioning: { status: 'strong', score: 9, found: '', issue: '', fix: '' },
+      traits: { status: 'strong', score: 8, found: '', issue: '', fix: '' },
+      voice: { status: 'weak', score: 7, found: '', issue: '', fix: '' },
+      craft: { status: 'strong', score: 8, found: '', issue: '', fix: '' },
+    },
+    naturalAlignment: 'Guide and champion agree.',
+    tensions: ['The tightest line loses the double-take.'],
+    outOfScope: ['Slide colour is visual.'],
+  });
+
+  const body = () => document.getElementById('sbAuditBody');
+
+  let tab;
+  beforeEach(async () => { tab = await loadTab(); });
+
+  test('renders the 4 Rules with pass and fail verdicts', () => {
+    tab._renderAudit({ audit: fullAudit() });
+
+    const text = body().textContent;
+    expect(text).toContain('The 4 Rules of Messaging');
+    expect(text).toContain('Linked to survival');
+    expect(body().querySelectorAll('.sb-rule-verdict.is-fail')).toHaveLength(1);
+    expect(body().querySelectorAll('.sb-rule-verdict.is-pass')).toHaveLength(3);
+  });
+
+  test('renders the five soundbites in P.E.A.C.E. order', () => {
+    // The order is part of the framework; a scorecard that reorders them stops
+    // matching what the skill teaches.
+    tab._renderAudit({ audit: fullAudit() });
+
+    const names = [...body().querySelectorAll('.sb-soundbite-name')].map(n => n.textContent);
+    expect(names).toEqual(['Problem', 'Empathy', 'Answer', 'Change', 'End result']);
+  });
+
+  test('leads the brand section with its score and bands it', () => {
+    tab._renderAudit({ audit: fullAudit(), brandAlignment: fullBrand() });
+
+    const score = body().querySelector('.sb-brand-score');
+    expect(score).not.toBeNull();
+    expect(score.textContent).toContain('74');
+    expect(score.textContent).toContain('/100');
+    // 74 is mixed, not good — a bare number with no band is unreadable.
+    expect(score.classList.contains('is-mixed')).toBe(true);
+  });
+
+  test('bands the score by range', () => {
+    const band = (score) => {
+      tab._renderAudit({ audit: fullAudit(), brandAlignment: { ...fullBrand(), score } });
+      const el = body().querySelector('.sb-brand-score');
+      return ['is-good', 'is-mixed', 'is-poor'].find(c => el.classList.contains(c));
+    };
+
+    expect(band(92)).toBe('is-good');
+    expect(band(64)).toBe('is-mixed');
+    expect(band(31)).toBe('is-poor');
+  });
+
+  test('calls out where the two frameworks agree', () => {
+    // Worth surfacing rather than burying: it is the one place StoryBrand and the
+    // AWS brand reinforce each other.
+    tab._renderAudit({ audit: fullAudit(), brandAlignment: fullBrand() });
+
+    expect(body().querySelector('.sb-brand-agrees').textContent).toContain('Guide and champion agree');
+  });
+
+  test('omits the new sections entirely for an analysis that predates them', () => {
+    // The key degradation case. Four "Unrated" rules and five "Unrated" soundbites
+    // would read as findings about the script rather than as an absence of data.
+    tab._renderAudit({
+      audit: {
+        overall: 'old analysis',
+        elements: Object.fromEntries(ELEMENTS.map(e => [e.key, { status: 'strong', score: null }])),
+        rules: Object.fromEntries(['zero-cognitive-load', 'survival', 'memorable', 'customer-hero']
+          .map(k => [k, { verdict: 'unknown', evidence: '', note: '' }])),
+        soundbites: Object.fromEntries(['problem', 'empathy', 'answer', 'change', 'endResult']
+          .map(k => [k, { status: 'unknown', found: '', suggestion: '' }])),
+        whatsWorking: [],
+        quickWins: [],
+      },
+    });
+
+    const text = body().textContent;
+    expect(text).toContain('old analysis');
+    expect(text).not.toContain('The 4 Rules of Messaging');
+    expect(text).not.toContain('The 5 Soundbites');
+    expect(text).not.toContain('AWS brand alignment');
+  });
+
+  test('omits element scores that were never assessed', () => {
+    tab._renderAudit({
+      audit: { overall: '', elements: { character: { status: 'strong', score: null } } },
+    });
+
+    expect(body().querySelectorAll('.sb-audit-score')).toHaveLength(0);
+  });
+
+  test('says so when the brand call failed this run', () => {
+    // Distinguishes a transient failure from a permanent gap — otherwise the user
+    // has no idea Re-analyse would help.
+    tab._renderAudit({ audit: fullAudit(), brandAlignment: null, incomplete: ['brand alignment'] });
+
+    const text = body().textContent;
+    expect(text).toContain('AWS brand alignment');
+    expect(text).toMatch(/could not be produced/i);
+    expect(text).toMatch(/Re-analyse/i);
+  });
+
+  test('says so when the audit call failed but the brand check succeeded', () => {
+    tab._renderAudit({ audit: null, brandAlignment: fullBrand(), incomplete: ['audit'] });
+
+    const text = body().textContent;
+    expect(text).toMatch(/StoryBrand audit could not be produced/i);
+    // The brand check still renders — that is the point of splitting the calls.
+    expect(body().querySelector('.sb-brand-score')).not.toBeNull();
+  });
+
+  test('reports both failures rather than looking empty', () => {
+    tab._renderAudit({ audit: null, brandAlignment: null, incomplete: ['audit', 'brand alignment'] });
+
+    expect(body().textContent).toMatch(/audit and brand alignment could not be produced/i);
+  });
+
+  test('still says nothing was returned for an analysis with no audit at all', () => {
+    tab._renderAudit({ audit: null });
+
+    expect(body().textContent).toMatch(/No audit was returned/i);
+  });
+
+  test('escapes model text in the new sections', () => {
+    tab._renderAudit({
+      audit: { ...fullAudit(), rules: { survival: { verdict: 'fail', evidence: '<img src=x onerror="alert(1)">', note: '' } } },
+      brandAlignment: { ...fullBrand(), verdict: '<script>alert(1)</script>' },
+    });
+
+    expect(body().querySelector('img')).toBeNull();
+    expect(body().querySelector('script')).toBeNull();
+  });
+});
+
+describe('the export carries the 2.0 audit sections', () => {
+  const withEverything = () => ({
+    id: 'x', displayName: 'Keynote', sourceName: 'k.docx',
+    units: [{ index: 1, text: 'one two three', kind: 'paragraph' }, { index: 2, text: 'four', kind: 'paragraph' }],
+    classifications: { 1: 'character', 2: 'problem' },
+    audit: {
+      overall: 'Reads well.',
+      elements: Object.fromEntries(ELEMENTS.map(e => [e.key, { status: 'strong', score: 9, found: '', issue: '', fix: '' }])),
+      rules: {
+        'zero-cognitive-load': { verdict: 'pass', evidence: 'plain', note: '' },
+        survival: { verdict: 'fail', evidence: 'specs first', note: 'lead with the benefit' },
+        memorable: { verdict: 'pass', evidence: '', note: '' },
+        'customer-hero': { verdict: 'pass', evidence: '', note: '' },
+      },
+      soundbites: {
+        problem: { status: 'strong', found: 'the stall', suggestion: '' },
+        empathy: { status: 'weak', found: '', suggestion: 'show you understand' },
+        answer: { status: 'strong', found: '', suggestion: '' },
+        change: { status: 'missing', found: '', suggestion: 'name who they become' },
+        endResult: { status: 'strong', found: '', suggestion: '' },
+      },
+      whatsWorking: ['clear problem'], quickWins: ['add empathy'],
+    },
+    brandAlignment: {
+      score: 74, verdict: 'Close.',
+      dimensions: {
+        persona: { status: 'weak', score: 6, found: 'we built', issue: 'AWS as hero', fix: 'lead with you' },
+        positioning: { status: 'strong', score: 9, found: '', issue: '', fix: '' },
+        traits: { status: 'strong', score: 8, found: '', issue: '', fix: '' },
+        voice: { status: 'weak', score: 7, found: '', issue: '', fix: '' },
+        craft: { status: 'strong', score: 8, found: '', issue: '', fix: '' },
+      },
+      naturalAlignment: 'Guide and champion agree.',
+      tensions: ['clarity versus spark'], outOfScope: ['slide colour'],
+    },
+    incomplete: [],
+    modelId: 'm', analysedAt: Date.now(),
+  });
+
+  const html = (a) => window.StoryboardExport.buildHtml(a, ELEMENTS);
+
+  test('includes all three new sections', () => {
+    const out = html(withEverything());
+
+    expect(out).toContain('The 4 Rules of Messaging');
+    expect(out).toContain('The 5 Soundbites');
+    expect(out).toContain('AWS brand alignment');
+    expect(out).toContain('74');
+  });
+
+  test('bands the brand score, so the number has a scale', () => {
+    expect(html({ ...withEverything(), brandAlignment: { ...withEverything().brandAlignment, score: 91 } }))
+      .toMatch(/brand-score good/);
+    expect(html(withEverything())).toMatch(/brand-score mixed/);
+    expect(html({ ...withEverything(), brandAlignment: { ...withEverything().brandAlignment, score: 22 } }))
+      .toMatch(/brand-score poor/);
+  });
+
+  test('omits the new sections for an analysis that predates them', () => {
+    // The realistic shape: _readAudit fills every rule and soundbite key with
+    // 'unknown' for a stored analysis that has none, so the keys are *present* and
+    // empty rather than absent. A fixture that deletes them entirely tests a state
+    // the app never produces — and lets a check on presence pass where a check on
+    // content is what is needed.
+    const old = withEverything();
+    old.audit = {
+      overall: 'old analysis',
+      elements: Object.fromEntries(ELEMENTS.map(e => [e.key, { status: 'strong', score: null }])),
+      rules: Object.fromEntries(['zero-cognitive-load', 'survival', 'memorable', 'customer-hero']
+        .map(k => [k, { verdict: 'unknown', evidence: '', note: '' }])),
+      soundbites: Object.fromEntries(['problem', 'empathy', 'answer', 'change', 'endResult']
+        .map(k => [k, { status: 'unknown', found: '', suggestion: '' }])),
+      whatsWorking: [], quickWins: [],
+    };
+    old.brandAlignment = null;
+    old.incomplete = [];
+
+    const out = html(old);
+
+    expect(out).toContain('old analysis');
+    expect(out).not.toContain('The 4 Rules of Messaging');
+    expect(out).not.toContain('The 5 Soundbites');
+    expect(out).not.toContain('AWS brand alignment');
+  });
+
+  test('says so when a call was unavailable at analysis time', () => {
+    const a = withEverything();
+    a.brandAlignment = null;
+    a.incomplete = ['brand alignment'];
+
+    const out = html(a);
+
+    expect(out).toContain('AWS brand alignment');
+    expect(out).toMatch(/not available when the analysis ran/);
+  });
+
+  test('stays self-contained with the new sections present', () => {
+    // The guarantee the whole export rests on.
+    const out = html(withEverything());
+
+    expect(out).not.toMatch(/<link[^>]+stylesheet/i);
+    expect(out).not.toMatch(/<script[^>]+src=/i);
+    expect(out).not.toMatch(/https?:\/\//);
+  });
+
+  test('escapes model text in the new sections', () => {
+    const a = withEverything();
+    a.audit.rules.survival.note = '<img src=x onerror="alert(1)">';
+    a.brandAlignment.verdict = '<script>alert(1)</script>';
+
+    const out = html(a);
+    const doc = new DOMParser().parseFromString(out, 'text/html');
+
+    expect(doc.querySelector('.audit img')).toBeNull();
+    expect(doc.querySelector('.audit script')).toBeNull();
   });
 });

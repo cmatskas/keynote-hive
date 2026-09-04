@@ -91,6 +91,27 @@ ${vars}
      the same thing in both places. */
   body.plain .flow-seg { background: var(--ink-soft) !important; color: var(--ink-soft) !important; }
 
+  /* Audit: 4 Rules, soundbites, brand alignment. Values inlined rather than
+     referencing custom properties from our stylesheet, since none of it ships. */
+  .audit .score { margin-left: auto; font-size: 11.5px; font-variant-numeric: tabular-nums; opacity: 0.7; }
+  .audit-head .status { margin-left: 8px; }
+  .rule, .soundbite, .brand-dim { padding: 8px 0; border-bottom: 1px solid var(--hairline); }
+  .verdict { display: inline-block; min-width: 42px; margin-right: 8px; padding: 1px 7px;
+             border-radius: 4px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+             letter-spacing: 0.04em; text-align: center; }
+  .verdict.pass { background: rgba(46,125,50,0.14); color: #2E7D32; }
+  .verdict.fail { background: rgba(211,47,47,0.14); color: #D32F2F; }
+  .verdict.unknown { background: rgba(128,128,128,0.14); color: var(--ink-soft); }
+  .rule-name { font-size: 13px; font-weight: 600; }
+  .brand-score { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+                 padding: 10px 12px; margin: 6px 0 10px; border-radius: 8px;
+                 border-left: 3px solid currentColor; background: var(--canvas); }
+  .brand-score.good { color: #2E7D32; } .brand-score.mixed { color: #C98A00; } .brand-score.poor { color: #D32F2F; }
+  .brand-score-value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+  .brand-score-max { font-size: 13px; font-weight: 500; opacity: 0.65; }
+  .brand-verdict { font-size: 12.5px; color: var(--ink-soft); flex: 1 1 180px; }
+  .brand-agrees { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: rgba(46,125,50,0.08); }
+
   .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
   .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
   .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
@@ -369,11 +390,36 @@ ${segs}
 </div>`;
   }
 
-  function buildAudit(audit, elements) {
-    if (!audit) return '';
+  const RULE_LABELS = {
+    'zero-cognitive-load': 'Zero cognitive load',
+    survival: 'Linked to survival',
+    memorable: 'Memorable and repeatable',
+    'customer-hero': 'Audience is the hero',
+  };
+  const SOUNDBITE_LABELS = {
+    problem: 'Problem', empathy: 'Empathy', answer: 'Answer',
+    change: 'Change', endResult: 'End result',
+  };
+  const BRAND_LABELS = {
+    persona: 'Persona — champion, not hero',
+    positioning: 'Positioning — builders turning ambition into action',
+    traits: 'Personality traits',
+    voice: 'Voice tenets',
+    craft: 'Writing craft',
+  };
+
+  /**
+   * The audit, including the StoryBrand 2.0 sections.
+   *
+   * Each new section is emitted only when the model actually produced it, matching
+   * the tab. An exported analysis from before these existed would otherwise carry
+   * a page of "Unrated" rows that read as findings about the script.
+   */
+  function buildAudit(audit, elements, brand, incomplete = []) {
+    if (!audit && !brand) return '';
     const labels = { strong: 'Strong', weak: 'Weak', missing: 'Missing', unknown: 'Unrated' };
 
-    const cards = elements.map(def => {
+    const cards = !audit ? '' : elements.map(def => {
       const entry = audit.elements?.[def.key] || { status: 'unknown' };
       const lines = [
         entry.found ? `<div class="audit-line"><em>${esc(entry.found)}</em></div>` : '',
@@ -384,6 +430,7 @@ ${segs}
       <div class="audit-head">
         <span class="dot" style="background:currentColor"></span>
         <span class="audit-name">${esc(def.label)}</span>
+        ${entry.score !== null && entry.score !== undefined ? `<span class="score">${entry.score}/10</span>` : ''}
         <span class="status">${esc(labels[entry.status] || entry.status)}</span>
       </div>${lines}
     </div>`;
@@ -393,12 +440,79 @@ ${segs}
       ? `    <h3>${title}</h3>\n    <ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>`
       : '');
 
+    // ── The 4 Rules ──
+    const anyRule = audit?.rules && Object.values(audit.rules).some(r => r.verdict !== 'unknown');
+    const rules = !anyRule ? '' : `    <h3>The 4 Rules of Messaging</h3>\n` + Object.entries(RULE_LABELS)
+      .map(([key, label]) => {
+        const entry = audit.rules[key];
+        if (!entry) return '';
+        const verdict = entry.verdict === 'pass' ? 'Pass' : entry.verdict === 'fail' ? 'Fail' : 'Unrated';
+        return `    <div class="rule">
+      <span class="verdict ${esc(entry.verdict)}">${verdict}</span>
+      <span class="rule-name">${esc(label)}</span>
+      ${entry.evidence ? `<div class="audit-line"><em>${esc(entry.evidence)}</em></div>` : ''}
+      ${entry.note ? `<div class="audit-line">${esc(entry.note)}</div>` : ''}
+    </div>`;
+      }).join('\n');
+
+    // ── The 5 Soundbites ──
+    const anySoundbite = audit?.soundbites && Object.values(audit.soundbites).some(sb => sb.status !== 'unknown');
+    const soundbites = !anySoundbite ? '' : `    <h3>The 5 Soundbites</h3>\n` + Object.entries(SOUNDBITE_LABELS)
+      .map(([key, label]) => {
+        const entry = audit.soundbites[key];
+        if (!entry) return '';
+        return `    <div class="soundbite">
+      <div class="audit-head"><span class="audit-name">${esc(label)}</span>
+        <span class="status">${esc(labels[entry.status] || entry.status)}</span></div>
+      ${entry.found ? `<div class="audit-line"><em>${esc(entry.found)}</em></div>` : ''}
+      ${entry.suggestion ? `<div class="audit-line"><strong>Try:</strong> ${esc(entry.suggestion)}</div>` : ''}
+    </div>`;
+      }).join('\n');
+
+    // ── AWS brand alignment ──
+    let brandSection = '';
+    if (brand) {
+      const dims = Object.entries(BRAND_LABELS).map(([key, label]) => {
+        const entry = brand.dimensions?.[key];
+        if (!entry) return '';
+        return `    <div class="brand-dim">
+      <div class="audit-head"><span class="audit-name">${esc(label)}</span>
+        ${entry.score !== null && entry.score !== undefined ? `<span class="score">${entry.score}/10</span>` : ''}
+        <span class="status">${esc(labels[entry.status] || entry.status)}</span></div>
+      ${entry.found ? `<div class="audit-line"><em>${esc(entry.found)}</em></div>` : ''}
+      ${entry.issue ? `<div class="audit-line"><strong>Issue:</strong> ${esc(entry.issue)}</div>` : ''}
+      ${entry.fix ? `<div class="audit-line"><strong>Fix:</strong> ${esc(entry.fix)}</div>` : ''}
+    </div>`;
+      }).join('\n');
+
+      // Banded as well as numeric — a bare score has no scale to read it against.
+      const band = brand.score === null ? '' : brand.score >= 80 ? 'good' : brand.score >= 50 ? 'mixed' : 'poor';
+
+      brandSection = `    <h3>AWS brand alignment</h3>
+${brand.score !== null ? `    <div class="brand-score ${band}"><span class="brand-score-value">${brand.score}<span class="brand-score-max">/100</span></span>${brand.verdict ? `<span class="brand-verdict">${esc(brand.verdict)}</span>` : ''}</div>` : (brand.verdict ? `    <p>${esc(brand.verdict)}</p>` : '')}
+${dims}
+${brand.naturalAlignment ? `    <div class="audit-line brand-agrees"><strong>Where both frameworks agree:</strong> ${esc(brand.naturalAlignment)}</div>` : ''}
+${list('Tensions worth a decision', brand.tensions)}
+${list('Out of scope (visual brand)', brand.outOfScope)}`;
+    } else if (incomplete.includes('brand alignment')) {
+      brandSection = `    <h3>AWS brand alignment</h3>
+    <p>This check was not available when the analysis ran.</p>`;
+    }
+
+    const auditMissing = !audit && incomplete.includes('audit')
+      ? '    <p>The StoryBrand audit was not available when the analysis ran.</p>'
+      : '';
+
     return `  <section class="audit">
     <h2>Audit</h2>
-${audit.overall ? `    <p>${esc(audit.overall)}</p>` : ''}
+${auditMissing}
+${audit?.overall ? `    <p>${esc(audit.overall)}</p>` : ''}
 ${cards}
-${list('What&rsquo;s working', audit.whatsWorking)}
-${list('Quick wins', audit.quickWins)}
+${rules}
+${soundbites}
+${brandSection}
+${list('What&rsquo;s working', audit?.whatsWorking)}
+${list('Quick wins', audit?.quickWins)}
   </section>`;
   }
 
@@ -451,7 +565,7 @@ ${script}
       </div>
     </aside>
   </div>
-${buildAudit(analysis.audit, elements)}
+${buildAudit(analysis.audit, elements, analysis.brandAlignment, analysis.incomplete || [])}
   <div class="foot">
     ${esc(title)} · ${analysis.unitCount || (analysis.units || []).length} paragraphs ·
     ${(analysis.wordCount || 0).toLocaleString()} words · analysed ${esc(when)}
