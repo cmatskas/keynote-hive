@@ -236,7 +236,11 @@ Above the script, a **flow ribbon** shows the shape of the talk: one segment per
 
 Accepts `.txt`, `.md`, `.docx` and `.pptx`, or text pasted straight in. **Your text is read locally and never rewritten.** Extraction happens on your machine — no model and no sandbox is involved in splitting the document into paragraphs — and the analysis only ever returns a mapping of paragraph number to element. Every word displayed is the word you uploaded. PDF isn't supported; export to `.docx` or paste the text.
 
-Alongside the colours you get a qualitative **audit**: each element marked strong, weak or missing, with what was found, what's wrong, and a specific fix, plus what's working and the highest-impact changes. An outline's bullet and its sub-points are treated as one unit, so a nested list doesn't become a wall of one-line colour changes.
+Alongside the colours you get a qualitative **audit** in three parts. Each of the seven elements is marked strong, weak or missing with a 0–10 score, what was found, what's wrong and a specific fix. The **4 Rules of Messaging** get a pass or fail each — zero cognitive load, linked to survival, memorable and repeatable, audience as hero — with the line that earned the verdict. And the **5 Soundbites** (Problem, Empathy, Answer, Change, End Result) are extracted where present and drafted where missing.
+
+Then a separate **AWS brand alignment** check scores the script out of 100 across five dimensions: persona, positioning, personality traits, voice tenets and writing craft. It calls out where StoryBrand and the AWS brand naturally agree — a guide and a champion are the same move — and flags the places where the clearest possible line costs some brand character, showing both options rather than silently choosing. Visual questions like slide colour are marked out of scope and left to the brand team.
+
+The audit and the brand check are separate model calls from the classification, run at the same time. If one comes back unusable you keep everything else, and the panel says which part was unavailable rather than showing a blank section that reads like a clean verdict. An outline's bullet and its sub-points are treated as one unit, so a nested list doesn't become a wall of one-line colour changes.
 
 **The view is read-only, and deliberately so.** Hive isn't a script editor — you revise in whatever you actually write in, then re-upload. Uploading a file Hive has analysed before automatically links the new analysis to the previous one and labels it "Revision 2 of 2", so you can see whether a rewrite fixed the section it was meant to. Pasted text is never chained, since it has no filename to match on. **Re-analyse** re-runs the model over the same text, which is useful for switching model or when a classification looks wrong.
 
@@ -253,13 +257,15 @@ Classification is not deterministic, which is why each analysis is stored rather
 | Documents | `docx`, `pptx`, `xlsx`, `pdf` |
 | Writing | `copywriting`, `copy-editing`, `doc-coauthoring` |
 | Research | `research-first`, `customer-research`, `analysis-framework` |
-| Strategy | `task-planner`, `launch-strategy`, `marketing-psychology`, `storybrand` |
+| Strategy | `task-planner`, `launch-strategy`, `marketing-psychology`, `storybrand` (StoryBrand 2.0 + AWS brand voice) |
 | Creative | `algorithmic-art`, `demo-storyboard` |
 | Utility | `self-correction`, `web-browse` |
 
 Skills are loaded on demand — the Work tab agent activates them when your task matches. Swarm agents have skills pre-assigned per role.
 
 Create custom skills in Settings → Skills → New Skill. Each skill is a `SKILL.md` file with YAML frontmatter and markdown instructions.
+
+**When a bundled skill is updated**, Hive carries the change forward without ever overwriting your edits. If you have not touched your copy, it is replaced silently — there is nothing to reconcile, so you are not asked. If you have edited it, or if it predates this mechanism and Hive cannot tell, your copy is left exactly as it is and the skill's row shows an update badge with two options: keep yours, or take the new version. Taking it saves your copy as `SKILL.md.backup-<version>` first, so the choice is reversible. Declining is remembered, so you are not asked about that version again.
 
 ## Model Configuration
 

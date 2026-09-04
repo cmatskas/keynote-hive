@@ -1,5 +1,32 @@
 # Release Notes
 
+## v4.2.0
+
+### New — StoryBrand 2.0
+- **The `storybrand` skill now covers StoryBrand 2.0 and the AWS brand voice.** It was the SB7 seven elements alone; it now also carries the 4 Rules of Messaging, the 5 Foundational Soundbites (P.E.A.C.E.), the Messaging Canvas and Campaign Map, and the AWS "Kernel" brand guidelines — with a precedence order for when they conflict, since they do. Clarity wins over brand wit; StoryBrand governs framework, Kernel governs voice, and a writing-craft guide governs how it reads. Where a maximally clear line costs brand character, the skill shows both options rather than silently choosing.
+  - Two modes now: audit existing content, or generate messaging and a campaign from scratch.
+  - Three reference files ship with it — the Messaging Canvas, the AWS brand guidelines and a writing-style guide — alongside the 25-brand examples library that was already there. The skill tells the agent which to read for which task, and they are listed by name rather than loaded into context, so they cost nothing until used.
+  - Scoring is deliberately conservative: if you have to hunt for an element, it is weak rather than strong. A false "strong" costs real money.
+
+- **The StoryBrand tab's audit gained the same three lenses.** The 4 Rules get a pass or fail each with the line that earned it, the 5 Soundbites are extracted or drafted, and every element now carries a 0–10 score alongside its verdict.
+
+- **A separate AWS brand alignment check scores a script out of 100** across persona, positioning, personality traits, voice tenets and writing craft, each with its own score, the quote that lands it there, and a concrete on-brand fix. It calls out where StoryBrand and the AWS brand naturally agree — a guide and a champion are the same move — and flags the tensions where they pull apart. Visual questions are marked out of scope and left to the brand team.
+
+### Improvements
+- **The analysis is now three model calls instead of one, run at the same time.** One call had to emit a classification for every paragraph, the whole audit *and* the brand check in a single response. The sections that came last got the least care, a long script could run the combined output into the token ceiling, and one malformed brace lost everything — including the classification already paid for. Split, each call has one job: if the audit or brand check comes back unusable you keep the rest, and the panel says which part was unavailable rather than showing a blank section that reads like a clean verdict. Only the classification is fatal, since without it there is nothing to render. Wall-clock time is unchanged because the calls run concurrently.
+- **Analyses saved before this release still open cleanly**, showing the audit they have rather than pages of "Unrated" rows that would read as findings about the script.
+
+### Fixes
+- **Updated bundled skills now reach existing installs.** Seeding only copied a skill when `SKILL.md` was *absent*, so a revised skill reached new installs and nobody else — every existing user kept whatever shipped the day they first ran Hive, silently and permanently. This release's StoryBrand rewrite would have gone out to no one.
+  - Skills are user-editable, so an update cannot simply overwrite. An untouched copy is replaced silently. An edited copy is never touched, and the skill's row offers the choice: keep yours, or take the new version with yours saved as a backup first. Declining is remembered.
+  - Installs predating this mechanism have no record of what was seeded, so Hive cannot prove a copy is unmodified. Those are offered the update rather than given it — and rather than being skipped, which is the trap this fix is about: keying the check off our own bookkeeping alone would have silently ignored every install that existed before the bookkeeping did.
+- **Skill bookkeeping is no longer advertised to the model as reference material.** Every file in a skill directory except `SKILL.md` was listed to the agent as a resource, which would have included the new seed marker and any backup of a replaced skill.
+
+### Tests
+- 40 new tests across the seeding mechanism, the three-call split and the new audit sections. The seeding tests run against a real temp filesystem rather than a mocked one, since the logic is almost entirely about what is on disk.
+- Mutation-verified, 21 mutations. Notably: overwriting an edited skill fails 5, reverting to absent-only seeding fails 3, keying the version check off the marker alone fails 2, skipping the backup fails 1, string-comparing versions fails 1, leaking the marker as a resource fails 2, running the three calls sequentially fails 1, making a failed audit fatal fails 2, and letting the model define its own rule keys fails 2.
+- Two tests were found to be passing against fixtures the app never produces, and were corrected: one deleted an object the reader actually fills with placeholder keys, and one asserted a seeding case that only exists when a marker is present. Both mutations went uncaught until the fixtures were made realistic.
+
 ## v4.1.2
 
 ### Fixes
