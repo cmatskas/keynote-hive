@@ -229,3 +229,63 @@ describe('rewindTo()', () => {
     expect(container.children).toHaveLength(0);
   });
 });
+
+describe('showSession() send-button re-sync', () => {
+  // The send button is a single shared toolbar element while `processing` is
+  // per-session state. Before this behavior existed, a running conversation's
+  // stop-mode leaked into a freshly opened conversation (button showed
+  // "Stop" for an idle session), and a background completion reset the
+  // button while the visible session was still running. These tests pin the
+  // re-derivation: on every session switch the button must reflect the
+  // TARGET session's processing flag.
+  const { showSession, getOrCreateSession } = window.WorkTab;
+
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <div id="workChatHistory"></div>
+      <button id="workThinkingBtn"></button>
+      <button id="workSendBtn"><i class="bi bi-arrow-up"></i></button>
+    `;
+  });
+
+  test('switching to an idle session while another is processing shows send-mode (the reported bug)', () => {
+    const running = getOrCreateSession('running-session');
+    running.processing = true;
+    showSession('running-session');
+
+    // Sanity: the running session shows stop-mode.
+    const btn = document.getElementById('workSendBtn');
+    expect(btn.classList.contains('stop-mode')).toBe(true);
+
+    // Open a brand-new conversation: button must reset to send-mode even
+    // though the other session is still running.
+    showSession('fresh-session');
+    expect(btn.classList.contains('stop-mode')).toBe(false);
+    expect(btn.querySelector('i').className).toBe('bi bi-arrow-up');
+    expect(btn.title).toBe('Send (Enter)');
+  });
+
+  test('switching to a processing session shows stop-mode', () => {
+    getOrCreateSession('idle-session');
+    showSession('idle-session');
+
+    const running = getOrCreateSession('running-session');
+    running.processing = true;
+    showSession('running-session');
+
+    const btn = document.getElementById('workSendBtn');
+    expect(btn.classList.contains('stop-mode')).toBe(true);
+    expect(btn.querySelector('i').className).toBe('bi bi-stop-circle-fill');
+    expect(btn.title).toBe('Stop');
+  });
+
+  test('switching between two idle sessions keeps send-mode', () => {
+    getOrCreateSession('a');
+    getOrCreateSession('b');
+    showSession('a');
+    showSession('b');
+
+    const btn = document.getElementById('workSendBtn');
+    expect(btn.classList.contains('stop-mode')).toBe(false);
+  });
+});

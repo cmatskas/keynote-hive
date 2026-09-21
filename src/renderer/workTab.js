@@ -66,6 +66,13 @@
       thinkingBtn.classList.toggle('active', !!session.enableThinking);
       thinkingBtn.title = session.enableThinking ? 'Extended thinking: on' : 'Extended thinking: off';
     }
+
+    // The send button is a single shared toolbar element, so its visual
+    // state must be re-derived from the session being shown — otherwise a
+    // running conversation's stop-mode leaks into a freshly opened one
+    // (and vice versa). The per-session `processing` flag is the truth the
+    // click handler already routes on; this keeps the visuals in step.
+    setSendBtnState(!!session.processing);
   }
 
   // File manager for the Work tab's own file input
@@ -685,7 +692,14 @@
       saveSession(sid, session.messages);
     } finally {
       session.processing = false;
-      setSendBtnState(false);
+      // Only reset the shared send button if this invocation's conversation
+      // is still the one on screen. Without the guard, a job finishing in a
+      // BACKGROUND conversation flips the button to send-mode while the
+      // visible conversation may still be running (the inverse of the
+      // stale-stop-mode bug fixed in showSession()).
+      if (sid === activeSessionId) {
+        setSendBtnState(false);
+      }
       refreshSidebar();
     }
   }
@@ -995,6 +1009,10 @@
   });
 
   if (typeof window !== 'undefined') {
-    window.WorkTab = { init, describeAgentError, rewindTo };
+    // showSession, getOrCreateSession and setSendBtnState are exported for
+    // tests only (same pattern as describeAgentError/rewindTo): they let the
+    // suite pin the shared-send-button re-sync behavior without simulating a
+    // full agent invocation.
+    window.WorkTab = { init, describeAgentError, rewindTo, showSession, getOrCreateSession, setSendBtnState };
   }
 })();
