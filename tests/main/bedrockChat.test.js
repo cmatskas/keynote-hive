@@ -12,6 +12,13 @@
  *    the renderer UI resets.
  */
 
+// Mocked like every other suite: under Jest, `require('electron')` resolves
+// to the npm shim, which (when the binary is absent) tries to download
+// Electron over the network at require time — a nightly CI failure waiting
+// to happen. notify.js treats a missing `Notification` as "no-op", so an
+// empty mock reproduces exactly what the shim provided anyway.
+jest.mock('electron', () => ({}));
+
 jest.mock('electron-log/main', () => ({
   info: jest.fn(),
   warn: jest.fn(),
