@@ -1,5 +1,22 @@
 # Release Notes
 
+## v4.3.0
+
+### Improvements — cheaper, longer conversations
+- **Every agent Hive builds now manages its own context window** (via `@strands-agents/sdk`'s `contextManager: 'auto'`). Large tool results — a big Code Interpreter output, a browsed page — are set aside out of context after ~1,500 tokens, with a preview and a reference kept in place; the agent re-reads the full content on demand (shown in the activity log as "Re-reading earlier tool output..."). When a conversation approaches 85% of the model's context window it is proactively compressed instead of failing at the ceiling. This is the mechanism behind the Strands harness's published token-cost benchmarks, and it ships in the SDK Hive already used — enabling it was configuration, not new machinery.
+- **Claude calls now use prompt caching on Mantle.** Consecutive calls sharing a prefix — which is every multi-turn Work, Chat, or Swarm exchange — re-read the tool definitions, system prompt, and conversation prefix from Anthropic's cache at roughly a tenth of input price instead of re-billing them in full. Verified live against Mantle's `/anthropic` surface: a 5,571-token prefix written to cache on the first call was read back in full on the second. Hive's other models (GPT-5.x, Gemma, Grok) already benefit from Mantle's automatic server-side caching on the OpenAI-compatible surface — cached input tokens there don't even count against the Input TPM quota — so they need and get no client-side configuration.
+- **`@strands-agents/sdk` upgraded 1.12.0 → 1.18.0.** The upgrade's mandated re-check of the SDK's internal Mantle routing table caught real drift: 1.18.0 added `openai.gpt-6-*` to the `/openai/v1` model lines, which Hive's own routing was missing — a GPT-6 model configured in Settings would have failed with an HTTP 400 on every call. Exactly the failure mode the re-check ritual and the live integration test exist for.
+
+### Fixes
+- **Opening a new Work conversation while another was running showed the Stop button for the idle conversation.** The send button is one shared toolbar element, but whether a conversation is running is per-conversation state, and switching conversations never re-synced the two. The inverse also lurked: a job finishing in a background conversation reset the button to Send while the visible conversation was still running. Both directions fixed — the button now always reflects the conversation on screen. Clicking was never dangerous (the handler always routed on the right conversation's state); only the visuals lied.
+
+### Tests
+- The live Mantle integration check gained a prompt-caching assertion: two Claude calls sharing a long static prefix must report a cache write then a cache read, so a Mantle-side caching change is caught by the daily scheduled run rather than by a cost report. Routing failures and caching failures are reported distinctly.
+- 10 new unit tests: context-manager wiring (default, opt-out, passthrough, both model families), cacheConfig wiring (Anthropic gets it, OpenAI-compatible deliberately doesn't), `openai.gpt-6-*` base-path routing, and the Work tab send-button re-sync in both directions.
+
+### Known cosmetic issue
+- SDK 1.18.0 logs a `contextWindowLimit` warning for model IDs missing from its built-in context-window table (e.g. `anthropic.claude-haiku-4-5`, all Mantle OpenAI-compatible IDs). The 200k fallback is correct or conservative for every model Hive ships role defaults for — compaction may just trigger slightly early on larger-window models. The durable fix is upstream (adding the missing IDs to the SDK's table) rather than a second Hive-maintained table that would drift.
+
 ## v4.2.0
 
 ### New — StoryBrand 2.0
