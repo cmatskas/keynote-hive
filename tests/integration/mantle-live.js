@@ -126,6 +126,87 @@ async function runMinimalCompletion(modelId, maxTokens = 64) {
   return fullText;
 }
 
+/**
+ * Like runMinimalCompletion(), but with a caller-supplied system prompt and
+ * usage capture (the SDK's modelMetadataEvent, which carries
+ * cacheReadInputTokens / cacheWriteInputTokens mapped from Anthropic's
+ * cache_read_input_tokens / cache_creation_input_tokens).
+ */
+async function runCompletionWithUsage(modelId, { systemPrompt, maxTokens = 64 }) {
+  const { agent, dispose } = createAgent({
+    modelId,
+    region: REGION,
+    mantleApiKey: MANTLE_API_KEY,
+    systemPrompt,
+    tools: [],
+    id: 'integration-cache-check',
+    maxTokens,
+  });
+
+  let fullText = '';
+  let usage = null;
+  try {
+    for await (const streamEvent of agent.stream([{ role: 'user', content: [{ text: 'Say hi.' }] }])) {
+      if (streamEvent.type === 'modelStreamUpdateEvent') {
+        const inner = streamEvent.event;
+        if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
+          fullText += inner.delta.text;
+        } else if (inner.type === 'modelMetadataEvent' && inner.usage) {
+          usage = inner.usage;
+        }
+      }
+    }
+  } finally {
+    dispose();
+  }
+  return { text: fullText, usage };
+}
+
+/**
+ * Verify Mantle's /anthropic surface honors the cache_control checkpoints
+ * that createAgent()'s cacheConfig (SDK >= 1.18.0) injects.
+ *
+ * Two consecutive calls share a long static system prompt (well past
+ * Anthropic's minimum cacheable prefix — 2048 tokens for Haiku models;
+ * below the minimum the API silently doesn't cache and reports zeros,
+ * which this check would misread as "Mantle ignored cache_control").
+ * The first call must report a cache WRITE (cache_creation_input_tokens),
+ * the second a cache READ. Anthropic's cache TTL is ~5 minutes; these
+ * calls run seconds apart.
+ *
+ * If this fails while the plain Anthropic routing check passes, suspect
+ * the cacheConfig in strandsAgentFactory.js (or a Mantle-side caching
+ * behavior change) before suspecting routing.
+ */
+async function runAnthropicCacheCheck(modelId) {
+  // Deterministic filler, ~20k chars (~5k tokens) — comfortably past the
+  // 2048-token Haiku minimum. Static across both calls by construction.
+  const filler = 'You are a meticulous assistant for the Hive desktop app. Answer briefly and precisely. '.repeat(230);
+  const systemPrompt = `${filler}\nAlways respond in one short word.`;
+
+  const first = await runCompletionWithUsage(modelId, { systemPrompt });
+  const second = await runCompletionWithUsage(modelId, { systemPrompt });
+
+  const wrote = first.usage?.cacheWriteInputTokens ?? 0;
+  const read = second.usage?.cacheReadInputTokens ?? 0;
+
+  if (!first.text || !second.text) {
+    throw new Error('empty response during cache check (routing problem, not a caching problem)');
+  }
+  // A warm cache (e.g. a rerun within the TTL) can legitimately turn the
+  // first call into a read instead of a write, so a read on EITHER call
+  // proves the end-to-end behavior; both-zero on both calls means Mantle
+  // ignored (or stripped) cache_control.
+  const firstRead = first.usage?.cacheReadInputTokens ?? 0;
+  if (read === 0 && firstRead === 0) {
+    throw new Error(
+      `no cache activity reported (call 1: write=${wrote}, read=${firstRead}; call 2: read=${read}) — ` +
+      'Mantle /anthropic may not honor cache_control; see cacheConfig in strandsAgentFactory.js'
+    );
+  }
+  return { wrote, read: read || firstRead };
+}
+
 // One minimal, cheap model per branch in strandsAgentFactory.js's
 // basePath logic:
 //   - Anthropic family -> /anthropic
@@ -171,11 +252,27 @@ async function main() {
   }
 
   console.log('');
+
+  // Prompt-caching check (Anthropic route only): verifies Mantle's
+  // /anthropic surface honors the cache_control checkpoints injected by
+  // createAgent()'s cacheConfig (SDK >= 1.18.0). Runs after the routing
+  // checks so a routing failure is reported as such first.
+  process.stdout.write('Anthropic prompt caching (cache_control on /anthropic) [anthropic.claude-haiku-4-5] ... ');
+  try {
+    const { wrote, read } = await runAnthropicCacheCheck('anthropic.claude-haiku-4-5');
+    console.log(`OK (write=${wrote} tokens, read=${read} tokens)`);
+  } catch (err) {
+    console.log(`FAIL (${err.message})`);
+    failures++;
+  }
+
+  console.log('');
+  const totalChecks = CHECKS.length + 1;
   if (failures > 0) {
-    console.error(`${failures}/${CHECKS.length} checks failed — Mantle routing may have changed. See strandsAgentFactory.js.`);
+    console.error(`${failures}/${totalChecks} checks failed — Mantle routing may have changed. See strandsAgentFactory.js.`);
     process.exit(1);
   }
-  console.log(`All ${CHECKS.length} checks passed.`);
+  console.log(`All ${totalChecks} checks passed.`);
   process.exit(0);
 }
 

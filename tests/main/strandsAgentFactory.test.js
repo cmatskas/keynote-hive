@@ -229,12 +229,14 @@ describe('strandsAgentFactory', () => {
 
   describe('Mantle base URL / path construction', () => {
     // Table verified against the real Mantle endpoint and against
-    // @strands-agents/sdk 1.12.0's own internal routing fix
-    // (github.com/strands-agents/harness-sdk#3691) — prefixes are scoped to
-    // a specific model LINE, not a vendor, since a vendor can straddle both
-    // base paths (google.gemma-4-* is on /openai/v1, google.gemma-3-* is on
-    // /v1 — a vendor-wide `google.` match would mis-route the latter).
-    test.each(['openai.gpt-5.6-sol', 'google.gemma-4-31b', 'xai.grok-4.3'])('models on verified /openai/v1 lines use that base path: %s', (modelId) => {
+    // @strands-agents/sdk's own internal routing table (mantle.js's
+    // OPENAI_PATH_MODEL_PREFIXES, re-checked on every SDK upgrade as the
+    // factory comment mandates; 1.18.0 added openai.gpt-6-) — prefixes are
+    // scoped to a specific model LINE, not a vendor, since a vendor can
+    // straddle both base paths (google.gemma-4-* is on /openai/v1,
+    // google.gemma-3-* is on /v1 — a vendor-wide `google.` match would
+    // mis-route the latter).
+    test.each(['openai.gpt-5.6-sol', 'openai.gpt-6-astra', 'google.gemma-4-31b', 'xai.grok-4.3'])('models on verified /openai/v1 lines use that base path: %s', (modelId) => {
       jest.resetModules();
       const mod = require('../../src/main/models/strandsAgentFactory');
       const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
@@ -463,6 +465,32 @@ describe('strandsAgentFactory', () => {
     test('default applies to both model families (Anthropic and OpenAI-compatible)', () => {
       expect(agentArgsFor({ modelId: 'anthropic.claude-sonnet-4-6' }).contextManager).toBe('auto');
       expect(agentArgsFor({ modelId: 'openai.gpt-5.6-sol' }).contextManager).toBe('auto');
+    });
+  });
+
+  describe('prompt caching (cacheConfig, SDK >= 1.18.0)', () => {
+    // Whether Mantle's /anthropic surface actually honors the injected
+    // cache_control checkpoints is asserted by the live integration test
+    // (tests/integration/mantle-live.js) — these tests only pin Hive's own
+    // wiring: Anthropic gets cacheConfig, OpenAI-compatible does not.
+    test('AnthropicModel is constructed with cacheConfig strategy auto', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { AnthropicModel } = require('@strands-agents/sdk/models/anthropic');
+
+      mod.createAgent(baseArgs({ modelId: 'anthropic.claude-sonnet-4-6' }));
+
+      expect(AnthropicModel.mock.calls[0][0].cacheConfig).toEqual({ strategy: 'auto' });
+    });
+
+    test('OpenAIModel gets no cacheConfig (Mantle caches the OpenAI-compatible surface server-side)', () => {
+      jest.resetModules();
+      const mod = require('../../src/main/models/strandsAgentFactory');
+      const { OpenAIModel } = require('@strands-agents/sdk/models/openai');
+
+      mod.createAgent(baseArgs({ modelId: 'openai.gpt-5.6-sol' }));
+
+      expect('cacheConfig' in OpenAIModel.mock.calls[0][0]).toBe(false);
     });
   });
 });

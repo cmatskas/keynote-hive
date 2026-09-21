@@ -284,13 +284,15 @@ function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, o
   // This table is maintained independently of @strands-agents/sdk's own
   // internal bedrockMantleBaseUrl() helper (mantle.js), which is
   // `@internal` and not exported — so it can't be imported directly, only
-  // read for reference. As of SDK 1.12.0 (which shipped a real upstream
-  // fix, github.com/strands-agents/harness-sdk#3691, after xai.grok-4.3
-  // was found mis-routed to /v1 despite Mantle serving it from
-  // /openai/v1), the SDK's own table is: ['openai.gpt-5.', 'xai.grok-4.',
-  // 'google.gemma-4-']. Our regex below mirrors that exactly, confirmed by
-  // reading the installed SDK's mantle.js directly — re-check that file
-  // after any future SDK upgrade in case the table changes again.
+  // read for reference. As of SDK 1.18.0 the SDK's own table
+  // (OPENAI_PATH_MODEL_PREFIXES, verified by the SDK team against the
+  // us-east-1 catalog on 2026-08-05) is: ['openai.gpt-5.', 'openai.gpt-6-',
+  // 'xai.grok-4.', 'google.gemma-4-']. Our regex below mirrors that exactly,
+  // confirmed by reading the installed SDK's mantle.js directly — re-check
+  // that file after any future SDK upgrade in case the table changes again.
+  // (The 1.12.0 -> 1.18.0 upgrade is itself the proof this drifts: 1.18.0
+  // added 'openai.gpt-6-', which our regex was missing until then. 1.12.0's
+  // table had shipped the xai.grok-4 fix, harness-sdk#3691.)
   //
   // Everything not matched by the regex (including google.gemma-3-* and
   // every other OpenAI-compatible model) falls to /v1 — this is the
@@ -310,7 +312,7 @@ function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, o
   // against the real endpoint before trusting this comment, the SDK's
   // internal helper, or any prior fix — Mantle's routing has changed
   // twice already without notice.
-  const basePath = /^(openai\.gpt-5(\.|-)|xai\.grok-4\.|google\.gemma-4-)/i.test(modelId || '') ? '/openai/v1' : '/v1';
+  const basePath = /^(openai\.gpt-5(\.|-)|openai\.gpt-6-|xai\.grok-4\.|google\.gemma-4-)/i.test(modelId || '') ? '/openai/v1' : '/v1';
   const mantleHost = `https://bedrock-mantle.${region}.api.aws`;
   const baseURL = isAnthropicModel(modelId) ? `${mantleHost}/anthropic` : `${mantleHost}${basePath}`;
 
@@ -320,6 +322,20 @@ function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, o
         maxTokens,
         apiKey: mantleApiKey,
         clientConfig: { baseURL },
+        // Prompt caching (SDK >= 1.18.0). Injects Anthropic `cache_control`
+        // checkpoints covering tool definitions, the system prompt, and the
+        // last user message, so consecutive calls sharing a prefix (every
+        // multi-turn Work/Swarm conversation) read from cache instead of
+        // re-billing full input. In AnthropicModel 'auto' and 'anthropic'
+        // behave identically (the model-ID support check exists only in
+        // BedrockModel); segments under Anthropic's ~1024-token cache
+        // minimum are simply not cached, with no error. Mantle's /anthropic
+        // surface accepting cache_control is asserted by the live
+        // integration test (tests/integration/mantle-live.js) — if that
+        // check starts failing, suspect this config before the routing.
+        // (Hive's OpenAI-compatible route needs no equivalent: Mantle
+        // caches that surface automatically server-side.)
+        cacheConfig: { strategy: 'auto' },
         // Anthropic's extended thinking. AnthropicModelConfig has no
         // dedicated `thinking` field, so it's passed via the `params`
         // forward-compat passthrough (same pattern OpenAIModel uses below
