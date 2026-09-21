@@ -28,6 +28,10 @@ function describeToolStart(name, input = {}) {
       return input.query ? `Searching: ${input.query}` : (input.url ? `Browsing ${input.url}` : 'Browsing the web...');
     case 'list_directory':
       return input.path ? `Listing ${input.path}` : 'Listing files...';
+    case 'retrieve_offloaded_content':
+      // SDK-registered tool (contextManager 'auto''s ContextOffloader): the
+      // agent re-reading part of a large tool result it set aside earlier.
+      return 'Re-reading earlier tool output...';
     default:
       return 'Working...';
   }

@@ -434,4 +434,35 @@ describe('strandsAgentFactory', () => {
       });
     });
   });
+
+  describe('createAgent({ contextManager })', () => {
+    // The SDK's context management ('auto' = SummarizingConversationManager
+    // with proactive compression + ContextOffloader) is enabled by default —
+    // this is the mechanism behind the Strands harness's benchmarked token
+    // savings, and it lives in the SDK itself, not the harness package.
+    function agentArgsFor(overrides) {
+      const sdkMock = require('@strands-agents/sdk');
+      sdkMock.Agent.mockClear();
+      createAgent(baseArgs(overrides));
+      return sdkMock.Agent.mock.calls[0][0];
+    }
+
+    test("defaults to 'auto' when not specified", () => {
+      expect(agentArgsFor({}).contextManager).toBe('auto');
+    });
+
+    test('passing false omits the field entirely (SDK enum rejects false — opt-out is absence)', () => {
+      const args = agentArgsFor({ contextManager: false });
+      expect('contextManager' in args).toBe(false);
+    });
+
+    test('an explicit strategy string is passed through verbatim', () => {
+      expect(agentArgsFor({ contextManager: 'agentic' }).contextManager).toBe('agentic');
+    });
+
+    test('default applies to both model families (Anthropic and OpenAI-compatible)', () => {
+      expect(agentArgsFor({ modelId: 'anthropic.claude-sonnet-4-6' }).contextManager).toBe('auto');
+      expect(agentArgsFor({ modelId: 'openai.gpt-5.6-sol' }).contextManager).toBe('auto');
+    });
+  });
 });

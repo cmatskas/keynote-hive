@@ -259,9 +259,18 @@ function attachIntrospectionHooks(agent, onLog, maxToolRetries = 3) {
  * @param {boolean} [opts.enableThinking] - request extended thinking/reasoning tokens for
  *   this turn. Silently ignored (no-op) if `modelId` isn't in the supportsExtendedThinking()
  *   allowlist — callers don't need to check support themselves.
+ * @param {string|false} [opts.contextManager] - SDK context management strategy (default 'auto').
+ *   'auto' enables the SDK's SummarizingConversationManager (proactive compression at 85% of the
+ *   context window, summarize-on-overflow) plus the ContextOffloader plugin, which moves tool
+ *   results over ~1500 tokens out of context (a 750-token preview and a reference stay in; the
+ *   agent can fetch the rest via the SDK-registered `retrieve_offloaded_content` tool). Offload
+ *   storage is in-memory, which is safe by construction here: every Hive agent is built fresh per
+ *   invocation and its internal message list never outlives the turn (the Work tab re-seeds
+ *   history from its own transcript). Pass false to opt out (SDK default sliding window, no
+ *   offloader) — e.g. if a caller's tool results must stay verbatim in context.
  * @returns {{agent: Agent, dispose: () => void}}
  */
-function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, onLog, maxModelAttempts = 4, maxToolRetries = 3, maxTokens = DEFAULT_MAX_OUTPUT_TOKENS, enableThinking = false }) {
+function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, onLog, maxModelAttempts = 4, maxToolRetries = 3, maxTokens = DEFAULT_MAX_OUTPUT_TOKENS, enableThinking = false, contextManager = 'auto' }) {
   validateRegion(region);
   const thinkingFamily = enableThinking ? supportsExtendedThinking(modelId) : null;
 
@@ -337,7 +346,17 @@ function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, o
     backoff: new ExponentialBackoff({ baseMs: 2000, maxMs: 30000 }),
   });
 
-  const agent = new Agent({ model, systemPrompt, tools, id, retryStrategy });
+  // `contextManager` is passed only when truthy: the SDK treats the field as
+  // an enum ('auto' | 'agentic'), so opting out means omitting it entirely,
+  // not passing false.
+  const agent = new Agent({
+    model,
+    systemPrompt,
+    tools,
+    id,
+    retryStrategy,
+    ...(contextManager ? { contextManager } : {}),
+  });
   const dispose = attachIntrospectionHooks(agent, onLog, maxToolRetries);
 
   return { agent, dispose };
