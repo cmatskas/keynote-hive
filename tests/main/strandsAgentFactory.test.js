@@ -138,6 +138,10 @@ describe('strandsAgentFactory', () => {
       'getaddrinfo ENOTFOUND bedrock-runtime.us-east-1.amazonaws.com',
       'TypeError: fetch failed',
       'socket hang up',
+      // Bedrock's generic 503 body — the CLI sees ServiceUnavailableException,
+      // but the Strands SDK wraps it as ModelError, so only the message
+      // identifies it. Observed live 2026-09-23 (regional serving incident).
+      'Bedrock is unable to process your request.',
     ])('retries network-level failures by message pattern: %s', (message) => {
       expect(HiveModelRetryStrategy.isRetryable(new Error(message))).toBe(true);
     });

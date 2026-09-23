@@ -151,10 +151,15 @@ const RETRYABLE_BEDROCK_ERROR_NAMES = new Set([
 ]);
 
 // Network-level failures surface as plain Errors from the fetch handler with
-// indicative messages rather than typed classes.
+// indicative messages rather than typed classes. 'unable to process your
+// request' is Bedrock's generic 503 body (the CLI reports it as
+// ServiceUnavailableException; the Strands SDK wraps it as ModelError, so
+// the name check above never sees it) — brief instances of it are
+// retryable, and a persistent one exhausts maxModelAttempts and surfaces.
 const RETRYABLE_BEDROCK_MESSAGE_PATTERNS = [
   'econnreset', 'econnrefused', 'enotfound', 'etimedout', 'socket hang up',
   'network', 'fetch failed',
+  'unable to process your request',
 ];
 
 class HiveModelRetryStrategy extends DefaultModelRetryStrategy {
@@ -272,6 +277,20 @@ function createAgent({ modelId, region, mantleApiKey, systemPrompt, tools, id, o
     region,
     maxTokens,
     apiKey: mantleApiKey,
+    // The SDK's apiKey middleware OVERWRITES the Authorization header after
+    // SigV4 signing — but signing still runs first and needs credentials to
+    // compute the signature it's about to throw away. Without these, the
+    // default credential chain is consulted and the call fails with "Could
+    // not load credentials from any providers" on any machine without
+    // ambient AWS credentials — which is CI, and every packaged Hive
+    // install (users' AWS credentials live in Hive's own store, not the
+    // chain). These placeholders are never sent: the signature derived from
+    // them is replaced by the bearer header. Caught by the release
+    // pipeline's live check on the first v4.4.0 tag — local runs passed
+    // only because this machine has ~/.aws credentials to sign with.
+    clientConfig: {
+      credentials: { accessKeyId: 'bearer-auth-placeholder', secretAccessKey: 'bearer-auth-placeholder' },
+    },
     // Prompt caching. With strategy 'auto', BedrockModel detects per model
     // ID whether Bedrock supports caching for it (Anthropic-style cache
     // points covering tools, system prompt, and the last user message) and
