@@ -199,10 +199,21 @@ describe('strandsAgentFactory', () => {
       }
     });
 
-    test('authenticates with the API key as bearer auth — no credentials object, no URL construction', () => {
+    test('authenticates with the API key as bearer auth, with placeholder credentials for the discarded SigV4 signature', () => {
       const args = bedrockModelArgsFor(createAgent, { mantleApiKey: 'the-long-term-key' });
       expect(args.apiKey).toBe('the-long-term-key');
-      expect(args.clientConfig).toBeUndefined();
+      // The apiKey middleware overwrites the Authorization header AFTER
+      // SigV4 signing, so signing needs *some* credentials to compute the
+      // signature it discards. Placeholders keep the default credential
+      // chain out of it — without them, model calls fail with 'Could not
+      // load credentials from any providers' on any machine lacking
+      // ambient AWS credentials (CI, and every packaged install). The
+      // placeholders must never carry real key material.
+      expect(args.clientConfig.credentials).toEqual({
+        accessKeyId: 'bearer-auth-placeholder',
+        secretAccessKey: 'bearer-auth-placeholder',
+      });
+      expect(JSON.stringify(args.clientConfig)).not.toContain('the-long-term-key');
       // Region is passed for endpoint derivation; Hive builds no URL itself.
       expect(args.region).toBe('us-east-1');
       expect(JSON.stringify(args)).not.toContain('bedrock-mantle');
