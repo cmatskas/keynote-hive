@@ -323,9 +323,9 @@ describe('input guards', () => {
     await expect(analyze({ ...baseArgs(2), modelId: '' })).rejects.toThrow(/No model selected/);
   });
 
-  test('names the missing Mantle key rather than failing at the call', async () => {
+  test('names the missing Bedrock API key rather than failing at the call', async () => {
     await expect(analyze({ ...baseArgs(2), mantleApiKey: '' }))
-      .rejects.toThrow(/Mantle API key not configured/);
+      .rejects.toThrow(/Bedrock API key not configured/);
   });
 
   test('refuses a script above the single-call word limit', async () => {

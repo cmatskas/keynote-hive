@@ -34,12 +34,8 @@ jest.mock('@strands-agents/sdk', () => {
   };
 });
 
-jest.mock('@strands-agents/sdk/models/openai', () => ({
-  OpenAIModel: jest.fn(),
-}));
-
-jest.mock('@strands-agents/sdk/models/anthropic', () => ({
-  AnthropicModel: jest.fn(),
+jest.mock('@strands-agents/sdk/models/bedrock', () => ({
+  BedrockModel: jest.fn(),
 }));
 
 jest.mock('openai', () => ({

@@ -1,6 +1,6 @@
 # Hive
 
-An Electron desktop app that combines AI models served via Amazon Bedrock's Mantle endpoint with AWS Transcribe for intelligent media transcription, AI-powered content creation, and multi-agent collaborative pipelines.
+An Electron desktop app that combines AI models on Amazon Bedrock with AWS Transcribe for intelligent media transcription, AI-powered content creation, and multi-agent collaborative pipelines.
 
 ## Features
 
@@ -11,7 +11,7 @@ An Electron desktop app that combines AI models served via Amazon Bedrock's Mant
 - 🎨 **StoryBrand Tab** — Upload a keynote script or outline and see every paragraph colour-coded against the seven StoryBrand elements, with a qualitative audit and self-contained HTML export
 - 🧠 **18 Agent Skills** — Copy editing, copywriting, research, marketing psychology, StoryBrand messaging, document creation, generative art, and more
 - 🎯 **Quality Rubrics** — Weighted criteria with penalty scoring, brief-specific adaptation, and adaptive learning from past runs
-- ⚙️ **Model Management** — Configure Mantle-served models and assign pipeline roles (creator/worker/formatter) from the UI
+- ⚙️ **Model Management** — Configure Bedrock models and assign pipeline roles (creator/worker/formatter) from the UI
 - 📊 **Quality Analytics** — Dashboard showing pass rates, criteria heatmaps, and actionable insights across pipeline runs
 
 ## Quick Start
@@ -36,7 +36,7 @@ npm run build      # production (all platforms)
 1. **Launch Hive.** On first run it opens straight to Settings → Credentials since nothing is configured yet.
 2. **Configure AWS credentials.** Most users authenticate with their own personal AWS account's Admin-role credentials (e.g. via Isengard/Merlon) — paste them into Settings → Credentials (auto-detected from any format) and click "Save & Test Credentials." Hive works with any valid AWS credentials; an Admin-level role simply means every permission below is already covered without needing to configure anything IAM-related by hand.
 3. **Setup Check runs automatically.** The first time credentials resolve successfully, Hive checks your account for a few things it needs (Web Search Gateway role, the two transcription S3 buckets, AgentCore Memory, Code Interpreter permissions) and shows a checklist for anything missing — see [Setup Check](#setup-check) below. Create what you need, skip what you don't, right from the app.
-4. **Add your Mantle API key.** Generate a long-term [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) in the AWS console and paste it into Settings → Configuration → Mantle API Key — this is the one thing that can't be automated, since it's a secret tied to your own account.
+4. **Add your Bedrock API key.** Generate a long-term [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) in the AWS console and paste it into Settings → Configuration → Bedrock API Key — this is the one thing that can't be automated, since it's a secret tied to your own account.
 5. **Start using the Work tab.**
 
 If your credentials happen to resolve to Hive's shared admin AWS account, an **Admin** tab also appears automatically in Settings — see [Admin Tab](#admin-tab-aws-keynote-only) below. Regular users never see this tab and don't need to do anything with it.
@@ -44,7 +44,7 @@ If your credentials happen to resolve to Hive's shared admin AWS account, an **A
 ## AWS Permissions Required
 
 The list below documents what Hive actually calls, for anyone auditing or scoping a dedicated IAM role. In practice, most Hive users authenticate with an Admin-level role (via Isengard/Merlon) that already covers all of it — this list isn't a manual grant checklist to walk through, just a reference for what each feature needs under the hood:
-- **Bedrock Mantle**: A long-term [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) configured in Settings → Mantle API Key. All model invocation (Work, Chat, Swarm) goes through Amazon Bedrock's Mantle endpoint via this key — no IAM-based `InvokeModel`/`Converse` permissions are needed for model calls themselves.
+- **Bedrock model calls**: A long-term [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) configured in Settings → Bedrock API Key. All model invocation (Work, Chat, Swarm) goes to standard Amazon Bedrock (the Converse API) authenticated with this key as a bearer token — no IAM-based `InvokeModel`/`Converse` permissions are needed for model calls themselves, and model calls keep working even while your AWS session credentials are expired.
 - **Transcribe**: `StartTranscriptionJob`, `GetTranscriptionJob`, `ListTranscriptionJobs` (for Transcribe tab; the last is used by **Find past transcriptions**)
 - **S3**: `GetObject`, `PutObject`, `DeleteObject` on your buckets (for Transcribe tab)
 - **S3**: `ListBucket` on the transcription output bucket — only needed by **Find past transcriptions**, which scans that bucket to rebuild Hive's index. Everything else in the Transcribe tab works without it.
@@ -269,7 +269,7 @@ Create custom skills in Settings → Skills → New Skill. Each skill is a `SKIL
 
 ## Model Configuration
 
-Settings → Models lets you manage Bedrock (Mantle) models, define the order they appear in the drop downs, and assign swarm pipeline roles:
+Settings → Models lets you manage Bedrock models, define the order they appear in the drop downs, and assign swarm pipeline roles:
 
 | Role | Purpose | Default |
 |---|---|---|
@@ -277,11 +277,9 @@ Settings → Models lets you manage Bedrock (Mantle) models, define the order th
 | Worker | Research, planning, editing — balanced | User defined |
 | Formatter | Document generation — cheapest capable | User defined |
 
-All models are invoked via Amazon Bedrock's Mantle endpoint — Claude models go through Mantle's Anthropic Messages API, other models (e.g. GPT-5.x, Google Gemma) through Mantle's OpenAI-compatible API. Add or remove models and reassign roles from the UI.
+All models are invoked directly on Amazon Bedrock via the Converse API, authenticated with your Bedrock API key as a bearer token. Add or remove models and reassign roles from the UI, using Bedrock model IDs or inference-profile IDs (e.g. `global.anthropic.claude-opus-5`, `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `us.openai.gpt-6-sol`) exactly as they appear in the Bedrock model catalog for your region.
 
-> **Note:** You'll need to reconfigure all your models using the Mantle Model ID. Inference profiles are no longer needed!
-
-> **xAI Grok models are now supported (as of `@strands-agents/sdk` 1.12.0).** They previously failed on every route with a validation error or a 500 — that was a real routing bug in the SDK's Mantle base-path table (fixed upstream, [harness-sdk#3691](https://github.com/strands-agents/harness-sdk/pull/3691)), not a client-side or account-side issue. Confirmed fixed end-to-end through Hive's own `createAgent()` path with 5 consecutive live test runs against `xai.grok-4.3`. One caveat carried over from the upstream fix's own testing: Grok models on Mantle have shown intermittent flakiness independent of routing (timeouts on an otherwise-correct path during some windows) — if a Grok call fails, it's worth retrying before assuming something regressed. Grok also needs a noticeably larger output token budget than other models before producing visible text (internal reasoning tokens consume part of the budget), so a very low `maxTokens` may surface as `MaxTokensError` rather than a routing failure.
+> **Note (migration from Mantle):** Hive previously invoked models through Bedrock's Mantle endpoint. As of this version every model call goes to standard Bedrock instead — the newest model generations (Claude Opus 5.x / Sonnet 5, GPT-6, Kimi K3, Nova 2) ship on standard Bedrock only. **You'll need to reconfigure your models with Bedrock model or inference-profile IDs.** Your API key does not change: it was a Bedrock API key all along, and works on both endpoints. Models that existed only on Mantle (e.g. the Gemma 4 family, `qwen3-coder-next`) are unavailable until they appear in the Bedrock catalog.
 
 ## Development
 
@@ -289,23 +287,23 @@ All models are invoked via Amazon Bedrock's Mantle endpoint — Claude models go
 npm test               # unit tests
 npm run test:watch     # watch mode
 npm run test:coverage  # coverage report
-npm run test:integration  # live Mantle integration tests (requires MANTLE_API_KEY, makes real API calls, incurs costs)
+npm run test:integration  # live Bedrock integration tests (requires BEDROCK_API_KEY, makes real API calls, incurs costs)
 ```
 
-### Live Mantle integration tests
+### Live Bedrock integration tests
 
-`tests/integration/mantle-live.js` calls the real Mantle endpoint through Hive's actual `createAgent()` routing logic — one minimal request per model family (Anthropic, `openai.gpt-5.*`, other OpenAI-compatible). It runs as a plain Node script rather than a Jest test, since `@strands-agents/sdk` ships as pure ESM with no CJS build — every other test file in this repo works around that by mocking the SDK entirely, but this script's whole purpose is to exercise the real, unmocked SDK against the real endpoint, so that workaround isn't available here. Unlike the rest of the test suite, it deliberately makes real HTTP calls: unit tests can only verify Hive's own routing logic, never whether Mantle's actual API still matches that logic *today*. That gap is exactly what let two Anthropic-routing incidents (v3.0.1 and v3.1.2) reach production before being caught by a user report instead of a test.
+`tests/integration/bedrock-live.js` calls the real Amazon Bedrock (bedrock-runtime) endpoint through Hive's actual `createAgent()` routing logic — one minimal request per default model in Settings, plus a prompt-caching assertion (cache write then cache read across two calls sharing a prefix). It runs as a plain Node script rather than a Jest test, since `@strands-agents/sdk` ships as pure ESM with no CJS build — every other test file in this repo works around that by mocking the SDK entirely, but this script's whole purpose is to exercise the real, unmocked SDK against the real endpoint, so that workaround isn't available here. Unlike the rest of the test suite, it deliberately makes real HTTP calls: unit tests can only verify Hive's own construction logic, never whether Bedrock's actual API still matches that logic *today* — model IDs get retired from the catalog, and bearer-auth/caching behavior can change server-side. That gap is exactly what let two routing incidents (v3.0.1 and v3.1.2) reach production in the Mantle era before being caught by a user report instead of a test.
 
-Run it with `MANTLE_API_KEY=<your key> npm run test:integration`. It exits cleanly (code 0) with a clear message if `MANTLE_API_KEY` isn't set, so it never blocks normal development or `npm test`. Set `REQUIRE_MANTLE_KEY=1` to make a missing key a hard failure instead — this is what CI uses so a misconfigured secret can't silently skip the check.
+Run it with `BEDROCK_API_KEY=<your key> npm run test:integration` (the legacy `MANTLE_API_KEY` name is accepted too — it's the same kind of key). It exits cleanly (code 0) with a clear message if no key is set, so it never blocks normal development or `npm test`. Set `REQUIRE_BEDROCK_KEY=1` (or the legacy `REQUIRE_MANTLE_KEY=1`) to make a missing key a hard failure instead — this is what CI uses so a misconfigured secret can't silently skip the check.
 
-**In CI**, this runs in two places, both requiring the `MANTLE_API_KEY` repository secret to be configured in GitHub Settings → Secrets:
-- **Release pipeline** (`.github/workflows/release.yml`) — a `test` job (unit tests + this check) gates both the macOS and Windows build/publish jobs. A release cannot ship if Mantle routing is broken.
-- **Scheduled tests** (`.github/workflows/scheduled-tests.yml`) — runs daily (07:00 UTC) independently of any push or release, so a Mantle routing change is caught within a day even between releases. Also runnable on demand from the Actions tab.
+**In CI**, this runs in two places, both requiring the `MANTLE_API_KEY` repository secret (historical name, still a Bedrock API key) to be configured in GitHub Settings → Secrets:
+- **Release pipeline** (`.github/workflows/release.yml`) — a `test` job (unit tests + this check) gates both the macOS and Windows build/publish jobs. A release cannot ship if Bedrock routing is broken.
+- **Scheduled tests** (`.github/workflows/scheduled-tests.yml`) — runs daily (07:00 UTC) independently of any push or release, so a Bedrock-side change is caught within a day even between releases. Also runnable on demand from the Actions tab.
 
 ### Live AWS Setup Check test (manual)
 
 `tests/integration/setup-check-live.js` calls Setup Check's real resource-creation
-functions against real AWS. Like the Mantle check above, it exists because the unit
+functions against real AWS. Like the Bedrock check above, it exists because the unit
 tests mock the AWS SDK entirely — they verify Hive sends what Hive *intends* to send,
 but never that AWS still accepts it. That gap let a real failure reach a user: on a
 brand-new install, creating the Web Search Gateway died on
@@ -342,7 +340,7 @@ Needs `iam:CreateRole`, `iam:PutRolePolicy`, `iam:GetRole`, `iam:DeleteRole`,
 `iam:DeleteRolePolicy`, plus `bedrock-agentcore:CreateMemory`/`DeleteMemory` for the
 memory check.
 
-**Why this isn't in CI.** Unlike the Mantle check, this one is manual, and that's a
+**Why this isn't in CI.** Unlike the Bedrock check, this one is manual, and that's a
 constraint rather than an oversight — worth recording so nobody "fixes" it in a way
 that gets reverted.
 

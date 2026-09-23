@@ -228,7 +228,7 @@ describe('utils — oversized document handling (sandbox pointer, no pre-extract
       const smallBuffer = Buffer.alloc(1024);
       await expect(
         buildFileContentBlocks([{ name: 'small.docx', content: smallBuffer }], { isAnthropicModel: true })
-      ).rejects.toThrow(/Anthropic \(Claude\) models cannot read directly/i);
+      ).rejects.toThrow(/cannot send to Anthropic \(Claude\) models inline/i);
     });
 
     test('with isAnthropicModel, mixed docx + pdf + oversized xlsx in one call all route through extraction/native-inline correctly', async () => {

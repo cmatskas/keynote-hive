@@ -1,5 +1,21 @@
 # Release Notes
 
+## v4.4.0
+
+### Changed — model calls now go to standard Amazon Bedrock
+
+**Action required: re-enter your model IDs.** Hive no longer calls Bedrock's Mantle endpoint; every model call (Work, Chat, Swarm, StoryBrand) now goes directly to Amazon Bedrock via the Converse API. Open Settings → Models and replace each model's ID with its Bedrock model ID or inference-profile ID exactly as it appears in the Bedrock catalog for your region (e.g. `global.anthropic.claude-opus-5`, `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `us.openai.gpt-6-sol`).
+
+- **Why:** the newest model generations — Claude Opus 5.x / Sonnet 5, GPT-6 Sol/Luna, Kimi K3, Nova 2 — ship on standard Bedrock only, and new releases are landing there first. Staying on Mantle meant being locked out of every new flagship.
+- **Your API key does not change.** The key in Settings was a Bedrock API key all along; it authenticates against standard Bedrock the same way (as a bearer token — model calls still work while your AWS session credentials are expired). The settings field is now labeled **Bedrock API Key**.
+- **What carries over:** prompt caching (now via Converse cache points, same cost benefit) and context management (offloading + compaction) work exactly as introduced in v4.3.0. Extended thinking carries over for Claude and GPT-5/6-class models.
+- **What's lost, for now:** models that existed only on Mantle — the Gemma 4 family, `openai.gpt-5.4`, `qwen3-coder-next` — are unavailable until they appear in the Bedrock catalog. Note also that Bedrock and Mantle have separate quota pools, so heavy users may start from lower default limits on Bedrock and should request increases through the usual Service Quotas path.
+- Default model lineup refreshed to current Bedrock flagships: Claude Opus 5.5 (creator), Claude Sonnet 5 (worker), GPT-6 Sol (formatter), plus Claude Fable 5.1, GPT-6 Astra, and Grok 4.6 available without a role. Every default is verified against the live catalog by the integration check.
+
+### Tests
+- The live integration check is now `bedrock-live.js`: it verifies bearer-key auth on Converse, that every default model ID still exists in the Bedrock catalog (models do get retired), and prompt caching end to end (cache write then read). Runs in the release gate and the daily scheduled job, as before.
+- Factory unit tests rewritten for the single-model-class construction; retry classification now covers AWS exception names (`ServiceUnavailableException`, `ModelNotReadyException`, ...) and network failure patterns instead of the removed openai/anthropic SDK error classes.
+
 ## v4.3.0
 
 ### Improvements — cheaper, longer conversations

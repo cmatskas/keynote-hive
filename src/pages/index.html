@@ -590,11 +590,11 @@
                         </div>
                     </div>
 
-                    <!-- Mantle (model invocation) -->
+                    <!-- Bedrock API key (model invocation) -->
                     <div class="card mb-3">
                         <div class="card-body">
-                            <h6 class="mb-3"><i class="bi bi-key me-2"></i>Mantle API Key</h6>
-                            <small class="text-muted d-block mb-3">Required for all model calls (Work, Chat, Swarm) — every model is now invoked via Amazon Bedrock's Mantle endpoint. Generate a long-term Bedrock API key in the AWS console. Note: AWS documents long-term keys as recommended for exploration/development use.</small>
+                            <h6 class="mb-3"><i class="bi bi-key me-2"></i>Bedrock API Key</h6>
+                            <small class="text-muted d-block mb-3">Required for all model calls (Work, Chat, Swarm) — every model is invoked directly on Amazon Bedrock. Generate a long-term Bedrock API key in the AWS console. Note: AWS documents long-term keys as recommended for exploration/development use.</small>
                             <div class="mb-3">
                                 <label for="mantleApiKey" class="form-label">API Key</label>
                                 <input type="password" class="form-control" id="mantleApiKey" placeholder="Bedrock API key" autocomplete="off">
@@ -690,7 +690,7 @@
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <div>
                             <h6 class="mb-0"><i class="bi bi-cpu me-2"></i>Models</h6>
-                            <small class="text-muted">Manage available models (served via Amazon Bedrock Mantle) and assign swarm pipeline roles</small>
+                            <small class="text-muted">Manage available models (served via Amazon Bedrock — use Bedrock model or inference profile IDs) and assign swarm pipeline roles</small>
                         </div>
                     </div>
                     <table class="table table-sm align-middle" id="modelsTable">

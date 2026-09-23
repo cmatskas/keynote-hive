@@ -22,7 +22,7 @@ const logger = require('electron-log/main');
 async function invokeChatModel(ctx, model, prompt, conversationHistory, files = [], event = null, signal = null) {
   const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
   if (!settings.mantleApiKey) {
-    throw new Error('Mantle API key not configured — set it in Settings > Mantle API Key');
+    throw new Error('Bedrock API key not configured — set it in Settings > Bedrock API Key');
   }
 
   if (files && files.length > 5) {

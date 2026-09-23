@@ -140,7 +140,7 @@ print("\\n\\n".join(slides))`
   if (officeFilesForAnthropic.length > 0) {
     if (!ci) {
       throw new Error(
-        `File "${officeFilesForAnthropic[0].name}" is a Word/Excel document, which Anthropic (Claude) models cannot read directly on Mantle — ` +
+        `File "${officeFilesForAnthropic[0].name}" is a Word/Excel document, which this attachment path cannot send to Anthropic (Claude) models inline — ` +
         'it needs to be processed through a Code Interpreter sandbox first, and none is available here. ' +
         '(This attachment path requires a Code Interpreter session; the Chat tab creates one automatically for file processing, so if you see ' +
         'this error, something else prevented that setup — check AWS credentials/permissions.)'

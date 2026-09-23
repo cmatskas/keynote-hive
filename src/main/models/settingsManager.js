@@ -42,10 +42,12 @@ class SettingsManager {
       // with no Strands provider that can reach Mantle at all (Nova,
       // DeepSeek, Mistral, Llama, etc.) are no longer offered by default.
       bedrockModels: [
-        { id: 'Claude Opus 4.6', inferenceProfileId: 'us.anthropic.claude-opus-4-6-v1', role: 'creator' },
-        { id: 'Claude Sonnet 4.6', inferenceProfileId: 'us.anthropic.claude-sonnet-4-6', role: 'worker' },
-        { id: 'Claude Haiku 4.5', inferenceProfileId: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', role: 'formatter' },
-        { id: 'GPT-5.6 Sol', inferenceProfileId: 'openai.gpt-5.6-sol', role: '' },
+        { id: 'Claude Opus 5.5', inferenceProfileId: 'global.anthropic.claude-opus-5-5', role: 'creator' },
+        { id: 'Claude Sonnet 5', inferenceProfileId: 'global.anthropic.claude-sonnet-5', role: 'worker' },
+        { id: 'GPT-6 Sol', inferenceProfileId: 'us.openai.gpt-6-sol', role: 'formatter' },
+        { id: 'Claude Fable 5.1', inferenceProfileId: 'global.anthropic.claude-fable-5-1', role: '' },
+        { id: 'GPT-6 Astra', inferenceProfileId: 'us.openai.gpt-6-astra', role: '' },
+        { id: 'Grok 4.6', inferenceProfileId: 'us.xai.grok-4.6', role: '' },
       ],
     };
   }

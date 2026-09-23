@@ -478,7 +478,7 @@ async function analyze({ units, modelId, region, mantleApiKey, wordCount = 0 }, 
   if (!Array.isArray(units) || units.length === 0) throw new Error('Nothing to analyse.');
   if (!modelId) throw new Error('No model selected.');
   if (!mantleApiKey) {
-    throw new Error('Mantle API key not configured — set it in Settings > Mantle API Key');
+    throw new Error('Bedrock API key not configured — set it in Settings > Bedrock API Key');
   }
   if (wordCount > MAX_WORDS) {
     throw new Error(

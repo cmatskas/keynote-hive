@@ -1,11 +1,11 @@
 name: Scheduled Tests
 
-# Runs independently of pushes/releases so a Mantle routing change (or any
-# other regression) is caught within a day, rather than only when someone
-# happens to push a commit or cut a release. See README's "Live Mantle
+# Runs independently of pushes/releases so a Bedrock-side change (catalog,
+# auth, caching) is caught within a day, rather than only when someone
+# happens to push a commit or cut a release. See README's "Live Bedrock
 # integration tests" section for why this exists — unit tests mock the
 # Strands SDK entirely and structurally cannot detect an upstream API
-# change on Mantle's side.
+# change on Bedrock's side.
 on:
   schedule:
     - cron: '0 7 * * *'  # 07:00 UTC daily
@@ -28,7 +28,7 @@ jobs:
       - name: Run unit tests
         run: npm test
 
-      - name: Run live Mantle integration check
+      - name: Run live Bedrock integration check
         env:
           MANTLE_API_KEY: ${{ secrets.MANTLE_API_KEY }}
           AWS_REGION: us-east-1

@@ -20,9 +20,12 @@
 //               model is fine. Used by: Formatter agents.
 //
 const DEFAULT_MODELS = {
-  creator: 'us.anthropic.claude-opus-4-6-v1',
-  worker: 'us.anthropic.claude-sonnet-4-6',
-  formatter: 'anthropic.claude-haiku-4-5-20251001-v1:0',
+  // Keep in sync with settingsManager.js's default model list — these are
+  // the fallbacks when the user hasn't assigned a role in Settings → Models.
+  // All three verified against the live Bedrock catalog (bedrock-live.js).
+  creator: 'global.anthropic.claude-opus-5-5',
+  worker: 'global.anthropic.claude-sonnet-5',
+  formatter: 'us.openai.gpt-6-sol',
 };
 
 let MODELS = { ...DEFAULT_MODELS };
