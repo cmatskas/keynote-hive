@@ -23,7 +23,7 @@ const DEFAULT_MODELS = {
   // Keep in sync with settingsManager.js's default model list — these are
   // the fallbacks when the user hasn't assigned a role in Settings → Models.
   // All three verified against the live Bedrock catalog (bedrock-live.js).
-  creator: 'global.anthropic.claude-opus-5-5',
+  creator: 'global.anthropic.claude-opus-5',
   worker: 'global.anthropic.claude-sonnet-5',
   formatter: 'us.openai.gpt-6-sol',
 };

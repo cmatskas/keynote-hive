@@ -133,7 +133,7 @@ async function runCacheCheck(modelId) {
 // this fails naming the ID — update settingsManager.js's defaults to match.
 // Keep this list in sync with settingsManager.js.
 const CHECKS = [
-  { label: 'Creator default', modelId: 'global.anthropic.claude-opus-5-5' },
+  { label: 'Creator default', modelId: 'global.anthropic.claude-opus-5' },
   { label: 'Worker default', modelId: 'global.anthropic.claude-sonnet-5' },
   { label: 'Formatter default', modelId: 'us.openai.gpt-6-sol', maxTokens: 1000 },
   { label: 'Fable 5.1', modelId: 'global.anthropic.claude-fable-5-1' },
