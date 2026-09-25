@@ -1,5 +1,14 @@
 # Release Notes
 
+## v4.4.3
+
+### Security
+- **Resolved all 19 open Dependabot alerts** with in-range transitive dependency bumps in `package-lock.json` — no direct dependency or code changes. The five affected packages, and Hive's actual exposure:
+  - `fast-uri` 3.1.5 → 3.1.8 (4 high: SSRF / host confusion in URI normalization; reachable via ajv's schema validation inside `@modelcontextprotocol/sdk` — the most plausible real path of the set)
+  - `js-yaml` 4.3.1 → 4.3.2 and 3.15.1 → 3.15.2 (2 high: CPU exhaustion via crafted merge keys; the 4.x copy sits in `electron-updater`'s update-metadata parsing, so worth hardening even though it requires a compromised release feed)
+  - `@xmldom/xmldom` 0.8.13 → 0.8.15 (8 alerts, build-time only via `electron-builder → plist`; input is Hive's own packaging metadata, not shipped in the app)
+  - `hono` 4.13.0 → 4.13.9 and `qs` 6.15.3 → 6.16.0 (5 alerts in the MCP SDK's HTTP stack; only exploitable when serving attacker HTTP traffic, which a desktop app doesn't)
+
 ## v4.4.2
 
 ### Changed
