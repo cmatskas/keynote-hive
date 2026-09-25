@@ -10,11 +10,17 @@ global.ModalManager = jest.fn().mockImplementation(() => ({
 }));
 
 // Mock the electronAPI before importing the module
+const { buildIndexPageDom } = require('./helpers/indexPageDom');
+
 const mockElectronAPI = {
     showToast: jest.fn(),
     invoke: jest.fn(),
     receive: jest.fn(),
-    invokeAsync: jest.fn()
+    invokeAsync: jest.fn(),
+    // Path resolution for a DOM File (webUtils.getPathForFile in preload).
+    // Defaults to '' — "no backing file on disk" — so existing tests exercise
+    // the byte-fallback path unless a test opts into a path.
+    getPathForFile: jest.fn(() => '')
 };
 
 // Mock window.electronAPI
@@ -96,72 +102,10 @@ describe('Renderer Index.js', () => {
         // Reset fetch mock specifically
         fetch.mockClear();
         
-        // Setup DOM
-        document.body.innerHTML = `
-            <div id="uploadZone"></div>
-            <input type="file" id="fileInput" />
-            <div id="videoContainer" class="d-none"></div>
-            <video id="videoPlayer"></video>
-            <div id="transcriptionContent"></div>
-            <div id="loadingSpinner"></div>
-            <div id="transcriptionText"></div>
-            <select id="promptTemplateSelect">
-                <option value="">Select Template</option>
-                <option value="Test prompt template">Test Template</option>
-            </select>
-            <input type="checkbox" id="useExistingTranscript" />
-            <select id="modelSelect">
-                <option value="test-model">Test Model</option>
-            </select>
-            <textarea id="promptEditor"></textarea>
-            <div id="analysisText"></div>
-            <button id="invokeBedrockBtn"></button>
-            <button id="downloadAnalysis" class="d-none"></button>
-            <button id="copyAnalysis" class="d-none"></button>
-            <button id="downloadTranscript" class="d-none"></button>
-            <button id="copyTranscript" class="d-none"></button>
-            <button id="clearTranscriptionBtn" class="d-none"></button>
-            <button id="saveTranscriptBeforeClear"></button>
-            <button id="copyTranscriptBeforeClear"></button>
-            <button id="clearWithoutSaving"></button>
-            <div id="transcribe-page">
-                <div class="transcribe-layout">
-                    <div class="conv-sidebar transcribe-sidebar" id="transcribeSidebar">
-                        <button id="newTranscriptionBtn"></button>
-                        <input type="text" id="transcriptionSearch" />
-                        <button id="transcriptionSearchClear" class="d-none"></button>
-                        <div id="transcriptionList"></div>
-                    </div>
-                    <div class="transcribe-main">
-                        <button id="transcribeSidebarToggle"></button>
-                        <div id="transcribeViewHeader" class="d-none">
-                            <h5 id="transcribeViewTitle"></h5>
-            <input type="text" id="transcribeViewTitleInput" class="d-none" />
-                            <button id="transcribeRenameBtn"></button>
-                            <button id="transcribeDeleteBtn"></button>
-                            <div id="transcribeViewMeta"></div>
-                        </div>
-                        <div id="transcribePlayerPane"></div>
-                        <div id="transcribeTranscriptPane"></div>
-                        <div id="transcribeTranscriptTitle"></div>
-                    </div>
-                </div>
-            </div>
-            <div id="deleteTranscriptionModal">
-                <strong id="deleteTranscriptionName"></strong>
-                <input type="checkbox" id="deleteTranscriptionFromAws" />
-                <button id="deleteTranscriptionConfirmBtn"></button>
-            </div>
-            <div id="analyze-page"></div>
-            <div id="nav-transcribe"><span id="navTranscribeSpinner" class="d-none"></span></div>
-            <div id="nav-analyze"></div>
-            <div id="nav-app-settings"></div>
-            <div id="nav-credentials"></div>
-            <div id="nav-connection-status"></div>
-            <div id="bedrockProcessingModal"></div>
-            <div id="clearTranscriptionModal"></div>
-            <input type="radio" name="viewMode" value="full" checked />
-        `;
+        // Setup DOM (shared skeleton — see tests/renderer/helpers/indexPageDom.js)
+        document.body.innerHTML = buildIndexPageDom({
+            modelSelectOptions: '<option value="test-model">Test Model</option>',
+        });
         
         // Re-require the module to reset its state
         jest.resetModules();
@@ -441,6 +385,52 @@ describe('Renderer Index.js', () => {
             await window.uploadFile(mockFile);
 
             expect(mockElectronAPI.invoke).toHaveBeenCalledWith('transcribe-media', expect.any(Object));
+        });
+
+        // The IPC payload shape decides whether the media crosses IPC at all.
+        // A file with a filesystem path is sent as { path } so the main process
+        // streams it from disk; only a File with no backing path falls back to
+        // shipping its bytes.
+        test('uploadFile sends the path, and no bytes, when the File has one', async () => {
+            const mockFile = {
+                arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+                name: 'big-keynote.mp4',
+                type: 'video/mp4',
+                size: 233326217
+            };
+            mockElectronAPI.getPathForFile.mockReturnValueOnce('/Users/me/Movies/big-keynote.mp4');
+            mockElectronAPI.invoke.mockResolvedValue({ status: 'STARTED', jobId: 'job-1' });
+
+            await window.uploadFile(mockFile);
+
+            expect(mockElectronAPI.invoke).toHaveBeenCalledWith('transcribe-media', {
+                file: {
+                    path: '/Users/me/Movies/big-keynote.mp4',
+                    name: 'big-keynote.mp4',
+                    type: 'video/mp4',
+                    size: 233326217
+                }
+            });
+            // The whole point: the bytes must not be read into renderer memory.
+            expect(mockFile.arrayBuffer).not.toHaveBeenCalled();
+        });
+
+        test('uploadFile falls back to an ArrayBuffer when the File has no path', async () => {
+            const bytes = new ArrayBuffer(8);
+            const mockFile = {
+                arrayBuffer: jest.fn().mockResolvedValue(bytes),
+                name: 'pasted.mp4',
+                type: 'video/mp4',
+                size: 8
+            };
+            // Default getPathForFile mock returns '' — no backing file on disk.
+            mockElectronAPI.invoke.mockResolvedValue({ status: 'STARTED', jobId: 'job-1' });
+
+            await window.uploadFile(mockFile);
+
+            const [, payload] = mockElectronAPI.invoke.mock.calls.find(([ch]) => ch === 'transcribe-media');
+            expect(payload.file.buffer).toBe(bytes);
+            expect(payload.file.path).toBeUndefined();
         });
     });
 

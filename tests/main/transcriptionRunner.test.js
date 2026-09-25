@@ -35,7 +35,23 @@ jest.mock('@aws-sdk/client-s3', () => ({
 const mockUploadDone = jest.fn(async () => {});
 const mockUploadAbort = jest.fn(async () => {});
 jest.mock('@aws-sdk/lib-storage', () => ({
-  Upload: jest.fn().mockImplementation(() => ({ done: mockUploadDone, abort: mockUploadAbort })),
+  // Unlike the real Upload, the mock never consumes the Body. A path-based job
+  // passes a lazily-opened ReadStream, and leaving it dangling makes its async
+  // open race the tmpdir cleanup — surfacing as an ENOENT in whatever test
+  // runs next. Close it when the fake upload settles, as the real one would.
+  Upload: jest.fn().mockImplementation(({ params } = {}) => ({
+    done: async (...args) => {
+      try {
+        return await mockUploadDone(...args);
+      } finally {
+        if (params?.Body?.destroy) {
+          params.Body.on('error', () => {});
+          params.Body.destroy();
+        }
+      }
+    },
+    abort: mockUploadAbort,
+  })),
 }));
 
 jest.mock('@aws-sdk/client-transcribe', () => ({
@@ -49,6 +65,10 @@ jest.mock('../../src/main/models/transcriptMapper', () => jest.fn().mockImplemen
 })));
 
 const runner = require('../../src/main/models/transcriptionRunner');
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const fakeFile = { buffer: [1, 2, 3], name: 'clip.mp4', type: 'video/mp4' };
 
@@ -94,10 +114,10 @@ function buildCtx({ transcribeSend, online = true } = {}) {
 }
 
 /** Starts a job the way the IPC handler does, without the event delivery. */
-function startJob(ctx, { displayName = null } = {}) {
-  const job = runner.createJob({ sourceFile: fakeFile.name, displayName });
+function startJob(ctx, { displayName = null, file = fakeFile } = {}) {
+  const job = runner.createJob({ sourceFile: file.name, displayName });
   ctx.transcriptionJob = job;
-  const promise = runner.runTranscription(ctx, job, { file: fakeFile });
+  const promise = runner.runTranscription(ctx, job, { file });
   return { job, promise };
 }
 
@@ -199,6 +219,93 @@ describe('configuration guard', () => {
     expect(() => runner.assertTranscriptionConfigured({
       bucketName: 'in', outputBucketName: 'out',
     })).not.toThrow();
+  });
+});
+
+// Since v4.4.2 the renderer normally sends the media's filesystem path and the
+// main process streams it from disk, so large files never cross IPC as bytes
+// and never sit in memory whole. The byte form (every other test in this file)
+// remains the fallback for a File with no backing path.
+describe('media source: path vs bytes', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-runner-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const writeMedia = (name, bytes) => {
+    const filePath = path.join(tmpDir, name);
+    fs.writeFileSync(filePath, Buffer.alloc(bytes, 1));
+    return filePath;
+  };
+
+  test('a path-based job streams the file from disk rather than buffering it', async () => {
+    const { Upload } = require('@aws-sdk/lib-storage');
+    const transcribeSend = jest.fn(async (cmd) => (cmd._type === 'get' ? completedJob() : {}));
+    const { ctx } = buildCtx({ transcribeSend });
+
+    const filePath = writeMedia('clip.mp4', 1024);
+    const { promise } = startJob(ctx, { file: { path: filePath, name: 'clip.mp4', type: 'video/mp4', size: 1024 } });
+
+    await expect(promise).resolves.toMatchObject({ status: 'COMPLETED' });
+
+    const { params } = Upload.mock.calls[0][0];
+    expect(params.Body).toBeInstanceOf(fs.ReadStream);
+    expect(params.Body.path).toBe(filePath);
+    expect(params.ContentType).toBe('video/mp4');
+  });
+
+  test('multipart tuning follows the on-disk size, not the renderer-reported one', async () => {
+    const { Upload } = require('@aws-sdk/lib-storage');
+    const transcribeSend = jest.fn(async (cmd) => (cmd._type === 'get' ? completedJob() : {}));
+    const { ctx } = buildCtx({ transcribeSend });
+
+    const filePath = writeMedia('big.mp4', 20 * 1024 * 1024);
+    // The renderer claims 1KB; stat says 20MB. stat must win.
+    await startJob(ctx, { file: { path: filePath, name: 'big.mp4', type: 'video/mp4', size: 1024 } }).promise;
+
+    expect(Upload.mock.calls[0][0]).toMatchObject({ queueSize: 4, partSize: 5 * 1024 * 1024 });
+  });
+
+  test('a small path-based file gets no multipart tuning, same as a small buffer', async () => {
+    const { Upload } = require('@aws-sdk/lib-storage');
+    const transcribeSend = jest.fn(async (cmd) => (cmd._type === 'get' ? completedJob() : {}));
+    const { ctx } = buildCtx({ transcribeSend });
+
+    const filePath = writeMedia('small.mp4', 1024);
+    await startJob(ctx, { file: { path: filePath, name: 'small.mp4', type: 'video/mp4', size: 1024 } }).promise;
+
+    expect(Upload.mock.calls[0][0].queueSize).toBeUndefined();
+    expect(Upload.mock.calls[0][0].partSize).toBeUndefined();
+  });
+
+  test('a vanished file fails cleanly before anything reaches AWS', async () => {
+    const { Upload } = require('@aws-sdk/lib-storage');
+    const transcribeSend = jest.fn(async () => ({}));
+    const { ctx } = buildCtx({ transcribeSend });
+
+    const gone = path.join(tmpDir, 'deleted-since-selection.mp4');
+    const { promise } = startJob(ctx, { file: { path: gone, name: 'deleted-since-selection.mp4', type: 'video/mp4', size: 999 } });
+
+    await expect(promise).rejects.toThrow(/Cannot read the media file "deleted-since-selection\.mp4"/);
+    expect(Upload).not.toHaveBeenCalled();
+    expect(transcribeSend).not.toHaveBeenCalled();
+  });
+
+  test('the byte fallback uploads a Buffer, as before', async () => {
+    const { Upload } = require('@aws-sdk/lib-storage');
+    const transcribeSend = jest.fn(async (cmd) => (cmd._type === 'get' ? completedJob() : {}));
+    const { ctx } = buildCtx({ transcribeSend });
+
+    await startJob(ctx).promise; // module-level fakeFile: { buffer: [1, 2, 3] }
+
+    const { params } = Upload.mock.calls[0][0];
+    expect(Buffer.isBuffer(params.Body)).toBe(true);
+    expect(params.Body.length).toBe(3);
   });
 });
 

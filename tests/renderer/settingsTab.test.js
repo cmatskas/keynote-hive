@@ -68,15 +68,18 @@ function buildDom() {
       return `<select id="${id}">${opts}</select>`;
     }
     if (id === 'credentialsForm') return `<form id="${id}"></form>`;
+    if (id === 'modelsTableBody') return `<table><tbody id="${id}"></tbody></table>`;
     return `<input id="${id}" />`;
   });
 
   // Sub-tab scaffolding. Configuration settings are loaded when that sub-tab is
   // opened rather than by init(), so tests that care about the form's contents
-  // have to go through the same click the user does.
+  // have to go through the same click the user does. Models works the same way.
   parts.push(
     '<a href="#" data-settings-tab="configuration" id="tab-configuration"></a>',
-    '<div class="settings-tab-content" id="settings-configuration"></div>'
+    '<div class="settings-tab-content" id="settings-configuration"></div>',
+    '<a href="#" data-settings-tab="models" id="tab-models"></a>',
+    '<div class="settings-tab-content" id="settings-models"></div>'
   );
 
   document.body.innerHTML = parts.join('\n');
@@ -417,5 +420,104 @@ describe('Setup Check: web search gateway row', () => {
 
     expect(row.querySelector('.badge').textContent).toBe('Ready');
     expect(row.querySelector('.badge').className).toContain('bg-success');
+  });
+});
+
+
+/**
+ * Settings → Models: adding a model. Whether a model can hold a Swarm role is
+ * decided in the main process from its ID during the save (modelCapabilities),
+ * so a role chosen for a tool-less model is cleared and comes back as None.
+ * Correct, but silent — the user has to be told why.
+ */
+describe('Settings tab: adding a tool-less model with a role', () => {
+  const isToolless = (id) => /google\.gemma-3-/i.test(id || '');
+
+  /**
+   * Stand-in for the main process's save/load pair: save strips the role from
+   * a tool-less model, load derives supportsTools from the ID — the same
+   * contract settingsManager + modelCapabilities implement for real.
+   */
+  function loadModelsTabWithFakeMain(initialModels) {
+    let stored = initialModels;
+    mockElectronAPI.invoke.mockImplementation((channel, payload) => {
+      switch (channel) {
+        case 'load-settings':
+          return Promise.resolve({
+            bucketName: 'b', outputBucketName: 'o',
+            bedrockModels: stored.map(m => ({ ...m, supportsTools: !isToolless(m.inferenceProfileId) })),
+          });
+        case 'save-settings':
+          if (Array.isArray(payload?.bedrockModels)) {
+            stored = payload.bedrockModels.map(({ supportsTools: _d, ...m }) => (
+              m.role && isToolless(m.inferenceProfileId) ? { ...m, role: '' } : m
+            ));
+          }
+          return Promise.resolve(true);
+        case 'load-credentials': return Promise.resolve(null);
+        case 'get-web-search-status': return Promise.resolve({ ready: true, error: null });
+        case 'memory-list': return Promise.resolve([]);
+        default: return Promise.resolve(undefined);
+      }
+    });
+    jest.resetModules();
+    require('../../src/renderer/settingsTab.js');
+    window.SettingsTab.init();
+    document.getElementById('tab-models').click();
+  }
+
+  async function addModel(name, profileId, role) {
+    document.getElementById('newModelName').value = name;
+    document.getElementById('newModelId').value = profileId;
+    document.getElementById('newModelRole').value = role;
+    document.getElementById('addModelBtn').click();
+    await flush();
+    await flush();
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    buildDom();
+  });
+
+  test('explains why the role came back as None', async () => {
+    loadModelsTabWithFakeMain([
+      { id: 'Claude Opus 5.5', inferenceProfileId: 'global.anthropic.claude-opus-5-5', role: '' },
+    ]);
+    await flush();
+
+    await addModel('Gemma 3 27B', 'google.gemma-3-27b-it', 'creator');
+
+    expect(mockElectronAPI.showToast).toHaveBeenCalledWith(
+      expect.stringMatching(/Gemma 3 27B makes no tool calls.*Swarm role.*Chat and StoryBrand/),
+      'warning'
+    );
+    // And the table reflects the outcome: the role select is disabled, on None.
+    const gemmaRow = [...document.querySelectorAll('#modelsTableBody tr')]
+      .find(tr => tr.textContent.includes('google.gemma-3-27b-it'));
+    const select = gemmaRow.querySelector('.model-role-select');
+    expect(select.disabled).toBe(true);
+    expect(select.value).toBe('');
+  });
+
+  test('says nothing when a tool-capable model takes a role', async () => {
+    loadModelsTabWithFakeMain([]);
+    await flush();
+
+    await addModel('Claude Sonnet 5', 'global.anthropic.claude-sonnet-5', 'creator');
+
+    expect(mockElectronAPI.showToast).not.toHaveBeenCalledWith(expect.anything(), 'warning');
+    const select = document.querySelector('#modelsTableBody .model-role-select');
+    expect(select.disabled).toBe(false);
+    expect(select.value).toBe('creator');
+  });
+
+  test('says nothing when a tool-less model is added without a role', async () => {
+    loadModelsTabWithFakeMain([]);
+    await flush();
+
+    await addModel('Gemma 3 27B', 'google.gemma-3-27b-it', '');
+
+    expect(mockElectronAPI.showToast).not.toHaveBeenCalledWith(expect.anything(), 'warning');
   });
 });

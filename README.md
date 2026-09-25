@@ -277,7 +277,9 @@ Settings → Models lets you manage Bedrock models, define the order they appear
 | Worker | Research, planning, editing — balanced | User defined |
 | Formatter | Document generation — cheapest capable | User defined |
 
-All models are invoked directly on Amazon Bedrock via the Converse API, authenticated with your Bedrock API key as a bearer token. Add or remove models and reassign roles from the UI, using Bedrock model IDs or inference-profile IDs (e.g. `global.anthropic.claude-opus-5`, `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `us.openai.gpt-6-sol`) exactly as they appear in the Bedrock model catalog for your region.
+All models are invoked directly on Amazon Bedrock via the Converse API, authenticated with your Bedrock API key as a bearer token. Add or remove models and reassign roles from the UI, using Bedrock model IDs or inference-profile IDs (e.g. `global.anthropic.claude-opus-5-5`, `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `us.openai.gpt-6-sol`) exactly as they appear in the Bedrock model catalog for your region.
+
+Some models answer on Bedrock but make no real tool calls — today the Gemma 3 family, which answers a tool request with plain text. Hive recognizes these by model ID (`src/main/models/modelCapabilities.js`) and offers them in Chat and StoryBrand only: they're left out of the Work tab's dropdown and can't hold a Swarm role.
 
 > **Note (migration from Mantle):** Hive previously invoked models through Bedrock's Mantle endpoint. As of this version every model call goes to standard Bedrock instead — the newest model generations (Claude Opus 5.x / Sonnet 5, GPT-6, Kimi K3, Nova 2) ship on standard Bedrock only. **You'll need to reconfigure your models with Bedrock model or inference-profile IDs.** Your API key does not change: it was a Bedrock API key all along, and works on both endpoints. Models that existed only on Mantle (e.g. the Gemma 4 family, `qwen3-coder-next`) are unavailable until they appear in the Bedrock catalog.
 

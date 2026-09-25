@@ -5,6 +5,8 @@ const SwarmOrchestrator = require('../models/swarmOrchestrator');
 const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const { getTemplate, getAllTemplates, resolveModels } = require('../models/pipelineTemplates');
 const { notify } = require('../notify');
+const { supportsTools } = require('../models/modelCapabilities');
+const log = require('electron-log/main');
 
 function swarmNotify(ctx, title, body) {
   notify({ title, body, window: ctx.mainWindow });
@@ -110,7 +112,18 @@ function register(ipcMain, ctx) {
     const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
     const models = (settings.bedrockModels || []);
     const overrides = {};
-    for (const m of models) { if (m.role) overrides[m.role] = m.inferenceProfileId; }
+    for (const m of models) {
+      if (!m.role) continue;
+      // Swarm agents run tool loops. A tool-less model in a role would make
+      // that step's tools silently never fire, so the role keeps its built-in
+      // default instead. Settings → Models disables these roles in the UI;
+      // this covers a settings.json saved before that, or edited by hand.
+      if (!supportsTools(m.inferenceProfileId)) {
+        log.warn(`[swarm] Ignoring role '${m.role}' on '${m.inferenceProfileId}': model makes no tool calls; using the default for that role`);
+        continue;
+      }
+      overrides[m.role] = m.inferenceProfileId;
+    }
     resolveModels(overrides);
 
     const orch = createSwarmOrchestrator(ctx);

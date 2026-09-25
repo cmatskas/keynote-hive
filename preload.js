@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const Toastify = require('toastify-js');
 const { marked } = require('marked');
 
@@ -260,5 +260,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     invokeAsync: async (channel, data) => {
         if (!ALLOWED_INVOKE_CHANNELS.has(channel)) throw new Error(`Blocked IPC channel: ${channel}`);
         return await ipcRenderer.invoke(channel, data);
+    },
+    /**
+     * Filesystem path of a DOM File, or '' when it has none (e.g. a File
+     * constructed in memory). Electron ≥32 removed `File.path`; this is the
+     * sanctioned replacement, and it lets large media be streamed from disk
+     * by the main process instead of shipped through IPC as bytes.
+     */
+    getPathForFile: (file) => {
+        try {
+            return webUtils.getPathForFile(file) || '';
+        } catch {
+            return '';
+        }
     }
 });

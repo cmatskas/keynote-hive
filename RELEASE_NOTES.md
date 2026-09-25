@@ -1,5 +1,24 @@
 # Release Notes
 
+## v4.4.2
+
+### Changed
+- **Claude Opus 5.5 is back as the creator default.** It was pulled from the v4.4.1 defaults during a Bedrock serving incident in us-east-1; that has cleared and the model answers again on `global.anthropic.claude-opus-5-5`. Opus 5 leaves the default list.
+- **Google Gemma 3 27B added to the default models** (`google.gemma-3-27b-it`), the largest Gemma on standard Bedrock (Gemma 4 is still Mantle-only). It is offered in **Chat and StoryBrand only**: verified live, it answers normally but does not make real tool calls on Converse (asked to use a tool, it writes Python as plain text). An agent running on it would have tools that silently never fire, so Hive keeps it out of the tool loops:
+  - The Work tab's model dropdown leaves it out, and the main process independently refuses an `invoke-agent` call naming a tool-less model — so the protection doesn't rest on the dropdown alone.
+  - Its Swarm role picker in Settings → Models is disabled, a role saved on it is cleared (with a toast explaining why when you add one with a role), and a pipeline ignores any role still assigned to it in an older `settings.json`, using that role's default instead.
+  - This is decided from the model ID (`src/main/models/modelCapabilities.js`), so it applies equally to a Gemma 3 model added by hand. The live integration gate now probes this too, in both directions: a control model must make a real tool call, and Gemma must not — so if a Gemma update gains tool support, the gate says to remove it from the list rather than leaving a capable model locked out.
+- **Three more default models: Kimi K3, GPT-6 Luna, and Nova 2 Lite.** All three were named in the v4.4.0 migration notes and have since landed on standard Bedrock. Each verified live on Converse: they answer, and they make real `toolUse` calls, so all three are available everywhere including the Work tab and Swarm roles. (Kimi K3 streams reasoning tokens before visible text, like Grok, and gets the same generous output budget in the integration gate.) Still absent from the Bedrock catalog and therefore still out: the Gemma 4 family. `qwen3-coder-next` has landed but was deliberately not added — it's a coding specialist, off-purpose for Hive.
+- **Existing installs:** the default model list only applies to a fresh install. If you have ever saved Settings → Models, add these by hand there: `Claude Opus 5.5` / `global.anthropic.claude-opus-5-5`, `Gemma 3 27B` / `google.gemma-3-27b-it`, `Kimi K3` / `global.moonshotai.kimi-k3`, `GPT-6 Luna` / `global.openai.gpt-6-luna`, and `Nova 2 Lite` / `global.amazon.nova-2-lite-v1:0`.
+
+### Fixes
+- **Transcribing media over ~125MB failed immediately with "Invalid array length".** The Transcribe page converted the file into a plain JavaScript array — one number per byte — to send it over IPC, and V8 caps packed arrays below the element count a large video produces, so a 233MB MP4 threw `RangeError: Invalid array length` before a single byte was uploaded.
+
+### Improvements
+- **Transcription media now streams from disk instead of being held in memory.** The renderer sends the file's *path* (via Electron's `webUtils.getPathForFile`) and the main process streams it to S3 with `fs.createReadStream`, so peak memory during upload is the multipart machinery's part buffers (~20MB) regardless of file size. Previously the whole file was materialized twice — renderer and main process — plus an IPC copy in between; a 2GB video now costs megabytes, not gigabytes. Two details worth noting:
+  - The on-disk size (`fs.stat`, not the renderer's report) drives the multipart tuning, and a file that was moved or deleted between selection and upload fails with a clear message before anything reaches AWS.
+  - A `File` with no backing path (rare — e.g. constructed in memory) falls back to shipping its bytes as an `ArrayBuffer`, which Electron's structured clone carries natively. The plain-array conversion that caused the crash is gone on both paths.
+
 ## v4.4.0
 
 ### Changed — model calls now go to standard Amazon Bedrock

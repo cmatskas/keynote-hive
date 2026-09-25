@@ -1284,12 +1284,19 @@ async function loadBedrockModels() {
         // Get models from config instead of API call
         const bedrockModels = await window.electronAPI.invoke('get-bedrock-models');
 
-        // Populate both Analyze and Work model selects
-        const selects = [document.getElementById('modelSelect'), document.getElementById('workModelSelect')];
-        for (const modelSelect of selects) {
+        // Populate both Analyze and Work model selects. The Work tab is an
+        // agent loop, so it skips models flagged supportsTools: false (e.g.
+        // Gemma 3 on Converse) — their tool calls come back as plain text and
+        // the agent's tools would silently never run. Chat sends no tools, so
+        // it lists every model.
+        const selects = [
+            { el: document.getElementById('modelSelect'), needsTools: false },
+            { el: document.getElementById('workModelSelect'), needsTools: true },
+        ];
+        for (const { el: modelSelect, needsTools } of selects) {
             if (!modelSelect) continue;
             modelSelect.innerHTML = '';
-            bedrockModels.forEach(model => {
+            bedrockModels.filter(model => !needsTools || model.supportsTools !== false).forEach(model => {
                 const option = document.createElement('option');
                 option.value = model.inferenceProfileId || model.inferenceArn;
                 option.text = model.id;
@@ -1300,6 +1307,10 @@ async function loadBedrockModels() {
         console.error('Error loading Bedrock models:', error);
     }
 }
+// Exposed at load time (not only in DOMContentLoaded below) so Settings →
+// Models can refresh the dropdowns, and tests can call it without booting
+// the whole page.
+window.loadBedrockModels = loadBedrockModels;
 
 async function loadPromptTemplates() {
     try {
@@ -1337,7 +1348,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     loadPromptTemplates();
     loadBedrockModels();
-    window.loadBedrockModels = loadBedrockModels;
     setupFileUpload();
     setupCustomPromptsManagement();
 
@@ -2011,10 +2021,14 @@ async function uploadFile(file) {
     try {
         renderTranscriptionProgress('Preparing transcription...', deriveTranscriptName(file.name));
 
-        // Convert File to ArrayBuffer to make it cloneable for IPC
-        const arrayBuffer = await file.arrayBuffer();
+        // Prefer sending the file's path: the main process streams it from
+        // disk in ~5MB parts, so a 2GB video costs megabytes of memory, not
+        // gigabytes. `getPathForFile` returns '' for a File with no backing
+        // file on disk — then (and only then) fall back to shipping the bytes
+        // as an ArrayBuffer through IPC as before.
+        const filePath = window.electronAPI.getPathForFile?.(file) || '';
         const fileData = {
-            buffer: Array.from(new Uint8Array(arrayBuffer)), // Convert to regular array
+            ...(filePath ? { path: filePath } : { buffer: await file.arrayBuffer() }),
             name: file.name,
             type: file.type,
             size: file.size

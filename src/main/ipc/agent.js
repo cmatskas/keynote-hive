@@ -1,6 +1,7 @@
 const MemoryManager = require('../models/memoryManager');
 const AgentToolExecutor = require('../models/agentToolExecutor');
 const { isNetworkError, describeAwsError } = require('../awsErrors');
+const { supportsTools } = require('../models/modelCapabilities');
 
 function register(ipcMain, ctx) {
   ipcMain.handle('cancel-agent', (event, { sessionId }) => {
@@ -16,6 +17,18 @@ function register(ipcMain, ctx) {
     // renderer's OfflineGuard should have prevented this, but a control that
     // slips past it should still produce a clear message in seconds.
     ctx.assertOnline('Sending a message');
+
+    // Defense in depth, mirroring swarm-run-pipeline's role check: the Work
+    // dropdown already leaves tool-less models out, but that protection is a
+    // DOM invariant. If a stale renderer, a remembered selection added later,
+    // or a second caller ever hands one in, the agent's tools would silently
+    // never fire — the model answers a tool request with plain text. Refuse
+    // loudly instead.
+    if (!supportsTools(model)) {
+      throw new Error(
+        `${model} makes no tool calls, so it can't run the Work tab's agent. Use it in Chat or StoryBrand instead.`
+      );
+    }
 
     const abortController = new AbortController();
     ctx.agentAbortControllers.set(sessionId, abortController);

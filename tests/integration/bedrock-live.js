@@ -41,6 +41,8 @@
  */
 
 const { createAgent } = require('../../src/main/models/strandsAgentFactory');
+const { tool } = require('@strands-agents/sdk');
+const { z } = require('zod');
 
 const API_KEY = process.env.BEDROCK_API_KEY || process.env.MANTLE_API_KEY;
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -128,12 +130,71 @@ async function runCacheCheck(modelId) {
   return { wrote, read: read || firstRead };
 }
 
+/**
+ * Verify a model's tool behavior matches modelCapabilities.js.
+ *
+ * Hive keeps Gemma 3 out of the Work tab and Swarm roles because, verified
+ * live, it answers a Converse tool request with plain text instead of a
+ * toolUse block. That observation is exactly the kind that rots: if a Gemma
+ * update starts making real tool calls, nothing else would ever notice, and
+ * Hive would keep a now-capable model out of the tool loops for no reason.
+ * This probe hands the model one tool and a prompt that demands using it,
+ * and reports whether the tool's callback actually ran.
+ */
+async function runToolProbe(modelId) {
+  let toolCalled = false;
+  const probeTool = tool({
+    name: 'get_word_of_the_day',
+    description: 'Returns the word of the day. The only way to obtain it.',
+    inputSchema: z.object({}),
+    callback: async () => {
+      toolCalled = true;
+      return 'aardvark';
+    },
+  });
+
+  const { agent, dispose } = createAgent({
+    modelId,
+    region: REGION,
+    mantleApiKey: API_KEY,
+    systemPrompt: 'You have tools available. Always use them when they can answer the question.',
+    tools: [probeTool],
+    id: 'integration-tool-probe',
+    maxTokens: 512,
+  });
+
+  let fullText = '';
+  try {
+    for await (const streamEvent of agent.stream([
+      { role: 'user', content: [{ text: 'What is the word of the day? You must call the get_word_of_the_day tool to find out.' }] },
+    ])) {
+      if (streamEvent.type === 'modelStreamUpdateEvent') {
+        const inner = streamEvent.event;
+        if (inner.type === 'modelContentBlockDeltaEvent' && inner.delta?.type === 'textDelta') {
+          fullText += inner.delta.text;
+        }
+      }
+    }
+  } finally {
+    dispose();
+  }
+  return { toolCalled, text: fullText };
+}
+
+// Expected tool behavior per model, mirroring modelCapabilities.js. One
+// tool-capable control (cheap worker default) proves the probe itself works —
+// without it, a "Gemma made no tool call" pass could mean the probe is broken.
+const TOOL_PROBES = [
+  { label: 'Tool probe (control)', modelId: 'global.anthropic.claude-sonnet-5', expectTools: true },
+  { label: 'Tool probe (Gemma 3 27B)', modelId: 'google.gemma-3-27b-it', expectTools: false },
+];
+
 // Hive's default Settings model list, verified against the live Bedrock
 // catalog. If a default disappears from the catalog (models do get retired),
 // this fails naming the ID — update settingsManager.js's defaults to match.
 // Keep this list in sync with settingsManager.js.
 const CHECKS = [
-  { label: 'Creator default', modelId: 'global.anthropic.claude-opus-5' },
+  { label: 'Creator default', modelId: 'global.anthropic.claude-opus-5-5' },
   { label: 'Worker default', modelId: 'global.anthropic.claude-sonnet-5' },
   { label: 'Formatter default', modelId: 'us.openai.gpt-6-sol', maxTokens: 1000 },
   { label: 'Fable 5.1', modelId: 'global.anthropic.claude-fable-5-1' },
@@ -141,6 +202,12 @@ const CHECKS = [
   // Grok needed a much larger reasoning budget than other models on Mantle
   // (500+ before visible output); keep the generous budget on Bedrock too.
   { label: 'Grok 4.6', modelId: 'us.xai.grok-4.6', maxTokens: 1000 },
+  { label: 'Gemma 3 27B', modelId: 'google.gemma-3-27b-it' },
+  // Kimi K3 also streams reasoning tokens before any visible text (verified
+  // on Converse at adoption), so it gets the same generous budget as Grok.
+  { label: 'Kimi K3', modelId: 'global.moonshotai.kimi-k3', maxTokens: 1000 },
+  { label: 'GPT-6 Luna', modelId: 'global.openai.gpt-6-luna', maxTokens: 1000 },
+  { label: 'Nova 2 Lite', modelId: 'global.amazon.nova-2-lite-v1:0' },
 ];
 
 async function main() {
@@ -174,7 +241,27 @@ async function main() {
   }
 
   console.log('');
-  const totalChecks = CHECKS.length + 1;
+  for (const { label, modelId, expectTools } of TOOL_PROBES) {
+    process.stdout.write(`${label} [${modelId}] ... `);
+    try {
+      const { toolCalled } = await runToolProbe(modelId);
+      if (toolCalled === expectTools) {
+        console.log(`OK (${toolCalled ? 'made a real tool call' : 'no tool call, as expected'})`);
+      } else if (expectTools) {
+        console.log('FAIL (control model made no tool call — the probe itself may be broken, so the Gemma result below/above proves nothing)');
+        failures++;
+      } else {
+        console.log('FAIL (made a REAL tool call — remove it from TOOLLESS_MODEL_PATTERNS in modelCapabilities.js and let it into the Work tab and Swarm roles)');
+        failures++;
+      }
+    } catch (err) {
+      console.log(`FAIL (${err.message})`);
+      failures++;
+    }
+  }
+
+  console.log('');
+  const totalChecks = CHECKS.length + 1 + TOOL_PROBES.length;
   if (failures > 0) {
     console.error(`${failures}/${totalChecks} checks failed — Bedrock catalog, auth, or caching may have changed. See strandsAgentFactory.js.`);
     process.exit(1);

@@ -2,6 +2,7 @@ const { app } = require('electron');
 const fs = require('fs').promises;
 const path = require('path');
 const log = require('electron-log/main');
+const { withCapabilities, stripCapabilities } = require('./modelCapabilities');
 
 class SettingsManager {
   constructor() {
@@ -42,12 +43,26 @@ class SettingsManager {
       // with no Strands provider that can reach Mantle at all (Nova,
       // DeepSeek, Mistral, Llama, etc.) are no longer offered by default.
       bedrockModels: [
-        { id: 'Claude Opus 5', inferenceProfileId: 'global.anthropic.claude-opus-5', role: 'creator' },
+        { id: 'Claude Opus 5.5', inferenceProfileId: 'global.anthropic.claude-opus-5-5', role: 'creator' },
         { id: 'Claude Sonnet 5', inferenceProfileId: 'global.anthropic.claude-sonnet-5', role: 'worker' },
         { id: 'GPT-6 Sol', inferenceProfileId: 'us.openai.gpt-6-sol', role: 'formatter' },
         { id: 'Claude Fable 5.1', inferenceProfileId: 'global.anthropic.claude-fable-5-1', role: '' },
         { id: 'GPT-6 Astra', inferenceProfileId: 'us.openai.gpt-6-astra', role: '' },
         { id: 'Grok 4.6', inferenceProfileId: 'us.xai.grok-4.6', role: '' },
+        // Landed on Bedrock after the v4.4.0 migration (each was named there
+        // as awaited). All three verified live on Converse: they answer, and
+        // they make real toolUse calls — none needs the Gemma treatment.
+        // Kimi K3 streams reasoning tokens before visible text, like Grok.
+        { id: 'Kimi K3', inferenceProfileId: 'global.moonshotai.kimi-k3', role: '' },
+        { id: 'GPT-6 Luna', inferenceProfileId: 'global.openai.gpt-6-luna', role: '' },
+        { id: 'Nova 2 Lite', inferenceProfileId: 'global.amazon.nova-2-lite-v1:0', role: '' },
+        // Largest Gemma on standard Bedrock (Gemma 4 is still Mantle-only).
+        // Verified live on Converse: answers text, accepts system prompts and
+        // the 120k maxTokens default, but does NOT emit Converse toolUse
+        // blocks (asked to call a tool, it writes Python as plain text).
+        // modelCapabilities.js marks it tool-less by ID, which keeps it out
+        // of the Work dropdown and Swarm roles; Chat and StoryBrand get it.
+        { id: 'Gemma 3 27B', inferenceProfileId: 'google.gemma-3-27b-it', role: '' },
       ],
     };
   }
@@ -77,18 +92,25 @@ class SettingsManager {
     try {
       const hasSettings = await this.hasSettings();
       if (!hasSettings) {
-        return this.defaultSettings;
+        return this.withModelCapabilities(this.defaultSettings);
       }
 
       const settingsData = await fs.readFile(this.settingsFile, 'utf8');
       const settings = JSON.parse(settingsData);
       
       // Merge with defaults to ensure all required fields exist
-      return { ...this.defaultSettings, ...settings };
+      return this.withModelCapabilities({ ...this.defaultSettings, ...settings });
     } catch (error) {
       log.error('Error loading settings:', error.message);
-      return this.defaultSettings;
+      return this.withModelCapabilities(this.defaultSettings);
     }
+  }
+
+  // Every loaded model carries supportsTools, derived from its ID (see
+  // modelCapabilities.js) — including ones typed in by hand, which have no
+  // way to set it themselves.
+  withModelCapabilities(settings) {
+    return { ...settings, bedrockModels: withCapabilities(settings.bedrockModels) };
   }
 
   async saveSettings(settings) {
@@ -167,9 +189,10 @@ class SettingsManager {
       validated.mantleApiKey = settings.mantleApiKey.trim();
     }
 
-    // Preserve bedrockModels array
+    // Preserve bedrockModels array, minus derived capability fields
+    // (recomputed on every load, never persisted).
     if (Array.isArray(settings.bedrockModels)) {
-      validated.bedrockModels = settings.bedrockModels;
+      validated.bedrockModels = stripCapabilities(settings.bedrockModels);
     }
     
     return validated;

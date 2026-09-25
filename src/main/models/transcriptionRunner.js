@@ -28,6 +28,7 @@
  * this.
  */
 
+const fs = require('fs');
 const { GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
 const {
@@ -200,11 +201,27 @@ function getMediaFormat(uri) {
   return 'mp4';
 }
 
+/**
+ * Upload the media to S3, streaming from disk when the file arrived as a path.
+ *
+ * The path form is the normal case since v4.4.2: the renderer sends
+ * `{ path }` and the media never crosses IPC as bytes, so peak memory is the
+ * multipart machinery's part buffers (queueSize x partSize ≈ 20MB) instead of
+ * the whole file. Before this, a 233MB video was held in full in *two*
+ * processes at once — and before v4.4.2 it didn't get that far, failing in the
+ * renderer with "Invalid array length" (see uploadFile in the renderer).
+ *
+ * The buffer form is kept as the fallback for a File with no backing path.
+ * `Upload` accepts streams and buffers alike and handles part-level retries
+ * itself (each part is buffered before sending), so cancellation via
+ * `upload.abort()` behaves identically for both.
+ */
 async function uploadMedia(ctx, file, bucket, key, onStart = null) {
+  const body = file.path ? fs.createReadStream(file.path) : file.buffer;
   const upload = new Upload({
     client: ctx.awsClients.s3,
-    params: { Bucket: bucket, Key: key, Body: file.buffer, ContentType: file.mimetype },
-    ...(file.buffer.length >= 20 * 1024 * 1024 ? { queueSize: 4, partSize: 5 * 1024 * 1024 } : {}),
+    params: { Bucket: bucket, Key: key, Body: body, ContentType: file.mimetype },
+    ...(file.size >= 20 * 1024 * 1024 ? { queueSize: 4, partSize: 5 * 1024 * 1024 } : {}),
   });
   // Hand the Upload back so an in-flight upload can be aborted (Cancel button)
   // instead of having to run to completion first.
@@ -556,8 +573,12 @@ function createJob({ sourceFile, displayName = null }) {
  * the result survives a renderer that has gone away.
  */
 async function runTranscription(ctx, job, { file }) {
+  // Path or bytes, never both: `path` means "stream it from disk", the
+  // renderer's fallback for a File with no backing path ships an ArrayBuffer.
   const fileObj = {
-    buffer: Buffer.from(file.buffer),
+    path: file.path || null,
+    buffer: file.path ? null : Buffer.from(file.buffer),
+    size: 0,
     originalname: file.name,
     mimetype: file.type,
   };
@@ -567,6 +588,20 @@ async function runTranscription(ctx, job, { file }) {
     // that can't start.
     const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
     assertTranscriptionConfigured(settings);
+
+    // For a path, stat before touching S3: a vanished or unreadable file
+    // fails cleanly here, and the reported size is the filesystem's, not the
+    // renderer's. A stream that dies mid-upload would fail anyway, but with a
+    // far less accountable error.
+    if (fileObj.path) {
+      try {
+        fileObj.size = (await fs.promises.stat(fileObj.path)).size;
+      } catch (statErr) {
+        throw new Error(`Cannot read the media file "${fileObj.originalname}" (${statErr.code || 'error'}). It may have been moved or deleted since you selected it.`);
+      }
+    } else {
+      fileObj.size = fileObj.buffer.length;
+    }
 
     emitProgress(ctx, job, { status: 'UPLOADING', message: 'Uploading file to S3...' });
 

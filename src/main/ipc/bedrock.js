@@ -3,6 +3,7 @@ const CodeInterpreterManager = require('../models/codeInterpreterManager');
 const transcriptionRunner = require('../models/transcriptionRunner');
 const transcriptionReconciler = require('../models/transcriptionReconciler');
 const { createAgent, isAnthropicModel } = require('../models/strandsAgentFactory');
+const { withCapabilities } = require('../models/modelCapabilities');
 const { buildFileContentBlocks, collectStreamText } = require('../utils');
 const logger = require('electron-log/main');
 
@@ -132,7 +133,10 @@ function register(ipcMain, ctx) {
     // no separate fallback is needed here. This used to fall back to config.js's
     // bedrockModels, which was pre-Mantle (Nova/DeepSeek, inference-profile IDs) and
     // has since been removed as dead, stale test-only infrastructure.
-    return settings.bedrockModels;
+    // ctx.currentSettings comes from save-settings and may hold a model added
+    // by hand since launch, so derive capabilities here too rather than trust
+    // that every entry went through loadSettings().
+    return withCapabilities(settings.bedrockModels);
   });
 
   // ── Transcription ─────────────────────────────────────────────────────────

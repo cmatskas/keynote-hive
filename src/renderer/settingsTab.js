@@ -912,6 +912,18 @@
       if (role) models.forEach(m => { if (m.role === role) m.role = ''; });
       models.push({ id: name, inferenceProfileId: profileId, role });
       await saveModels(models);
+
+      // Whether the new model can hold a Swarm role is decided in the main
+      // process from its ID (modelCapabilities.js) during the save: a role on
+      // a tool-less model is cleared, and saveModels' reload shows it as None.
+      // Correct, but baffling without an explanation — so give one.
+      const saved = models.find(m => m.inferenceProfileId === profileId);
+      if (role && saved?.supportsTools === false) {
+        window.electronAPI.showToast(
+          `${name} makes no tool calls, so it can't hold a Swarm role. It's available in Chat and StoryBrand.`,
+          'warning'
+        );
+      }
     };
   }
 
@@ -923,7 +935,7 @@
         <td>${esc(m.id)}</td>
         <td><code class="small">${esc(m.inferenceProfileId)}</code></td>
         <td>
-          <select class="form-select form-select-sm model-role-select" data-index="${i}">
+          <select class="form-select form-select-sm model-role-select" data-index="${i}"${m.supportsTools === false ? ' disabled title="This model makes no tool calls, so it can\'t run Swarm agents. Use it in Chat or StoryBrand."' : ''}>
             <option value=""${m.role ? '' : ' selected'}>None</option>
             <option value="creator"${m.role === 'creator' ? ' selected' : ''}>Creator</option>
             <option value="worker"${m.role === 'worker' ? ' selected' : ''}>Worker</option>
@@ -975,6 +987,11 @@
 
   async function saveModels(models) {
     await window.electronAPI.invoke('save-settings', { bedrockModels: models });
+    // Reload so derived fields (supportsTools, worked out from the model ID in
+    // the main process) are filled in for a model that was just added by hand.
+    // Updated in place: the add/role/reorder handlers hold this same array.
+    const fresh = (await window.electronAPI.invoke('load-settings'))?.bedrockModels;
+    if (Array.isArray(fresh)) models.splice(0, models.length, ...fresh);
     renderModelsTable(models);
     document.getElementById('newModelName').value = '';
     document.getElementById('newModelId').value = '';
