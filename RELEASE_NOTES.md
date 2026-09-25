@@ -1,5 +1,21 @@
 # Release Notes
 
+## v4.5.0
+
+### New — pick models from your Bedrock catalog
+- **Settings → Models now has a catalog picker instead of a type-the-ID-by-hand form.** It lists every text model available in your AWS account, grouped by provider (Claude, OpenAI, Amazon, xAI, Moonshot, Google, …), with a one-line description of what each is for and a rough cost pill (~1×, ~2×, ~8.3×, ~0.1× relative to Claude Sonnet 5). Each row has an **Add** or **Remove** button reflecting your current configuration; configured rows are outlined.
+  - **The picker chooses the right ID for you.** Hive invokes models by inference-profile ID where one exists, so each row adds the profile your account actually has (`global.` preferred, then `us.`), falling back to the bare model ID for on-demand-only models like Gemma. No more guessing whether it's `us.` or `global.`.
+  - **Default view is the useful short list** — Hive's curated models plus anything you've configured. **Show all models** expands to the whole account catalog; uncurated entries show their ID in place of a description and no cost pill.
+  - **Remove is guarded.** A model holding a Swarm role can't be removed from the picker until the role is reassigned in the table above, so a pipeline can never lose its creator/worker/formatter by accident. Tool-less models carry a "Chat & StoryBrand only" badge on their row.
+  - **Reset to defaults** restores Hive's shipped model list (after confirming). **Refresh** re-reads the catalog from Bedrock. **Add a model by ID instead…** keeps the old free-text form for cross-account or application inference profiles the list call can't see.
+  - **Works offline, degrades honestly.** Without connectivity or the list permissions, the picker shows Hive's known models with a note explaining why the list is short, rather than an empty panel or an error.
+  - The Swarm role assignment and drag-to-reorder table is unchanged and sits above the picker — roles are a Hive concept and don't belong on a catalog row.
+- **Permission note:** the live catalog needs `bedrock:ListFoundationModels` (Setup Check already verified this) and `bedrock:ListInferenceProfiles` (new). Without the latter the picker still works from the curated list.
+- **Cost pills are curated, not live.** The Bedrock API has no pricing, so the index lives in `src/main/models/modelCatalogMeta.js`. The xAI, Google, Moonshot, and Amazon figures come from the AWS Price List API. The Anthropic and OpenAI multipliers could not be pulled from that API and are provisional, pending a check against Bedrock's pricing page. Treat all of them as the "roughly" they're labelled.
+
+### Tests
+- 44 new tests: the catalog merge (filtering non-text models, collapsing bare/versioned duplicates, profile preference, cross-prefix configured matching, retired-model rows, grouping/sorting), the IPC handler (per-session cache, refresh, pagination, and every fallback path), and the picker UI (Add/Remove round-trips, role-guarded Remove, Show all, offline note, Reset, custom-ID toggle).
+
 ## v4.4.3
 
 ### Security

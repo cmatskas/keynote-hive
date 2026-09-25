@@ -64,6 +64,9 @@ class AppContext {
       }),
       agentCoreConfig: clientConfig,
     };
+    // The Settings → Models picker caches the Bedrock catalog per session;
+    // new credentials may mean a different account or region, so start over.
+    this.bedrockCatalogCache = null;
 
     // Initialize web search (async, non-blocking). Reads webSearchGatewayRoleArn
     // from settings — required only for first-time Gateway creation in this AWS

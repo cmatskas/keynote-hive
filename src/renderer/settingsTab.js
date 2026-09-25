@@ -897,6 +897,10 @@
 
   // ── Models Tab ──────────────────────────────────────────
 
+  // Catalog picker state, shared across re-renders within a session.
+  let pickerCatalog = null;   // last list-bedrock-catalog response
+  let pickerShowAll = false;  // "Show all models" toggle
+
   async function loadModels() {
     const settings = await window.electronAPI.invoke('load-settings');
     const models = settings.bedrockModels || [];
@@ -925,6 +929,120 @@
         );
       }
     };
+
+    // ── Catalog picker wiring (assigned, not addEventListener: loadModels
+    //    runs on every visit to the Models sub-tab) ─────────────────────────
+    document.getElementById('modelPickerRefresh').onclick = (e) => {
+      e.preventDefault();
+      loadPickerCatalog(models, { refresh: true });
+    };
+    document.getElementById('modelPickerShowAll').onclick = (e) => {
+      e.preventDefault();
+      pickerShowAll = !pickerShowAll;
+      renderPicker(models);
+    };
+    document.getElementById('modelCustomToggle').onclick = (e) => {
+      e.preventDefault();
+      document.getElementById('modelCustomForm').classList.toggle('d-none');
+    };
+    document.getElementById('modelsResetBtn').onclick = async () => {
+      if (!window.confirm('Replace your model list with Hive\'s defaults? Swarm role assignments will be reset too.')) return;
+      const defaults = await window.electronAPI.invoke('get-default-settings');
+      models.splice(0, models.length, ...(defaults?.bedrockModels || []));
+      await saveModels(models);
+    };
+
+    await loadPickerCatalog(models);
+  }
+
+  /** Fetch the catalog (cached in the main process) and render the picker. */
+  async function loadPickerCatalog(models, { refresh = false } = {}) {
+    const list = document.getElementById('modelPickerList');
+    if (!pickerCatalog || refresh) {
+      list.innerHTML = '<div class="text-muted small p-3">Loading catalog…</div>';
+      try {
+        pickerCatalog = await window.electronAPI.invoke('list-bedrock-catalog', { refresh });
+      } catch (err) {
+        list.innerHTML = `<div class="model-picker-empty">Could not load the model catalog: ${esc(err.message || 'unknown error')}</div>`;
+        return;
+      }
+    }
+    renderPicker(models);
+  }
+
+  /**
+   * Render the grouped catalog. Default view: models Hive has curated metadata
+   * for, plus anything already configured — mirroring the reference UX where
+   * the short list is the useful one. "Show all models" opens the whole
+   * account catalog.
+   */
+  function renderPicker(models) {
+    const list = document.getElementById('modelPickerList');
+    const note = document.getElementById('modelPickerNote');
+    const showAllLink = document.getElementById('modelPickerShowAll');
+    if (!pickerCatalog) return;
+
+    // Fallback note: say why the list is curated-only, once, above the groups.
+    if (pickerCatalog.source === 'fallback') {
+      note.textContent = `Showing Hive's known models only — ${pickerCatalog.reason || 'the live catalog is unavailable'}.`;
+      note.classList.remove('d-none');
+    } else {
+      note.classList.add('d-none');
+    }
+
+    const groups = (pickerCatalog.groups || [])
+      .map(g => ({
+        ...g,
+        models: g.models.filter(m => pickerShowAll || m.known || m.configured),
+      }))
+      .filter(g => g.models.length > 0);
+
+    showAllLink.textContent = pickerShowAll ? 'Show fewer models' : 'Show all models';
+
+    if (!groups.length) {
+      list.innerHTML = '<div class="model-picker-empty">No models to show.</div>';
+      return;
+    }
+
+    list.innerHTML = groups.map(g => `
+      <div class="model-picker-group-label">${esc(g.label)}</div>
+      ${g.models.map(m => `
+        <div class="model-picker-row${m.configured ? ' is-configured' : ''}" data-profile-id="${esc(m.inferenceProfileId)}">
+          <div class="model-picker-row-main">
+            <div class="model-picker-row-name">
+              ${esc(m.name)}
+              ${m.supportsTools === false ? '<span class="badge text-bg-secondary" title="Makes no tool calls, so it can\'t run Work agents or hold a Swarm role">Chat &amp; StoryBrand only</span>' : ''}
+            </div>
+            <div class="model-picker-row-desc">${m.description ? esc(m.description) : `<code>${esc(m.inferenceProfileId)}</code>`}</div>
+          </div>
+          ${m.costLabel ? `<span class="model-picker-cost" title="Rough price relative to Claude Sonnet 5 (input + output per token)">${esc(m.costLabel)}</span>` : ''}
+          ${m.configured
+            ? `<button class="btn btn-sm btn-outline-danger model-picker-remove" data-configured-id="${esc(m.configuredId)}"
+                 ${m.configuredRole ? `disabled title="This model is the Swarm ${esc(m.configuredRole)} — assign that role to another model first"` : ''}>Remove</button>`
+            : `<button class="btn btn-sm btn-outline-primary model-picker-add"
+                 data-profile-id="${esc(m.inferenceProfileId)}" data-name="${esc(m.name)}">Add</button>`}
+        </div>`).join('')}
+    `).join('');
+
+    list.querySelectorAll('.model-picker-add').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        models.push({ id: btn.dataset.name, inferenceProfileId: btn.dataset.profileId, role: '' });
+        await saveModels(models);
+      });
+    });
+
+    list.querySelectorAll('.model-picker-remove').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const id = btn.dataset.configuredId;
+        const idx = models.findIndex(m => (m.inferenceProfileId || m.inferenceArn) === id);
+        if (idx !== -1) {
+          models.splice(idx, 1);
+          await saveModels(models);
+        }
+      });
+    });
   }
 
   function renderModelsTable(models) {
@@ -993,6 +1111,14 @@
     const fresh = (await window.electronAPI.invoke('load-settings'))?.bedrockModels;
     if (Array.isArray(fresh)) models.splice(0, models.length, ...fresh);
     renderModelsTable(models);
+    // Re-merge the picker's configured/role flags against the new list. The
+    // AWS side is cached in the main process, so this is a cheap local rebuild.
+    if (document.getElementById('modelPickerList')) {
+      try {
+        pickerCatalog = await window.electronAPI.invoke('list-bedrock-catalog', {});
+        renderPicker(models);
+      } catch { /* picker keeps its last render; the table above is authoritative */ }
+    }
     document.getElementById('newModelName').value = '';
     document.getElementById('newModelId').value = '';
     document.getElementById('newModelRole').value = '';

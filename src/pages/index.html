@@ -705,7 +705,31 @@
                         </thead>
                         <tbody id="modelsTableBody"></tbody>
                     </table>
-                    <div class="border rounded p-3 mt-2">
+                    <!-- Catalog picker: every text model in the account's Bedrock catalog,
+                         grouped by provider, with Add/Remove per row. Fed by the
+                         list-bedrock-catalog IPC; degrades to Hive's curated list offline. -->
+                    <div class="model-picker mt-3" id="modelPicker">
+                        <div class="model-picker-header">
+                            <div>
+                                <div class="fw-semibold">Add from the Bedrock catalog</div>
+                                <small class="text-muted">Models available in your account. Added models appear in Chat, Work, and StoryBrand.</small>
+                            </div>
+                            <a href="#" class="small" id="modelPickerRefresh" title="Re-read the catalog from Bedrock">Refresh</a>
+                        </div>
+                        <div class="model-picker-note d-none" id="modelPickerNote"></div>
+                        <div class="model-picker-list" id="modelPickerList">
+                            <div class="text-muted small p-3">Loading catalog…</div>
+                        </div>
+                        <div class="model-picker-footer">
+                            <a href="#" class="small" id="modelPickerShowAll">Show all models</a>
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mt-2">
+                        <a href="#" class="small text-muted" id="modelCustomToggle">Add a model by ID instead…</a>
+                        <button class="btn btn-link btn-sm text-muted p-0" id="modelsResetBtn">Reset to defaults</button>
+                    </div>
+                    <div class="border rounded p-3 mt-2 d-none" id="modelCustomForm">
+                        <small class="text-muted d-block mb-2">For a model or inference profile the catalog doesn't list — a cross-account profile, for example. Enter the ID exactly as Bedrock shows it.</small>
                         <div class="row g-2 align-items-end">
                             <div class="col-md-4">
                                 <label class="form-label small mb-1">Display Name</label>
@@ -713,7 +737,7 @@
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label small mb-1">Inference Profile ID</label>
-                                <input type="text" class="form-control form-control-sm" id="newModelId" placeholder="e.g. us.anthropic.claude-sonnet-5-v1">
+                                <input type="text" class="form-control form-control-sm" id="newModelId" placeholder="e.g. global.anthropic.claude-sonnet-5">
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label small mb-1">Swarm Role</label>

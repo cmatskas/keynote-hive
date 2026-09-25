@@ -4,8 +4,53 @@ const transcriptionRunner = require('../models/transcriptionRunner');
 const transcriptionReconciler = require('../models/transcriptionReconciler');
 const { createAgent, isAnthropicModel } = require('../models/strandsAgentFactory');
 const { withCapabilities } = require('../models/modelCapabilities');
+const { buildCatalog, buildFallbackCatalog } = require('../models/modelCatalog');
 const { buildFileContentBlocks, collectStreamText } = require('../utils');
 const logger = require('electron-log/main');
+
+/**
+ * Fetch the raw Bedrock catalog: every foundation model plus every inference
+ * profile, both fully paginated. Control-plane client (@aws-sdk/client-bedrock),
+ * constructed here on demand — ctx.awsClients.bedrock is the *runtime* client
+ * and cannot list anything. Required permissions: bedrock:ListFoundationModels
+ * (Setup Check already verifies it) and bedrock:ListInferenceProfiles (see
+ * README); a denial on either surfaces as the caller's fallback path.
+ */
+async function fetchBedrockCatalog(clientConfig) {
+  const { BedrockClient, ListFoundationModelsCommand, ListInferenceProfilesCommand } =
+    require('@aws-sdk/client-bedrock');
+  const client = new BedrockClient(clientConfig);
+  try {
+    const res = await client.send(new ListFoundationModelsCommand({}));
+    const foundationModels = res.modelSummaries || [];
+
+    const inferenceProfiles = [];
+    let nextToken;
+    do {
+      const page = await client.send(new ListInferenceProfilesCommand({
+        maxResults: 1000,
+        ...(nextToken ? { nextToken } : {}),
+      }));
+      inferenceProfiles.push(...(page.inferenceProfileSummaries || []));
+      nextToken = page.nextToken;
+    } while (nextToken);
+
+    return { foundationModels, inferenceProfiles };
+  } finally {
+    client.destroy();
+  }
+}
+
+/** A short, user-facing reason the live catalog was unavailable. */
+function describeCatalogError(err) {
+  if (err?.name === 'AccessDeniedException') {
+    return 'Your credentials lack bedrock:ListFoundationModels or bedrock:ListInferenceProfiles';
+  }
+  if (err?.name === 'ExpiredTokenException' || err?.$metadata?.httpStatusCode === 403) {
+    return 'AWS credentials expired or lack Bedrock list permissions';
+  }
+  return 'Could not reach Bedrock';
+}
 
 /**
  * Chat tab model invocation — simple, non-agentic back-and-forth with any
@@ -137,6 +182,45 @@ function register(ipcMain, ctx) {
     // by hand since launch, so derive capabilities here too rather than trust
     // that every entry went through loadSettings().
     return withCapabilities(settings.bedrockModels);
+  });
+
+  /**
+   * The Settings → Models picker: every text model in the user's Bedrock
+   * catalog, grouped by provider, joined with Hive's curated descriptions and
+   * cost index, and marked with whether it is already configured.
+   *
+   * The AWS side (ListFoundationModels + ListInferenceProfiles, both paginated)
+   * is fetched once per app session and cached on ctx — the catalog changes on
+   * the order of weeks, and the picker re-renders on every Add/Remove. The
+   * merge with the configured list is redone every call, since that is the
+   * part that changes. `refresh: true` busts the cache (the picker's Refresh
+   * link, or after credentials change).
+   *
+   * Failure — offline, or credentials lacking bedrock:ListFoundationModels /
+   * bedrock:ListInferenceProfiles — degrades to the curated list rather than
+   * an empty picker, with `source: 'fallback'` and the reason so the UI can
+   * say why the list is short.
+   */
+  ipcMain.handle('list-bedrock-catalog', async (_event, { refresh = false } = {}) => {
+    const settings = ctx.currentSettings || await ctx.settingsManager.loadSettings();
+    const configuredModels = settings.bedrockModels || [];
+
+    if (!ctx.awsClients?.agentCoreConfig) {
+      return buildFallbackCatalog({ configuredModels, reason: 'AWS credentials not configured' });
+    }
+    if (!ctx.isOnline?.()) {
+      return buildFallbackCatalog({ configuredModels, reason: 'Hive is offline' });
+    }
+
+    try {
+      if (refresh || !ctx.bedrockCatalogCache) {
+        ctx.bedrockCatalogCache = await fetchBedrockCatalog(ctx.awsClients.agentCoreConfig);
+      }
+      return buildCatalog({ ...ctx.bedrockCatalogCache, configuredModels });
+    } catch (err) {
+      logger.warn(`[catalog] falling back to curated list: ${err.name || ''} ${err.message}`);
+      return buildFallbackCatalog({ configuredModels, reason: describeCatalogError(err) });
+    }
   });
 
   // ── Transcription ─────────────────────────────────────────────────────────

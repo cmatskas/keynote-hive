@@ -40,6 +40,8 @@ const ALL_IDS = [
   'copyGrantScriptBtn', 'createSkillBtn', 'credRegion', 'credentialsForm',
   'defaultTheme', 'grantScriptCommand', 'mantleApiKey', 'memoryConnectBtn',
   'memoryDeleteBtn', 'memoryRefreshBtn', 'memorySelect', 'memoryStatusText',
+  'modelCustomForm', 'modelCustomToggle', 'modelPicker', 'modelPickerList',
+  'modelPickerNote', 'modelPickerRefresh', 'modelPickerShowAll', 'modelsResetBtn',
   'modelsTableBody', 'newModelId', 'newModelName', 'newModelRole',
   'newSkillCancelBtn', 'newSkillCloseBtn', 'newSkillContent', 'newSkillName',
   'newSkillPanel', 'newSkillSaveBtn', 'openSkillsFolderBtn', 'outputBucketName',
@@ -69,6 +71,11 @@ function buildDom() {
     }
     if (id === 'credentialsForm') return `<form id="${id}"></form>`;
     if (id === 'modelsTableBody') return `<table><tbody id="${id}"></tbody></table>`;
+    // Picker containers and links need real element types: rows render into a
+    // div, and the links/buttons receive onclick + preventDefault.
+    if (['modelPicker', 'modelPickerList', 'modelPickerNote', 'modelCustomForm'].includes(id)) return `<div id="${id}"></div>`;
+    if (['modelPickerRefresh', 'modelPickerShowAll', 'modelCustomToggle'].includes(id)) return `<a href="#" id="${id}"></a>`;
+    if (id === 'modelsResetBtn') return `<button id="${id}"></button>`;
     return `<input id="${id}" />`;
   });
 
@@ -519,5 +526,222 @@ describe('Settings tab: adding a tool-less model with a role', () => {
     await addModel('Gemma 3 27B', 'google.gemma-3-27b-it', '');
 
     expect(mockElectronAPI.showToast).not.toHaveBeenCalledWith(expect.anything(), 'warning');
+  });
+});
+
+
+/**
+ * Settings → Models: the catalog picker. Grouped rows from list-bedrock-catalog,
+ * Add/Remove per row against the configured list, "Show all models", the
+ * offline note, Reset to defaults, and the custom-ID escape hatch.
+ *
+ * The fake main process here runs the *real* buildCatalog over a small fixture,
+ * so configured/role flags on each row come from the same code the app uses.
+ */
+describe('Settings tab: catalog model picker', () => {
+  const { buildCatalog, buildFallbackCatalog } = require('../../src/main/models/modelCatalog');
+
+  const fm = (modelId, modelName) => ({
+    modelId, modelName, inputModalities: ['TEXT'], outputModalities: ['TEXT'], inferenceTypesSupported: ['ON_DEMAND'],
+  });
+  const FOUNDATION = [
+    fm('anthropic.claude-sonnet-5', 'Claude Sonnet 5'),
+    fm('anthropic.claude-opus-5-5', 'Claude Opus 5.5'),
+    fm('openai.gpt-6-sol', 'GPT-6 Sol'),
+    fm('google.gemma-3-27b-it', 'Gemma 3 27B'),
+    fm('mistral.mistral-large-3', 'Mistral Large 3'),   // uncurated: only under Show all
+  ];
+  const PROFILES = [
+    { inferenceProfileId: 'global.anthropic.claude-sonnet-5' },
+    { inferenceProfileId: 'global.anthropic.claude-opus-5-5' },
+    { inferenceProfileId: 'us.openai.gpt-6-sol' },
+  ];
+  const DEFAULTS = [
+    { id: 'Claude Opus 5.5', inferenceProfileId: 'global.anthropic.claude-opus-5-5', role: 'creator' },
+    { id: 'Claude Sonnet 5', inferenceProfileId: 'global.anthropic.claude-sonnet-5', role: 'worker' },
+  ];
+
+  let stored;
+  let catalogCalls;
+
+  function installFakeMain({ initialModels, offline = false }) {
+    stored = initialModels;
+    catalogCalls = [];
+    mockElectronAPI.invoke.mockImplementation((channel, payload) => {
+      switch (channel) {
+        case 'load-settings':
+          return Promise.resolve({ bucketName: 'b', outputBucketName: 'o', bedrockModels: stored.map(m => ({ ...m, supportsTools: !/gemma-3/.test(m.inferenceProfileId) })) });
+        case 'save-settings':
+          if (Array.isArray(payload?.bedrockModels)) stored = payload.bedrockModels.map(({ supportsTools: _d, ...m }) => m);
+          return Promise.resolve(true);
+        case 'list-bedrock-catalog':
+          catalogCalls.push(payload);
+          return Promise.resolve(offline
+            ? buildFallbackCatalog({ configuredModels: stored, reason: 'Hive is offline' })
+            : buildCatalog({ foundationModels: FOUNDATION, inferenceProfiles: PROFILES, configuredModels: stored }));
+        case 'get-default-settings':
+          return Promise.resolve({ bedrockModels: DEFAULTS });
+        case 'load-credentials': return Promise.resolve(null);
+        case 'get-web-search-status': return Promise.resolve({ ready: true, error: null });
+        case 'memory-list': return Promise.resolve([]);
+        default: return Promise.resolve(undefined);
+      }
+    });
+    jest.resetModules();
+    require('../../src/renderer/settingsTab.js');
+    window.SettingsTab.init();
+    document.getElementById('tab-models').click();
+  }
+
+  const rows = () => [...document.querySelectorAll('#modelPickerList .model-picker-row')];
+  const rowNamed = (name) => rows().find(r => r.querySelector('.model-picker-row-name').textContent.includes(name));
+  const groupLabels = () => [...document.querySelectorAll('#modelPickerList .model-picker-group-label')].map(el => el.textContent);
+  const settle = async () => { await flush(); await flush(); await flush(); };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    buildDom();
+    window.confirm = jest.fn(() => true);
+  });
+
+  test('renders provider groups with name, description, cost pill, and Add/Remove per configured state', async () => {
+    installFakeMain({ initialModels: [DEFAULTS[1]] }); // Sonnet configured as worker
+    await settle();
+
+    expect(groupLabels()).toEqual(['Claude', 'OpenAI', 'Google']);
+
+    const sonnet = rowNamed('Claude Sonnet 5');
+    expect(sonnet.classList.contains('is-configured')).toBe(true);
+    expect(sonnet.querySelector('.model-picker-row-desc').textContent).toMatch(/everyday/i);
+    expect(sonnet.querySelector('.model-picker-cost').textContent).toBe('~1×');
+    expect(sonnet.querySelector('.model-picker-remove')).not.toBeNull();
+    expect(sonnet.querySelector('.model-picker-add')).toBeNull();
+
+    const opus = rowNamed('Claude Opus 5.5');
+    expect(opus.classList.contains('is-configured')).toBe(false);
+    expect(opus.querySelector('.model-picker-cost').textContent).toBe('~2×');
+    expect(opus.querySelector('.model-picker-add')).not.toBeNull();
+  });
+
+  test('flags tool-less models on their row', async () => {
+    installFakeMain({ initialModels: [] });
+    await settle();
+    expect(rowNamed('Gemma 3 27B').querySelector('.badge').textContent).toMatch(/Chat & StoryBrand only/);
+    expect(rowNamed('Claude Opus 5.5').querySelector('.badge')).toBeNull();
+  });
+
+  test('Add saves the model with the catalog\'s preferred inference-profile ID and flips the row to Remove', async () => {
+    installFakeMain({ initialModels: [] });
+    await settle();
+
+    rowNamed('GPT-6 Sol').querySelector('.model-picker-add').click();
+    await settle();
+
+    expect(stored).toEqual([{ id: 'GPT-6 Sol', inferenceProfileId: 'us.openai.gpt-6-sol', role: '' }]);
+    const sol = rowNamed('GPT-6 Sol');
+    expect(sol.classList.contains('is-configured')).toBe(true);
+    expect(sol.querySelector('.model-picker-remove')).not.toBeNull();
+    // The configured table below stays in sync.
+    expect(document.querySelector('#modelsTableBody').textContent).toContain('us.openai.gpt-6-sol');
+  });
+
+  test('Remove drops the model from the configured list and flips the row back to Add', async () => {
+    installFakeMain({ initialModels: [{ id: 'Sol', inferenceProfileId: 'us.openai.gpt-6-sol', role: '' }] });
+    await settle();
+
+    rowNamed('GPT-6 Sol').querySelector('.model-picker-remove').click();
+    await settle();
+
+    expect(stored).toEqual([]);
+    expect(rowNamed('GPT-6 Sol').querySelector('.model-picker-add')).not.toBeNull();
+  });
+
+  test('Remove is disabled, with an explanation, while the model holds a Swarm role', async () => {
+    installFakeMain({ initialModels: [DEFAULTS[0]] }); // Opus as creator
+    await settle();
+
+    const btn = rowNamed('Claude Opus 5.5').querySelector('.model-picker-remove');
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toMatch(/Swarm creator/);
+  });
+
+  test('a configured model matches its row even when configured under a different prefix', async () => {
+    installFakeMain({ initialModels: [{ id: 'Sonnet (us)', inferenceProfileId: 'us.anthropic.claude-sonnet-5', role: '' }] });
+    await settle();
+    expect(rowNamed('Claude Sonnet 5').querySelector('.model-picker-remove')).not.toBeNull();
+  });
+
+  test('"Show all models" reveals uncurated catalog entries and toggles its label', async () => {
+    installFakeMain({ initialModels: [] });
+    await settle();
+
+    expect(rowNamed('Mistral Large 3')).toBeUndefined();
+    const link = document.getElementById('modelPickerShowAll');
+    expect(link.textContent).toBe('Show all models');
+
+    link.click();
+    await settle();
+    expect(link.textContent).toBe('Show fewer models');
+    const mistral = rowNamed('Mistral Large 3');
+    expect(mistral).toBeDefined();
+    // Uncurated: no description, so the row shows its ID; no cost pill.
+    expect(mistral.querySelector('.model-picker-row-desc code').textContent).toBe('mistral.mistral-large-3');
+    expect(mistral.querySelector('.model-picker-cost')).toBeNull();
+
+    link.click();
+    await settle();
+    expect(rowNamed('Mistral Large 3')).toBeUndefined();
+  });
+
+  test('offline: shows the curated list with a note saying why', async () => {
+    installFakeMain({ initialModels: [], offline: true });
+    await settle();
+
+    const note = document.getElementById('modelPickerNote');
+    expect(note.classList.contains('d-none')).toBe(false);
+    expect(note.textContent).toMatch(/Hive is offline/);
+    expect(rowNamed('Claude Sonnet 5')).toBeDefined();
+    expect(rowNamed('Mistral Large 3')).toBeUndefined();
+  });
+
+  test('Refresh re-reads the catalog with refresh: true', async () => {
+    installFakeMain({ initialModels: [] });
+    await settle();
+    catalogCalls.length = 0;
+
+    document.getElementById('modelPickerRefresh').click();
+    await settle();
+    expect(catalogCalls).toEqual([{ refresh: true }]);
+  });
+
+  test('Reset to defaults asks first, then replaces the list with Hive\'s defaults', async () => {
+    installFakeMain({ initialModels: [{ id: 'Sol', inferenceProfileId: 'us.openai.gpt-6-sol', role: '' }] });
+    await settle();
+
+    document.getElementById('modelsResetBtn').click();
+    await settle();
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(stored).toEqual(DEFAULTS);
+    expect(rowNamed('GPT-6 Sol').querySelector('.model-picker-add')).not.toBeNull();
+  });
+
+  test('Reset to defaults does nothing when declined', async () => {
+    window.confirm = jest.fn(() => false);
+    installFakeMain({ initialModels: [{ id: 'Sol', inferenceProfileId: 'us.openai.gpt-6-sol', role: '' }] });
+    await settle();
+
+    document.getElementById('modelsResetBtn').click();
+    await settle();
+    expect(stored).toEqual([{ id: 'Sol', inferenceProfileId: 'us.openai.gpt-6-sol', role: '' }]);
+  });
+
+  test('the custom-ID form is hidden until asked for', async () => {
+    installFakeMain({ initialModels: [] });
+    await settle();
+    const form = document.getElementById('modelCustomForm');
+    form.classList.add('d-none'); // as in the real markup
+    document.getElementById('modelCustomToggle').click();
+    expect(form.classList.contains('d-none')).toBe(false);
   });
 });

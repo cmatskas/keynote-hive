@@ -11,7 +11,7 @@ An Electron desktop app that combines AI models on Amazon Bedrock with AWS Trans
 - 🎨 **StoryBrand Tab** — Upload a keynote script or outline and see every paragraph colour-coded against the seven StoryBrand elements, with a qualitative audit and self-contained HTML export
 - 🧠 **18 Agent Skills** — Copy editing, copywriting, research, marketing psychology, StoryBrand messaging, document creation, generative art, and more
 - 🎯 **Quality Rubrics** — Weighted criteria with penalty scoring, brief-specific adaptation, and adaptive learning from past runs
-- ⚙️ **Model Management** — Configure Bedrock models and assign pipeline roles (creator/worker/formatter) from the UI
+- ⚙️ **Model Management** — Pick models from your account's Bedrock catalog (grouped by provider, with descriptions and relative cost), and assign pipeline roles (creator/worker/formatter) from the UI
 - 📊 **Quality Analytics** — Dashboard showing pass rates, criteria heatmaps, and actionable insights across pipeline runs
 
 ## Quick Start
@@ -46,6 +46,7 @@ If your credentials happen to resolve to Hive's shared admin AWS account, an **A
 The list below documents what Hive actually calls, for anyone auditing or scoping a dedicated IAM role. In practice, most Hive users authenticate with an Admin-level role (via Isengard/Merlon) that already covers all of it — this list isn't a manual grant checklist to walk through, just a reference for what each feature needs under the hood:
 - **Bedrock model calls**: A long-term [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) configured in Settings → Bedrock API Key. All model invocation (Work, Chat, Swarm) goes to standard Amazon Bedrock (the Converse API) authenticated with this key as a bearer token — no IAM-based `InvokeModel`/`Converse` permissions are needed for model calls themselves, and model calls keep working even while your AWS session credentials are expired.
 - **Transcribe**: `StartTranscriptionJob`, `GetTranscriptionJob`, `ListTranscriptionJobs` (for Transcribe tab; the last is used by **Find past transcriptions**)
+- **Bedrock catalog**: `bedrock:ListFoundationModels` and `bedrock:ListInferenceProfiles` — only for the model picker in Settings → Models. Without them the picker falls back to Hive's curated model list; model calls are unaffected.
 - **S3**: `GetObject`, `PutObject`, `DeleteObject` on your buckets (for Transcribe tab)
 - **S3**: `ListBucket` on the transcription output bucket — only needed by **Find past transcriptions**, which scans that bucket to rebuild Hive's index. Everything else in the Transcribe tab works without it.
 - **AgentCore**: `bedrock-agentcore:StartCodeInterpreterSession`, `bedrock-agentcore:InvokeCodeInterpreter`, `bedrock-agentcore:StopCodeInterpreterSession`, `bedrock-agentcore:StartBrowserSession`, `bedrock-agentcore:StopBrowserSession` (for Work/Swarm code execution and web browsing)
@@ -277,7 +278,13 @@ Settings → Models lets you manage Bedrock models, define the order they appear
 | Worker | Research, planning, editing — balanced | User defined |
 | Formatter | Document generation — cheapest capable | User defined |
 
-All models are invoked directly on Amazon Bedrock via the Converse API, authenticated with your Bedrock API key as a bearer token. Add or remove models and reassign roles from the UI, using Bedrock model IDs or inference-profile IDs (e.g. `global.anthropic.claude-opus-5-5`, `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `us.openai.gpt-6-sol`) exactly as they appear in the Bedrock model catalog for your region.
+All models are invoked directly on Amazon Bedrock via the Converse API, authenticated with your Bedrock API key as a bearer token.
+
+**Adding and removing models.** Below the roles table, a catalog picker lists every text model available in your AWS account, grouped by provider. Each row shows a one-line description, a rough cost pill relative to Claude Sonnet 5 (~1×), and an **Add** or **Remove** button depending on whether the model is already configured. Adding picks the right ID for you: the model's inference profile where your account has one (`global.` preferred, then `us.`), or the bare model ID for on-demand-only models. The default view shows Hive's curated models plus anything you've configured; **Show all models** expands to the full catalog. A model holding a Swarm role can't be removed until the role is reassigned. **Reset to defaults** restores the shipped list.
+
+For an ID the catalog doesn't list (a cross-account or application inference profile), use **Add a model by ID instead…** and enter it exactly as Bedrock shows it. Offline, or without the catalog list permissions, the picker shows Hive's curated models with a note saying why.
+
+Descriptions and cost pills are curated in `src/main/models/modelCatalogMeta.js` — the Bedrock API provides neither — so treat the cost index as approximate.
 
 Some models answer on Bedrock but make no real tool calls — today the Gemma 3 family, which answers a tool request with plain text. Hive recognizes these by model ID (`src/main/models/modelCapabilities.js`) and offers them in Chat and StoryBrand only: they're left out of the Work tab's dropdown and can't hold a Swarm role.
 

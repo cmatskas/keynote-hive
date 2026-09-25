@@ -3499,3 +3499,90 @@ body {
   border-radius: 6px;
   background: rgba(46, 125, 50, 0.08);
 }
+
+
+/* ── Settings → Models: catalog picker ─────────────────────────────────── */
+.model-picker {
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    background: var(--bg-primary);
+    overflow: hidden;
+}
+.model-picker-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-primary);
+}
+.model-picker-note {
+    padding: 8px 16px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-primary);
+}
+.model-picker-list {
+    max-height: 420px;
+    overflow-y: auto;
+}
+.model-picker-group-label {
+    padding: 10px 16px 4px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+.model-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 2px 8px;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+}
+.model-picker-row:hover { background: var(--bg-secondary); }
+.model-picker-row.is-configured {
+    border-color: var(--border-accent);
+    background: rgba(59, 130, 246, 0.04);
+}
+.model-picker-row-main { flex: 1; min-width: 0; }
+.model-picker-row-name {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.model-picker-row-desc {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.model-picker-row-desc code { font-size: 0.74rem; color: var(--text-secondary); }
+.model-picker-cost {
+    flex-shrink: 0;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 999px;
+    padding: 1px 8px;
+    min-width: 44px;
+    text-align: center;
+}
+.model-picker-row .btn { flex-shrink: 0; min-width: 76px; }
+.model-picker-footer {
+    text-align: center;
+    padding: 10px;
+    border-top: 1px solid var(--border-primary);
+}
+.model-picker-empty { padding: 24px 16px; text-align: center; color: var(--text-muted); font-size: 0.85rem; }

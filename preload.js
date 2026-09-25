@@ -177,7 +177,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
     'add-custom-prompt', 'cancel-agent', 'cancel-bedrock', 'compress-conversation', 'create-conversation', 'delete-conversation',
     'install-update',
     'delete-credentials', 'delete-custom-prompt', 'delete-settings', 'get-app-version',
-    'get-bedrock-models', 'get-custom-prompts', 'get-default-settings',
+    'get-bedrock-models', 'get-custom-prompts', 'get-default-settings', 'list-bedrock-catalog',
     'get-prompt-templates', 'get-skills', 'get-skill-content', 'has-credentials', 'invoke-agent', 'list-conversations',
     'get-skill-updates', 'apply-skill-update', 'decline-skill-update',
     'load-conversation', 'load-credentials', 'load-settings', 'memory-connect', 'memory-delete', 'memory-disable',
