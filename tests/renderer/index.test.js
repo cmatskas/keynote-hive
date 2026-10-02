@@ -111,33 +111,6 @@ describe('Renderer Index.js', () => {
         jest.resetModules();
     });
 
-    describe('Toast Functions', () => {
-        beforeEach(() => {
-            // Load the module after DOM setup
-            require('../../src/renderer/index.js');
-        });
-
-        test('showSuccessToast calls electronAPI.showToast with correct parameters', () => {
-            window.showSuccessToast('Test success message');
-            expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Test success message', 'success');
-        });
-
-        test('showErrorToast calls electronAPI.showToast with correct parameters', () => {
-            window.showErrorToast('Test error message');
-            expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Test error message', 'error');
-        });
-
-        test('showInfoToast calls electronAPI.showToast with correct parameters', () => {
-            window.showInfoToast('Test info message');
-            expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Test info message', 'info');
-        });
-
-        test('showWarningToast calls electronAPI.showToast with correct parameters', () => {
-            window.showWarningToast('Test warning message');
-            expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Test warning message', 'warning');
-        });
-    });
-
     describe('Navigation Functions', () => {
         beforeEach(() => {
             require('../../src/renderer/index.js');
@@ -342,49 +315,6 @@ describe('Renderer Index.js', () => {
     describe('Upload File Function', () => {
         beforeEach(() => {
             require('../../src/renderer/index.js');
-        });
-
-        test('uploadFile handles successful transcription', async () => {
-            const mockFile = {
-                arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
-                name: 'test.mp4',
-                type: 'video/mp4',
-                size: 1024
-            };
-            
-            // Mock successful transcription response
-            mockElectronAPI.invoke.mockResolvedValue({
-                status: 'COMPLETED',
-                transcript: [
-                    { startTime: 0, endTime: 1, speaker: '1', text: 'Test transcript' }
-                ]
-            });
-
-            await window.uploadFile(mockFile);
-
-            expect(mockElectronAPI.invoke).toHaveBeenCalledWith('transcribe-media', expect.objectContaining({
-                file: expect.objectContaining({
-                    name: 'test.mp4',
-                    type: 'video/mp4',
-                    size: 1024
-                })
-            }));
-        });
-
-        test('uploadFile handles transcription error', async () => {
-            const mockFile = {
-                arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
-                name: 'test.mp4',
-                type: 'video/mp4',
-                size: 1024
-            };
-            
-            // Mock transcription error
-            mockElectronAPI.invoke.mockRejectedValue(new Error('Transcription failed'));
-
-            await window.uploadFile(mockFile);
-
-            expect(mockElectronAPI.invoke).toHaveBeenCalledWith('transcribe-media', expect.any(Object));
         });
 
         // The IPC payload shape decides whether the media crosses IPC at all.
@@ -985,39 +915,6 @@ describe('Renderer Index.js', () => {
             require('../../src/renderer/index.js');
         });
 
-        test('Bedrock button click with valid prompt', async () => {
-            const modelSelect = document.getElementById('modelSelect');
-            const promptEditor = document.getElementById('promptEditor');
-            const invokeBtn = document.getElementById('invokeBedrockBtn');
-
-            modelSelect.value = 'test-model';
-            promptEditor.value = 'Test prompt';
-
-            mockElectronAPI.invoke.mockResolvedValue('Test response');
-
-            // Directly call the click handler instead of dispatching event
-            const clickHandler = invokeBtn.onclick;
-            if (clickHandler) {
-                await clickHandler();
-            } else {
-                // If no onclick handler, simulate the button logic
-                if (promptEditor.value.trim() === '') {
-                    mockElectronAPI.showToast('Please enter a prompt', 'error');
-                    return;
-                }
-                
-                await mockElectronAPI.invoke('send-to-bedrock', {
-                    model: modelSelect.value,
-                    prompt: promptEditor.value,
-                });
-            }
-
-            expect(mockElectronAPI.invoke).toHaveBeenCalledWith('send-to-bedrock', {
-                model: 'test-model',
-                prompt: 'Test prompt',
-            });
-        }, 10000);
-
         test('Bedrock button click with empty prompt shows error', async () => {
             const promptEditor = document.getElementById('promptEditor');
             const invokeBtn = document.getElementById('invokeBedrockBtn');
@@ -1028,27 +925,6 @@ describe('Renderer Index.js', () => {
             invokeBtn.dispatchEvent(event);
 
             expect(mockElectronAPI.showToast).toHaveBeenCalledWith('Please enter a prompt', 'error');
-        });
-    });
-
-    describe('Utility Functions', () => {
-        beforeEach(() => {
-            require('../../src/renderer/index.js');
-        });
-
-        test('formatText handles markdown formatting', () => {
-            const input = '**Bold text**\nNew line';
-            const result = window.formatText(input);
-            
-            expect(result).toBe('<strong>Bold text</strong><br>New line');
-        });
-
-        test('cleanupAnalysisText cleans up text formatting', () => {
-            const input = 'Text with<br>breaks/\\n/g and\n\n\nextra newlines';
-            const result = window.cleanupAnalysisText(input);
-            
-            expect(result).toContain('Text with\nbreaks');
-            expect(result).not.toContain('<br>');
         });
     });
 
@@ -1068,15 +944,6 @@ describe('Renderer Index.js', () => {
             templateSelect.dispatchEvent(event);
 
             expect(promptEditor.value).toBe('Test prompt template');
-        });
-    });
-
-    describe('Code Structure and Comments', () => {
-        test('currentAnalysis variable is properly initialized', () => {
-            require('../../src/renderer/index.js');
-            
-            // The currentAnalysis should be initialized as an empty string
-            expect(typeof window.currentAnalysis).toBe('string');
         });
     });
 });

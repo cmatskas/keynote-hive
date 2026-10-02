@@ -104,44 +104,31 @@ function setupThemeToggle() {
     updateThemeIcon();
 }
 
-// Expose functions for testing
+// Test hooks. index.js is a classic <script> (see index.html), so its top-level
+// functions are already page globals and production never reads these window
+// copies. Jest loads the file as a module, where they are not global; each
+// assignment below is kept only because a test drives the page through it.
+// Add one here only for a test that exercises real behavior (DOM output, IPC
+// payload, state change) through it, and remove it when that test goes.
 if (typeof window !== 'undefined') {
-    window.showSuccessToast = showSuccessToast;
     // Stopped-run rewind. rewindChatTo takes its conversation as an argument
     // precisely so it can be driven from a test; production calls it via
     // resendChatFrom with the active conversation.
     window.rewindChatTo = rewindChatTo;
-    window.showChatInterrupted = showChatInterrupted;
     window.sendMessage = sendMessage;
-    window.showErrorToast = showErrorToast;
-    window.showInfoToast = showInfoToast;
-    window.showWarningToast = showWarningToast;
     window.showTranscribePage = showTranscribePage;
     window.showAnalyzePage = showAnalyzePage;
-    window.showWorkPage = showWorkPage;
-    window.showSettingsPage = showSettingsPage;
     window.downloadAnalysis = downloadAnalysis;
     window.copyAnalysis = copyAnalysis;
     window.uploadFile = uploadFile;
-    window.formatText = formatText;
-    window.cleanupAnalysisText = cleanupAnalysisText;
-    window.downloadTranscript = downloadTranscript;
-    window.copyTranscript = copyTranscript;
-    window.clearTranscription = clearTranscription;
-    window.resetTranscriptionUI = resetTranscriptionUI;
-    window.cancelTranscription = cancelTranscription;
     // Exposed so tests can wire the sidebar directly. Dispatching
     // DOMContentLoaded instead would run every listener accumulated by earlier
     // require() calls in the same file, wiring the same controls repeatedly.
     window.initTranscribeSidebar = initTranscribeSidebar;
-    window.refreshTranscriptionList = refreshTranscriptionList;
-
-    // Expose currentAnalysis as a getter/setter to keep it synchronized
-    Object.defineProperty(window, 'currentAnalysis', {
-        get: () => currentAnalysis,
-        set: (value) => { currentAnalysis = value; },
-        configurable: true
-    });
+    // Named by the inline onclick="resetTranscriptionUI()" on the Try again /
+    // Start over buttons. The top-level declaration already satisfies that in
+    // the app; kept explicit so the handler never depends on script scoping.
+    window.resetTranscriptionUI = resetTranscriptionUI;
 }
 
 const ALL_PAGES = ['work', 'swarm', 'transcribe', 'analyze', 'settings', 'showflow', 'storyboard'];
@@ -1684,25 +1671,6 @@ function formatText(text) {
         return window.marked.parse(text);
     }
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
-}
-
-function cleanupAnalysisText(text) {
-    // Replace erroneous /\n/g pattern
-    let cleaned = text.replace('/\\n/g', '\n');
-
-    // Replace <br> tags with newlines
-    cleaned = cleaned.replace(/<br>/g, '\n');
-
-    // Fix multiple consecutive newlines to maximum of two
-    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-
-    // Ensure proper spacing after numbered list items
-    cleaned = cleaned.replace(/(\d+\.) (?=\*\*)/g, '$1\n');
-
-    // Add proper spacing for bullet points
-    cleaned = cleaned.replace(/(\n\s*)-\s+/g, '\n   - ');
-
-    return cleaned;
 }
 
 // Transcript management functions

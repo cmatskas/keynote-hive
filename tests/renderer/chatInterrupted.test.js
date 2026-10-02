@@ -97,16 +97,6 @@ describe('rewindChatTo()', () => {
         expect(conversation.messages.map(m => m.content)).toEqual(['first', 'first reply']);
     });
 
-    test('discards the partial reply along with the prompt', () => {
-        const { conversation, turn } = buildStopped();
-
-        window.rewindChatTo(conversation, turn);
-
-        const contents = conversation.messages.map(m => m.content);
-        expect(contents).not.toContain('second');
-        expect(contents).not.toContain('partial...');
-    });
-
     test('removes the stopped turn, the partial reply and the notice from the DOM', () => {
         const { conversation, turn, nodes, notice, history } = buildStopped();
 
@@ -131,27 +121,6 @@ describe('rewindChatTo()', () => {
 
         expect(conversation.messages).toEqual([]);
         expect(history.children).toHaveLength(0);
-    });
-
-    test('keeps earlier turns intact', () => {
-        // Over-truncating would erase conversation the user never asked to lose.
-        const { conversation, turn } = buildStopped();
-
-        window.rewindChatTo(conversation, turn);
-
-        expect(conversation.messages).toHaveLength(2);
-        expect(conversation.messages[0]).toEqual({ role: 'user', content: 'first' });
-    });
-});
-
-describe('the Chat tab reuses the shared notice and editor', () => {
-    test('showChatInterrupted is wired to the shared renderer helpers', () => {
-        // Rather than a third copy of the markup: the two tabs must look
-        // identical, and index.js keeps its own appendChatMessage/appendThinking,
-        // so it would have been easy to duplicate these too.
-        expect(typeof window.ChatRenderer.appendInterruptedNotice).toBe('function');
-        expect(typeof window.ChatRenderer.beginEditUserMessage).toBe('function');
-        expect(typeof window.showChatInterrupted).toBe('function');
     });
 });
 
