@@ -18,11 +18,6 @@ global.console = {
   // error: jest.fn(),
 };
 
-// Global test utilities
-global.createMockFile = (name = 'test.mp4', type = 'video/mp4', content = 'test') => {
-  return new File([content], name, { type });
-};
-
 // Mock IntersectionObserver if needed
 global.IntersectionObserver = class IntersectionObserver {
   constructor() {}
@@ -51,10 +46,4 @@ global.matchMedia = global.matchMedia || function(query) {
     removeEventListener: jest.fn(),
     dispatchEvent: jest.fn(),
   };
-};
-global.ResizeObserver = class ResizeObserver {
-  constructor() {}
-  disconnect() {}
-  observe() {}
-  unobserve() {}
 };
