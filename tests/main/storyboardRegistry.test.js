@@ -291,11 +291,8 @@ describe('chaining a re-upload onto what it supersedes', () => {
 });
 
 describe('countElements', () => {
-  test('tallies units per element', () => {
-    expect(countElements({ 1: 'problem', 2: 'problem', 3: 'guide' }))
-      .toEqual({ problem: 2, guide: 1 });
-  });
-
+  // The populated case is owned by the list() test "carries an element
+  // breakdown for a story-shape preview"; this is the null path it can't reach.
   test('handles nothing classified', () => {
     expect(countElements(null)).toEqual({});
   });

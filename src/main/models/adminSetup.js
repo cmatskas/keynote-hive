@@ -220,6 +220,4 @@ module.exports = {
   getGatewayResourcePolicy,
   previewGatewayPolicyChange,
   applyGatewayResourcePolicy,
-  GRANT_SID,
-  INVOKE_GATEWAY_ACTION,
 };

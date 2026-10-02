@@ -384,6 +384,5 @@ module.exports = {
   createTranscriptionBucket,
   createMemory,
   suggestBucketName,
-  WEB_SEARCH_GATEWAY_NAME,
   WEB_SEARCH_ROLE_NAME,
 };

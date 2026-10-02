@@ -280,7 +280,7 @@ describe('ConnectivityMonitor', () => {
  * asserts the monitor's *own* liveness rather than being nudged by the harness.
  */
 describe('recovering without an external nudge (regression)', () => {
-  const { OFFLINE_RECHECK_MS, ONLINE_RECHECK_MS } = ConnectivityMonitor;
+  const { ONLINE_RECHECK_MS } = ConnectivityMonitor;
 
   /** Advances fake timers while letting the async probe chain settle. */
   async function advance(ms, step = 500) {

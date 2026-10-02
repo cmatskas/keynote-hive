@@ -258,4 +258,4 @@ async function reconcile(ctx) {
   return result;
 }
 
-module.exports = { reconcile, MAX_PAGES };
+module.exports = { reconcile };

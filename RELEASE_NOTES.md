@@ -1,5 +1,14 @@
 # Release Notes
 
+## v4.5.1
+
+### Internal
+- **Test suite audit.** Removed 38 tests that could not catch a real regression, and the code they kept alive. Nothing changes for users; the suite goes from 1250 to 1212 tests, all passing.
+  - The suite's self-test of the Jest setup (19 tests checking that jsdom, `console`, and the mock observers exist), plus an unused `createMockFile` helper and a duplicated `ResizeObserver` mock.
+  - Renderer tests where the app code never ran (a Bedrock click test that made the IPC call itself, a `formatText` test whose expected value came from its own mock), tests that only checked a function exists, and weaker duplicates of stronger tests. In `index.js`, 17 `window.*` copies that nothing in the app reads, and the dead `cleanupAnalysisText` function.
+  - Main-process tests that duplicated a stronger test at a real boundary or asserted what their own mock returned, and 15 exported constants nobody imports.
+- Production code: net −43 lines, none of it executable app behavior. Test code: net −405 lines.
+
 ## v4.5.0
 
 ### New — pick models from your Bedrock catalog

@@ -270,9 +270,5 @@ class ConnectivityMonitor {
 }
 
 module.exports = ConnectivityMonitor;
-module.exports.PROBE_TIMEOUT_MS = PROBE_TIMEOUT_MS;
 module.exports.DEBOUNCE_MS = DEBOUNCE_MS;
-module.exports.OFFLINE_RECHECK_MS = OFFLINE_RECHECK_MS;
 module.exports.ONLINE_RECHECK_MS = ONLINE_RECHECK_MS;
-module.exports.WATCHDOG_INTERVAL_MS = WATCHDOG_INTERVAL_MS;
-module.exports.PROBE_STALE_AFTER_MS = PROBE_STALE_AFTER_MS;

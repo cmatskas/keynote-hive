@@ -195,6 +195,4 @@ module.exports = {
   buildCatalog,
   buildFallbackCatalog,
   isTextGenerationModel,
-  normalizeId,
-  PROFILE_PREFERENCE,
 };

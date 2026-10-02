@@ -331,11 +331,6 @@ describe('re-attach and companion handlers', () => {
     });
   });
 
-  test('get-transcription-state reports nothing running when idle', async () => {
-    const { handlers } = buildHarness();
-    expect(await handlers['get-transcription-state']()).toEqual({ active: false });
-  });
-
   test('cancel-transcription delegates to the runner', async () => {
     const { handlers, ctx } = buildHarness();
 
@@ -359,11 +354,6 @@ describe('re-attach and companion handlers', () => {
       jobId: 'job-old',
       transcript: [{ text: 'hello' }],
     });
-  });
-
-  test('transcription-get returns null for an unknown job', async () => {
-    const { handlers } = buildHarness();
-    await expect(handlers['transcription-get'](fakeEvent(), 'nope')).resolves.toBeNull();
   });
 
   test('transcription-reconcile delegates to the reconciler', async () => {

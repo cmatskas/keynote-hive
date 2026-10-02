@@ -56,4 +56,4 @@ function register(ipcMain, ctx) {
   });
 }
 
-module.exports = { register, KB_NAME, GATEWAY_NAME, KB_TARGET_NAME };
+module.exports = { register };

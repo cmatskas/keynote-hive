@@ -260,4 +260,3 @@ class CredentialMonitor {
 }
 
 module.exports = CredentialMonitor;
-module.exports.POLL_INTERVAL_MS = POLL_INTERVAL_MS;

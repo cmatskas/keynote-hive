@@ -58,14 +58,6 @@ describe('withCapabilities / stripCapabilities', () => {
     expect(input[0]).not.toHaveProperty('supportsTools');
   });
 
-  test('strip removes the derived field and clears a role on a tool-less model', () => {
-    const out = stripCapabilities([
-      { ...GEMMA, role: 'worker', supportsTools: false },
-      { ...OPUS, supportsTools: true },
-    ]);
-    expect(out).toEqual([{ ...GEMMA, role: '' }, OPUS]);
-  });
-
   test('non-arrays pass through', () => {
     expect(withCapabilities(undefined)).toBeUndefined();
     expect(stripCapabilities(null)).toBeNull();

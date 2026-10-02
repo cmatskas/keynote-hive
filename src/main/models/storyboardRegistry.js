@@ -268,4 +268,3 @@ function snippetAround(text, at, length) {
 
 module.exports = StoryboardRegistry;
 module.exports.countElements = countElements;
-module.exports.CONTEXT_CHARS = CONTEXT_CHARS;

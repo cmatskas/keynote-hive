@@ -314,8 +314,6 @@ describe('CredentialMonitor expiry is non-destructive', () => {
   test('polls once a minute, so a dead credential is noticed promptly', async () => {
     // Detection, not prediction: GetCallerIdentity cannot say when a token will
     // expire, only that it already has, so the interval bounds the delay.
-    expect(CredentialMonitor.POLL_INTERVAL_MS).toBe(60 * 1000);
-
     mockQuickValidate.mockResolvedValue({ valid: true, offline: false, errors: [] });
     const { monitor } = build();
     monitor.start();

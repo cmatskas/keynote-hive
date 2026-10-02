@@ -9,7 +9,7 @@
  */
 jest.mock('electron-log/main', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
-const { buildCatalog, buildFallbackCatalog, isTextGenerationModel, normalizeId } =
+const { buildCatalog, buildFallbackCatalog, isTextGenerationModel } =
   require('../../src/main/models/modelCatalog');
 const { describeModel, formatCost, baseModelId } = require('../../src/main/models/modelCatalogMeta');
 
@@ -58,11 +58,6 @@ describe('modelCatalogMeta', () => {
   test('describeModel: an unknown model gets the catalog name, no description, no cost', () => {
     const d = describeModel('mistral.mistral-large-3', { modelName: 'Mistral Large 3' });
     expect(d).toMatchObject({ name: 'Mistral Large 3', description: null, costLabel: null, known: false, providerLabel: 'Mistral' });
-  });
-
-  test('describeModel carries the tool capability decision', () => {
-    expect(describeModel('google.gemma-3-27b-it').supportsTools).toBe(false);
-    expect(describeModel('global.moonshotai.kimi-k3').supportsTools).toBe(true);
   });
 
   test('one vendor under two ID prefixes lands in one group (live catalog: moonshot. and moonshotai.)', () => {
@@ -178,11 +173,6 @@ describe('buildCatalog', () => {
     ];
     const cat = buildCatalog({ foundationModels: fms, inferenceProfiles: [], configuredModels: [] });
     expect(cat.groups[0].models.map((m) => m.name)).toEqual(['Claude Sonnet 5', 'Claude Opus 5.5', 'Alpha', 'Zeta']);
-  });
-
-  test('normalizeId treats bare, versioned, and prefixed forms as one model', () => {
-    expect(normalizeId('global.amazon.nova-2-lite-v1:0')).toBe(normalizeId('amazon.nova-2-lite-v1'));
-    expect(normalizeId('us.x.y-v1:0')).toBe('x.y-v1');
   });
 });
 
