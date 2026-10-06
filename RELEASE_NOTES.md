@@ -1,5 +1,20 @@
 # Release Notes
 
+## v4.6.0
+
+### Improved — Word documents attached to the Work tab are read more completely
+- **Claude models now see much more of an attached `.docx`.** When the Work tab is pointed at a Claude (Anthropic) model, Word documents are extracted in the Code Interpreter sandbox rather than sent natively (Anthropic's document API silently drops `.docx`). That extractor previously pulled only body paragraphs and tables — and dumped all tables after all paragraphs, losing the original reading order. It now:
+  - **Preserves reading order** — paragraphs and tables are walked in document order and stay interleaved as they appear.
+  - **Includes headers and footers** (per section), labeled.
+  - **Includes footnotes and endnotes**, labeled `[Footnote N]` / `[Endnote N]`.
+  - **Includes comments**, labeled `[Comment by <author>]`.
+  - Each enrichment is best-effort: a document without comments or footnotes simply yields nothing extra, with no error.
+- **Tracked changes** are surfaced as their accepted text (unchanged from before) — insertion/deletion markup is not extracted.
+- **Extraction output is now capped** at 300,000 characters (~75K tokens) before it's appended to the prompt, with a visible truncation marker that tells the agent to use `execute_code` to read the rest. Richer extraction means a long or heavily-annotated document can now produce far more text, so this guard prevents a large file from silently overflowing the model's context window as an opaque backend token-limit error. Matches the existing cap on inline text attachments.
+
+### Tests
+- 2 new tests covering the extracted-document truncation guard (over-limit truncation with marker; under-limit pass-through) at the `buildFileContentBlocks` boundary.
+
 ## v4.5.1
 
 ### Internal

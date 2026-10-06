@@ -58,6 +58,34 @@ function truncateInlineText(text, fileName) {
     `rather than requiring the whole file to fit in the prompt. ...]`;
 }
 
+// Cap on the text extracted from an Office document (docx/xls/xlsx) in the
+// sandbox before it is appended to the Claude prompt. Unlike the oversized
+// *inline* document branch — which hands the model a sandbox pointer and
+// spends no prompt budget — the Anthropic extraction branch dumps the whole
+// extracted result straight into the prompt, because that is the only shape
+// Anthropic's document API will accept for these formats (see the long
+// comment on officeFilesForAnthropic below). Enriched extraction (reading
+// order, headers/footers, footnotes/endnotes, comments) means a large or
+// heavily-annotated document can now produce far more text than the old
+// body-only snippet did, so without a cap a long document could silently
+// overflow the model's context window and surface as an opaque
+// MaxTokensError from the backend. Reuses INLINE_TEXT_CHAR_LIMIT's 300,000
+// characters (~75K tokens) for the same reason it was chosen there: generous
+// headroom for the prompt, history, and output budget within a typical
+// large-context model's window.
+const INLINE_EXTRACTED_DOC_CHAR_LIMIT = INLINE_TEXT_CHAR_LIMIT;
+
+function truncateExtractedDoc(text, fileName) {
+  if (text.length <= INLINE_EXTRACTED_DOC_CHAR_LIMIT) return text;
+  const truncated = text.slice(0, INLINE_EXTRACTED_DOC_CHAR_LIMIT);
+  return `${truncated}\n\n[... content truncated — the text extracted from ` +
+    `"${fileName}" is ${text.length.toLocaleString()} characters, exceeding the ` +
+    `${INLINE_EXTRACTED_DOC_CHAR_LIMIT.toLocaleString()}-character limit for ` +
+    `document extraction. Only the first portion is shown above. To read the ` +
+    `rest, use execute_code in the sandbox to open "${fileName}" and extract ` +
+    `the specific sections, pages, or sheets you need. ...]`;
+}
+
 /**
  * Convert an array of file objects into Bedrock Converse-shaped content
  * blocks (consumed either directly by ipc/bedrock.js, or converted to real
@@ -156,13 +184,91 @@ print("\\n\\n".join(slides))`
       const safeName = file.name.replace(/"/g, '\\"');
       const extractCode = ['doc', 'docx'].includes(ext)
         ? `from docx import Document
+from docx.table import Table
+from docx.text.paragraph import Paragraph
+import zipfile
+from xml.etree import ElementTree as ET
+
+W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 doc = Document("${safeName}")
-paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-tables = []
-for t_idx, table in enumerate(doc.tables):
+
+def table_text(table):
     rows = [" | ".join(cell.text for cell in row.cells) for row in table.rows]
-    tables.append(f"Table {t_idx+1}:\\n" + "\\n".join(rows))
-print("\\n\\n".join(paragraphs + tables))`
+    return "Table:\\n" + "\\n".join(rows)
+
+# Walk the body in document order so paragraphs and tables stay interleaved
+# as they appear, instead of all paragraphs then all tables (which loses the
+# original reading order).
+parts = []
+body = doc.element.body
+for child in body.iterchildren():
+    tag = child.tag
+    if tag == W + "p":
+        text = Paragraph(child, doc).text
+        if text.strip():
+            parts.append(text)
+    elif tag == W + "tbl":
+        parts.append(table_text(Table(child, doc)))
+
+# Headers and footers (per section). python-docx exposes these directly.
+hf = []
+for s_idx, section in enumerate(doc.sections):
+    for label, hdrftr in (("Header", section.header), ("Footer", section.footer)):
+        if hdrftr is None:
+            continue
+        txt = "\\n".join(p.text for p in hdrftr.paragraphs if p.text.strip())
+        if txt.strip():
+            hf.append(f"[{label}, section {s_idx+1}]\\n{txt}")
+
+# Footnotes, endnotes and comments live in separate parts of the .docx zip
+# that python-docx has no public API for; read them straight from the zip.
+# Each is best-effort — a document without them simply yields nothing.
+def read_notes(zf, member, note_tag, label):
+    out = []
+    try:
+        root = ET.fromstring(zf.read(member))
+    except (KeyError, ET.ParseError):
+        return out
+    for i, note in enumerate(root.findall(W + note_tag)):
+        # Skip the separator/continuation pseudo-notes Word stores at the top.
+        note_type = note.get(W + "type")
+        if note_type in ("separator", "continuationSeparator"):
+            continue
+        texts = [t.text for t in note.iter(W + "t") if t.text]
+        joined = "".join(texts).strip()
+        if joined:
+            out.append(f"[{label} {len(out)+1}] {joined}")
+    return out
+
+def read_comments(zf):
+    out = []
+    try:
+        root = ET.fromstring(zf.read("word/comments.xml"))
+    except (KeyError, ET.ParseError):
+        return out
+    for c in root.findall(W + "comment"):
+        author = c.get(W + "author") or "unknown"
+        texts = [t.text for t in c.iter(W + "t") if t.text]
+        joined = "".join(texts).strip()
+        if joined:
+            out.append(f"[Comment by {author}] {joined}")
+    return out
+
+notes = []
+try:
+    with zipfile.ZipFile("${safeName}") as zf:
+        notes += read_notes(zf, "word/footnotes.xml", "footnote", "Footnote")
+        notes += read_notes(zf, "word/endnotes.xml", "endnote", "Endnote")
+        notes += read_comments(zf)
+except (zipfile.BadZipFile, FileNotFoundError):
+    pass
+
+sections = ["\\n\\n".join(parts)]
+if hf:
+    sections.append("--- Headers & Footers ---\\n" + "\\n\\n".join(hf))
+if notes:
+    sections.append("--- Notes & Comments ---\\n" + "\\n".join(notes))
+print("\\n\\n".join(s for s in sections if s.strip()))`
         : `import openpyxl
 wb = openpyxl.load_workbook("${safeName}", data_only=True)
 sheets = []
@@ -172,7 +278,8 @@ for name in wb.sheetnames:
     sheets.append(f"Sheet '{name}':\\n" + "\\n".join(rows))
 print("\\n\\n".join(sheets))`;
       const result = await ci.executeCode(extractCode);
-      blocks.push({ text: `\n--- Content from ${file.name} (extracted for Claude — this format isn't natively supported by Anthropic's document API) ---\n${result.text}\n--- End of ${file.name} ---\n` });
+      const extracted = truncateExtractedDoc(String(result.text ?? ''), file.name);
+      blocks.push({ text: `\n--- Content from ${file.name} (extracted for Claude — this format isn't natively supported by Anthropic's document API) ---\n${extracted}\n--- End of ${file.name} ---\n` });
     }
   }
 
@@ -315,5 +422,7 @@ module.exports = {
   toStrandsContentBlocks,
   INLINE_DOCUMENT_LIMIT_BYTES,
   INLINE_TEXT_CHAR_LIMIT,
+  INLINE_EXTRACTED_DOC_CHAR_LIMIT,
   truncateInlineText,
+  truncateExtractedDoc,
 };

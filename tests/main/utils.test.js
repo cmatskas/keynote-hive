@@ -40,6 +40,7 @@ const {
   toStrandsContentBlocks,
   INLINE_DOCUMENT_LIMIT_BYTES,
   INLINE_TEXT_CHAR_LIMIT,
+  INLINE_EXTRACTED_DOC_CHAR_LIMIT,
   sanitizeFileName,
 } = require('../../src/main/utils');
 
@@ -267,6 +268,48 @@ describe('utils — oversized document handling (sandbox pointer, no pre-extract
       expect(xlsxBlock.text).toContain("isn't natively supported by Anthropic's document API");
       expect(xlsxBlock.document).toBeUndefined();
       expect(ci.executeCode).toHaveBeenCalledWith(expect.stringContaining('import openpyxl'));
+    });
+  });
+
+  describe('buildFileContentBlocks — extracted-doc truncation (Anthropic docx/xls/xlsx path)', () => {
+    // The Anthropic extraction branch is the one document path that dumps its
+    // full result straight into the prompt (every other oversized-doc path
+    // hands the model a sandbox pointer instead). Enriched extraction can
+    // produce far more text than the old body-only snippet, so the result is
+    // capped before it reaches the prompt. Without the cap a long document
+    // overflows the model's context window as an opaque backend MaxTokensError.
+    test('extracted text over the limit is truncated with a visible marker before being appended to the prompt', async () => {
+      const ci = makeFakeCodeInterpreter();
+      const huge = 'q'.repeat(INLINE_EXTRACTED_DOC_CHAR_LIMIT + 5000);
+      ci.executeCode = jest.fn().mockResolvedValue({ success: true, text: huge });
+      const blocks = await buildFileContentBlocks(
+        [{ name: 'long-report.docx', content: Buffer.alloc(1024) }],
+        { codeInterpreter: ci, isAnthropicModel: true },
+      );
+
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].text).toContain('content truncated');
+      expect(blocks[0].text).toContain('long-report.docx');
+      expect(blocks[0].text).toContain('execute_code');
+
+      // Only the first INLINE_EXTRACTED_DOC_CHAR_LIMIT characters of the
+      // extracted content ('q', chosen so it doesn't collide with any
+      // character in the surrounding wrapper header or marker prose) survive
+      // ahead of the marker.
+      const markerIndex = blocks[0].text.indexOf('[... content truncated');
+      const beforeMarker = blocks[0].text.slice(0, markerIndex);
+      expect(beforeMarker.match(/q/g).length).toBe(INLINE_EXTRACTED_DOC_CHAR_LIMIT);
+    });
+
+    test('extracted text under the limit is appended unchanged (no truncation marker)', async () => {
+      const ci = makeFakeCodeInterpreter();
+      ci.executeCode = jest.fn().mockResolvedValue({ success: true, text: 'short extracted body' });
+      const blocks = await buildFileContentBlocks(
+        [{ name: 'notes.docx', content: Buffer.alloc(1024) }],
+        { codeInterpreter: ci, isAnthropicModel: true },
+      );
+      expect(blocks[0].text).toContain('short extracted body');
+      expect(blocks[0].text).not.toContain('content truncated');
     });
   });
 
