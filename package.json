@@ -55,7 +55,7 @@
     "openai": "^6.49.0",
     "sortablejs": "^1.15.7",
     "toastify-js": "^1.12.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^7.0.0",
