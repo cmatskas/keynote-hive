@@ -203,9 +203,6 @@ const CHECKS = [
   // (500+ before visible output); keep the generous budget on Bedrock too.
   { label: 'Grok 4.6', modelId: 'us.xai.grok-4.6', maxTokens: 1000 },
   { label: 'Gemma 3 27B', modelId: 'google.gemma-3-27b-it' },
-  // Kimi K3 also streams reasoning tokens before any visible text (verified
-  // on Converse at adoption), so it gets the same generous budget as Grok.
-  { label: 'Kimi K3', modelId: 'global.moonshotai.kimi-k3', maxTokens: 1000 },
   { label: 'GPT-6 Luna', modelId: 'global.openai.gpt-6-luna', maxTokens: 1000 },
   { label: 'Nova 2 Lite', modelId: 'global.amazon.nova-2-lite-v1:0' },
 ];

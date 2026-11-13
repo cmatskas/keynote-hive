@@ -1,5 +1,13 @@
 # Release Notes
 
+## v4.6.1
+
+### Changed
+- **Kimi K3 removed from the default Bedrock model list.** New installs no longer get `global.moonshotai.kimi-k3` in their default model list. Existing settings files are not modified.
+
+### Tests
+- Removed Kimi K3 from the live Bedrock integration check (13 → 12 checks), keeping it in sync with the default model list. It had been failing the daily Scheduled Tests run since Nov 7 with Bedrock throttling (`Too many tokens, please wait`), not an API change.
+
 ## v4.6.0
 
 ### Improved — Word documents attached to the Work tab are read more completely

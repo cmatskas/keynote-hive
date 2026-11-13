@@ -50,10 +50,8 @@ class SettingsManager {
         { id: 'GPT-6 Astra', inferenceProfileId: 'us.openai.gpt-6-astra', role: '' },
         { id: 'Grok 4.6', inferenceProfileId: 'us.xai.grok-4.6', role: '' },
         // Landed on Bedrock after the v4.4.0 migration (each was named there
-        // as awaited). All three verified live on Converse: they answer, and
-        // they make real toolUse calls — none needs the Gemma treatment.
-        // Kimi K3 streams reasoning tokens before visible text, like Grok.
-        { id: 'Kimi K3', inferenceProfileId: 'global.moonshotai.kimi-k3', role: '' },
+        // as awaited). Both verified live on Converse: they answer, and
+        // they make real toolUse calls — neither needs the Gemma treatment.
         { id: 'GPT-6 Luna', inferenceProfileId: 'global.openai.gpt-6-luna', role: '' },
         { id: 'Nova 2 Lite', inferenceProfileId: 'global.amazon.nova-2-lite-v1:0', role: '' },
         // Largest Gemma on standard Bedrock (Gemma 4 is still Mantle-only).
